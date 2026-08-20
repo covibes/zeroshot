@@ -15,9 +15,9 @@ fn round_trip<T>(value: &T)
 where
     T: Serialize + DeserializeOwned + Debug + PartialEq,
 {
-    let encoded = serde_json::to_vec(value).unwrap();
+    let encoded = serde_json::to_vec(value).assert_value();
     assert!(encoded.len() <= 65_536, "{} bytes", encoded.len());
-    assert_eq!(serde_json::from_slice::<T>(&encoded).unwrap(), *value);
+    assert_eq!(serde_json::from_slice::<T>(&encoded).assert_value(), *value);
 }
 
 macro_rules! assert_text_bounds {
@@ -37,72 +37,76 @@ macro_rules! assert_text_bounds {
 }
 
 fn source_reference() -> SourceProviderRef {
-    SourceProviderRef::new(SourceProviderId::new("source.github").unwrap(), 1).unwrap()
+    SourceProviderRef::new(SourceProviderId::new("source.github").assert_value(), 1).assert_value()
 }
 
 fn source_profile() -> SourceProfileId {
-    SourceProfileId::new("production").unwrap()
+    SourceProfileId::new("production").assert_value()
 }
 
 fn repository() -> CanonicalRepository {
     CanonicalRepository::new(
         source_reference(),
         source_profile(),
-        SourceAccountId::new("open-engine").unwrap(),
-        SourceRepositoryId::new("the-open-engine/zeroshot").unwrap(),
+        SourceAccountId::new("open-engine").assert_value(),
+        SourceRepositoryId::new("the-open-engine/zeroshot").assert_value(),
     )
-    .unwrap()
+    .assert_value()
 }
 fn source_review() -> SourceReviewIdentity {
     SourceReviewIdentity::new(
-        SourceReviewId::new("review-1").unwrap(),
-        SourceBranchId::new("main").unwrap(),
-        SourceBranchId::new("feature").unwrap(),
+        SourceReviewId::new("review-1").assert_value(),
+        SourceBranchId::new("main").assert_value(),
+        SourceBranchId::new("feature").assert_value(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn source_policy() -> SourceRequiredPolicy {
     SourceRequiredPolicy::new(
-        SourcePolicyDigest::new(digest('9')).unwrap(),
+        SourcePolicyDigest::new(digest('9')).assert_value(),
         BTreeMap::from([(
-            SourceCheckId::new("required/build").unwrap(),
+            SourceCheckId::new("required/build").assert_value(),
             SourceCheckConclusion::Satisfied,
         )]),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn merge_request() -> SourceOperationRequest {
     SourceOperationRequest::new(
         repository(),
-        SourceCredentialHandleId::new("github-lease").unwrap(),
+        SourceCredentialHandleId::new("github-lease").assert_value(),
         (
-            SourceWorkspaceId::new(digest('8')).unwrap(),
-            SourceOperationId::new("merge-1").unwrap(),
+            SourceWorkspaceId::new(digest('8')).assert_value(),
+            SourceOperationId::new("merge-1").assert_value(),
         ),
         SourceOperation::Merge {
             review: source_review(),
-            expected_base: SourceRevisionId::new("base-sha").unwrap(),
-            expected_head: SourceRevisionId::new("head-sha").unwrap(),
-            checked_revision: SourceRevisionId::new("head-sha").unwrap(),
+            expected_base: SourceRevisionId::new("base-sha").assert_value(),
+            expected_head: SourceRevisionId::new("head-sha").assert_value(),
+            checked_revision: SourceRevisionId::new("head-sha").assert_value(),
             policy: source_policy(),
-            integrated_revision: SourceRevisionId::new("merge-sha").unwrap(),
+            integrated_revision: SourceRevisionId::new("merge-sha").assert_value(),
         },
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn merge_receipt() -> SourceMergeReceipt {
-    SourceMergeReceipt::new(merge_request(), SourceRevisionId::new("merge-sha").unwrap()).unwrap()
+    SourceMergeReceipt::new(
+        merge_request(),
+        SourceRevisionId::new("merge-sha").assert_value(),
+    )
+    .assert_value()
 }
 
 fn issue_reference() -> IssueProviderRef {
-    IssueProviderRef::new(IssueProviderId::new("issue.linear").unwrap(), 1).unwrap()
+    IssueProviderRef::new(IssueProviderId::new("issue.linear").assert_value(), 1).assert_value()
 }
 
 fn issue_profile() -> IssueProfileId {
-    IssueProfileId::new("production").unwrap()
+    IssueProfileId::new("production").assert_value()
 }
 
 fn resolved_issue() -> ResolvedIssue {
@@ -110,36 +114,36 @@ fn resolved_issue() -> ResolvedIssue {
         issue_reference(),
         issue_profile(),
         (
-            IssueAccountId::new("open-engine-linear").unwrap(),
-            IssueId::new("ENG-1").unwrap(),
+            IssueAccountId::new("open-engine-linear").assert_value(),
+            IssueId::new("ENG-1").assert_value(),
         ),
         (
             IssueState::Open,
-            vec![IssuePublicUrl::new("https://linear.app/issue/ENG-1").unwrap()],
+            vec![IssuePublicUrl::new("https://linear.app/issue/ENG-1").assert_value()],
         ),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn close_request() -> IssueCloseRequest {
     IssueCloseRequest::new(
         resolved_issue(),
-        IssueCredentialHandleId::new("linear-lease").unwrap(),
+        IssueCredentialHandleId::new("linear-lease").assert_value(),
         (
-            IssueOperationId::new("close-ENG-1").unwrap(),
-            IssueOperationFingerprint::new(digest('b')).unwrap(),
+            IssueOperationId::new("close-ENG-1").assert_value(),
+            IssueOperationFingerprint::new(digest('b')).assert_value(),
         ),
         merge_receipt(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 #[test]
 fn fingerprints_and_digests_are_exact_lowercase_hex() {
     for value in [digest('0'), digest('a'), digest('f')] {
-        round_trip(&SourceOperationFingerprint::new(value.clone()).unwrap());
-        round_trip(&SourceContentDigest::new(value.clone()).unwrap());
-        round_trip(&IssueOperationFingerprint::new(value).unwrap());
+        round_trip(&SourceOperationFingerprint::new(value.clone()).assert_value());
+        round_trip(&SourceContentDigest::new(value.clone()).assert_value());
+        round_trip(&IssueOperationFingerprint::new(value).assert_value());
     }
     for invalid in [
         "a".repeat(63),
@@ -171,9 +175,9 @@ fn bounded_provider_failure_evidence_round_trips() {
         round_trip(
             &SourceProviderFailure::new(
                 code,
-                SourceFailureMessage::new("bounded source failure evidence").unwrap(),
+                SourceFailureMessage::new("bounded source failure evidence").assert_value(),
             )
-            .unwrap(),
+            .assert_value(),
         );
     }
     for code in [
@@ -186,9 +190,9 @@ fn bounded_provider_failure_evidence_round_trips() {
         round_trip(
             &IssueProviderFailure::new(
                 code,
-                IssueFailureMessage::new("bounded issue failure evidence").unwrap(),
+                IssueFailureMessage::new("bounded issue failure evidence").assert_value(),
             )
-            .unwrap(),
+            .assert_value(),
         );
     }
 }
@@ -197,29 +201,32 @@ fn bounded_provider_failure_evidence_round_trips() {
 fn operation_specific_source_receipts_round_trip_and_reject_cross_operation_use() {
     let request = SourceOperationRequest::new(
         repository(),
-        SourceCredentialHandleId::new("github-lease").unwrap(),
+        SourceCredentialHandleId::new("github-lease").assert_value(),
         (
-            SourceWorkspaceId::new(digest('8')).unwrap(),
-            SourceOperationId::new("branch-1").unwrap(),
+            SourceWorkspaceId::new(digest('8')).assert_value(),
+            SourceOperationId::new("branch-1").assert_value(),
         ),
         SourceOperation::Branch {
-            expected_parent: SourceRevisionId::new("branch-sha").unwrap(),
-            branch: SourceBranchId::new("feature").unwrap(),
-            pre_effect: SourceStateDigest::new(digest('c')).unwrap(),
+            expected_parent: SourceRevisionId::new("branch-sha").assert_value(),
+            branch: SourceBranchId::new("feature").assert_value(),
+            pre_effect: SourceStateDigest::new(digest('c')).assert_value(),
         },
     )
-    .unwrap();
+    .assert_value();
     let receipt = SourceBranchReceipt::new(
         request.clone(),
-        SourceRevisionId::new("branch-sha").unwrap(),
+        SourceRevisionId::new("branch-sha").assert_value(),
     )
-    .unwrap();
+    .assert_value();
     round_trip(&receipt);
     round_trip(&SourceOperationReceipt::Branch(receipt));
     assert!(
-        SourceMergeReceipt::new(request, SourceRevisionId::new("branch-sha").unwrap()).is_err()
+        SourceMergeReceipt::new(request, SourceRevisionId::new("branch-sha").assert_value())
+            .is_err()
     );
 }
 
 #[path = "provider_bounds/cases.rs"]
 mod cases;
+
+use openengine_cluster_testkit::assertions::{AssertValue};

@@ -1,5 +1,7 @@
 //! Terminal-run resubmission: mints a new run at the same admitted generation.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{Phase, ResubmitResult, RunId};
 use openengine_cluster_server::admission::{
     CancellationSignal, IdempotencyRecord, ResubmitProposal, StoreError,
@@ -49,7 +51,8 @@ impl StoreState {
                 current: self.control.phase,
             });
         }
-        let prior_run_id = current_run_id.expect("terminal phase implies an admitted run");
+        let prior_run_id =
+            current_run_id.assert_value_with("terminal phase implies an admitted run");
         let input = self.resubmit_input(&proposal, &prior_run_id)?;
         if cancellation.is_cancelled() {
             return Err(StoreError::Cancelled);
@@ -57,7 +60,7 @@ impl StoreState {
         let generation = self
             .control
             .generation
-            .expect("terminal phase implies a generation");
+            .assert_value_with("terminal phase implies a generation");
         self.next_run += 1;
         let run_id = RunId::new(format!("run-{}", self.next_run));
         let at_cursor = self.install_run(run_id.clone(), generation, input);
@@ -65,7 +68,7 @@ impl StoreState {
             .lifecycle
             .operational
             .clone()
-            .expect("install_run sets lifecycle operational");
+            .assert_value_with("install_run sets lifecycle operational");
         let result = ResubmitResult {
             generation,
             prior_run_id,
@@ -97,7 +100,7 @@ impl StoreState {
                     .control
                     .spec
                     .as_ref()
-                    .expect("terminal phase implies an admitted graph");
+                    .assert_value_with("terminal phase implies an admitted graph");
                 spec.initial_input
                     .validate_value(replacement)
                     .map_err(|error| StoreError::SchemaViolation(error.to_string()))?;

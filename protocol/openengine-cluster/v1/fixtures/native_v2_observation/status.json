@@ -1,0 +1,24 @@
+{
+  "atCursor": "v2:7",
+  "runId": "run-1",
+  "size": "standard",
+  "source": {
+    "branch": "main",
+    "repository": "open-engine/zeroshot",
+    "revision": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "status": {
+    "activeExecutions": [
+      {
+        "execution": "opaque-verifier-a",
+        "node": "verify-a"
+      },
+      {
+        "execution": "opaque-verifier-b",
+        "node": "verify-b"
+      }
+    ],
+    "phase": "running"
+  },
+  "title": "Repair checkout flow"
+}

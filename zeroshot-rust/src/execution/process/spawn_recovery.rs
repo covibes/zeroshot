@@ -8,7 +8,7 @@ use crate::execution::driver::WorkspaceCapability;
 use super::platform::{self, ProcessContainment, ProcessTreeHandle, terminate_process_tree};
 use super::{
     MAX_PROCESS_ARGV_BYTES, MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS,
-    MAX_PROCESS_STDIN_BYTES, ProcessRunnerError,
+    ProcessRunnerError,
 };
 
 pub(super) struct SpawnRecovery {
@@ -32,8 +32,8 @@ impl SpawnRecovery {
         self.process_tree = Some(process_tree);
     }
 
-    pub(super) fn child_mut(&mut self) -> &mut Child {
-        self.child.as_mut().expect("spawn recovery owns child")
+    pub(super) fn child_mut(&mut self) -> Option<&mut Child> {
+        self.child.as_mut()
     }
 
     pub(super) async fn recover(mut self) {
@@ -48,13 +48,8 @@ impl SpawnRecovery {
         }
     }
 
-    pub(super) fn disarm(mut self) -> (Child, ProcessTreeHandle) {
-        (
-            self.child.take().expect("spawn recovery owns child"),
-            self.process_tree
-                .take()
-                .expect("spawn recovery captured tree"),
-        )
+    pub(super) fn disarm(mut self) -> Option<(Child, ProcessTreeHandle)> {
+        Some((self.child.take()?, self.process_tree.take()?))
     }
 }
 
@@ -156,17 +151,6 @@ fn validate_collection(
         return Err(ProcessRunnerError::InvalidCommand(format!(
             "{} is {} bytes; maximum is {}",
             limit.label, bytes, limit.max_bytes
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_stdin(stdin: &[u8]) -> Result<(), ProcessRunnerError> {
-    if stdin.len() > MAX_PROCESS_STDIN_BYTES {
-        return Err(ProcessRunnerError::InvalidCommand(format!(
-            "stdin is {} bytes; maximum is {}",
-            stdin.len(),
-            MAX_PROCESS_STDIN_BYTES
         )));
     }
     Ok(())

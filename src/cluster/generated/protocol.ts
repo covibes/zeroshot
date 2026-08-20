@@ -5,14 +5,14 @@ export const JSON_RPC_VERSION = "2.0" as const;
 export const PROTOCOL_VERSION = "openengine.cluster/v1" as const;
 export const SUBSCRIPTION_QUEUE_CAPACITY = 1024 as const;
 export const MAX_FRAME_BYTES = 1048576 as const;
-export const CLUSTER_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","watch","logs","agent/attach"] as const;
+export const CLUSTER_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","watch","logs","agent/attach","run/submit","run/list","run/status","run/watch","run/logs","run/attach","run/force"] as const;
 export type ClusterMethod = (typeof CLUSTER_METHODS)[number];
 
-export const UNARY_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get"] as const;
+export const UNARY_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","run/submit","run/list","run/status","run/force"] as const;
 export type UnaryClusterMethod = (typeof UNARY_METHODS)[number];
-export const SUBSCRIPTION_METHODS = ["watch","logs","agent/attach"] as const;
+export const SUBSCRIPTION_METHODS = ["watch","logs","agent/attach","run/watch","run/logs","run/attach"] as const;
 export type SubscriptionMethod = (typeof SUBSCRIPTION_METHODS)[number];
-export const METHOD_RESULT_DEFINITIONS = {"initialize":"InitializeResult","plan":"PlanResult","apply":"ApplyResult","update":"UpdateResult","stop":"StopResult","retry":"RetryResult","resubmit":"ResubmitResult","delete":"DeleteResult","get":"GetResult","watch":"WatchResult","logs":"LogsResult","agent/attach":"AgentAttachResult"} as const;
+export const METHOD_RESULT_DEFINITIONS = {"initialize":"InitializeResult","plan":"PlanResult","apply":"ApplyResult","update":"UpdateResult","stop":"StopResult","retry":"RetryResult","resubmit":"ResubmitResult","delete":"DeleteResult","get":"GetResult","watch":"WatchResult","logs":"LogsResult","agent/attach":"AgentAttachResult","run/submit":"RunSubmitResult","run/list":"RunListResult","run/status":"RunStatusResult","run/watch":"RunWatchResult","run/logs":"RunLogsResult","run/attach":"RunAttachResult","run/force":"RunForceResult"} as const;
 
 export const JSON_RPC_ERROR_CODES = {
   PARSE_ERROR: -32700,
@@ -25,6 +25,7 @@ export const JSON_RPC_ERROR_CODES = {
 
 export const DOMAIN_ERROR_CODES = ["NOT_FOUND","GONE","SLOW_CONSUMER","UNSUPPORTED_PROTOCOL_VERSION","INTERNAL_ERROR"] as const;
 
+export type ActiveExecution = { readonly "execution": string; readonly "node": string; };
 export type AdmissionTransition = { readonly "runId": string; readonly "seedInput": unknown; readonly "spec": GraphSpec; };
 export type AgentAttachClosedNotification = { readonly "reason": SubscriptionCloseReason; readonly "subscriptionId": string; };
 export type AgentAttachEvent = { readonly "type": "working"; } | { readonly "text": string; readonly "type": "output"; } | { readonly "type": "settled"; };
@@ -41,10 +42,13 @@ export type BackendFault = BackendFaultWire;
 export type BackendFaultWire = { readonly "action": FaultAction; readonly "code": FaultCode; readonly "consequence": FaultConsequence; readonly "eventId": string; readonly "executionRef"?: string | null; readonly "retry": FaultRetryDisposition; readonly "severity": FaultSeverity; readonly "source": ReadonlyArray<FaultSourceFrame>; readonly "summary": string; };
 export type CancelRequestParams = { readonly "id": RequestId; };
 export type ChoiceBranch = { readonly "node": GraphNode; readonly "when": Guard; };
+export type ClaudeProvider = "anthropic" | "openrouter";
 export type ClusterStatus = { readonly "atCursor"?: string | null; readonly "currentRunId"?: string | null; readonly "observedGeneration"?: number | null; readonly "operational"?: OperationalStatus | null; readonly "phase": Phase; };
+export type CodexProvider = "openai" | "openrouter";
 export type ControlSelector = { readonly "field"?: string | null; readonly "name": string; readonly "source": ControlSource; };
 export type ControlSource = "signal" | "error" | "group";
 export type DataSelector = { readonly "path": ReadonlyArray<string>; readonly "source": "state"; } | { readonly "path": ReadonlyArray<string>; readonly "source": "item"; };
+export type DeclaredEnvironment = ReadonlyArray<string>;
 export type DeleteParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; readonly "ifRunId"?: string | null; };
 export type DeleteResult = { readonly "atCursor"?: string | null; readonly "deduped": boolean; readonly "deleted": boolean; readonly "generation"?: number | null; readonly "phase": Phase; readonly "runId"?: string | null; };
 export type DiagnosticPathSegment = { readonly "kind": "field"; readonly "name": string; } | { readonly "index": number; readonly "kind": "index"; } | { readonly "kind": "node"; readonly "name": string; };
@@ -63,7 +67,7 @@ export type GetResult = { readonly "atCursor"?: string | null; readonly "spec"?:
 export type GraphDiagnostic = { readonly "code": GraphDiagnosticCode; readonly "message": string; readonly "path": ReadonlyArray<DiagnosticPathSegment>; readonly "relatedNodes": ReadonlyArray<string>; readonly "severity": DiagnosticSeverity; };
 export type GraphDiagnosticCode = "schema_safety" | "reachability" | "choice_exhaustiveness" | "loop_exit_satisfiability" | "missing_bound" | "write_conflict" | "ceiling_exceeded" | "cyclic_reference" | "undefined_read" | "invalid_graph_shape";
 export type GraphDiff = { readonly "added": ReadonlyArray<string>; readonly "changed": ReadonlyArray<string>; readonly "removed": ReadonlyArray<string>; };
-export type GraphNode = { readonly "attempts": number; readonly "input": PayloadType; readonly "inputBindings": ReadonlyArray<InputBinding>; readonly "kind": "step"; readonly "name": string; readonly "output": PayloadType; readonly "timeoutMs": number; readonly "worker": string; readonly "writeBindings": ReadonlyArray<WriteBinding>; } | { readonly "attempts": number; readonly "diagnostic": PayloadType; readonly "input": PayloadType; readonly "inputBindings": ReadonlyArray<InputBinding>; readonly "kind": "verifier"; readonly "name": string; readonly "output": PayloadType; readonly "signals": { readonly [key: string]: ReadonlyArray<string> }; readonly "timeoutMs": number; readonly "worker": string; readonly "writeBindings": ReadonlyArray<WriteBinding>; } | { readonly "children": NonEmptyVec_of_GraphNode; readonly "kind": "seq"; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | ({ readonly "branches": NonEmptyVec_of_ChoiceBranch; readonly "kind": "choice"; readonly "name": string; readonly "otherwise"?: GraphNode | null; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; }) | { readonly "branches": NonEmptyVec_of_GraphNode; readonly "join": Join; readonly "kind": "par"; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | { readonly "body": GraphNode; readonly "kind": "loop"; readonly "maxIterations": number; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; readonly "until": Guard; } | { readonly "body": GraphNode; readonly "kind": "map"; readonly "maxItems": number; readonly "name": string; readonly "over": DataSelector; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | { readonly "bindings": ReadonlyArray<InputBinding>; readonly "kind": "succeed"; readonly "name": string; readonly "output": PayloadType; } | { readonly "kind": "fail"; readonly "name": string; readonly "reason": string; };
+export type GraphNode = ({ readonly "attempts": number; readonly "input": PayloadType; readonly "inputBindings": ReadonlyArray<InputBinding>; readonly "instructions"?: NodeInstructions | null; readonly "kind": "step"; readonly "name": string; readonly "output": PayloadType; readonly "timeoutMs": number; readonly "worker": string; readonly "writeBindings": ReadonlyArray<WriteBinding>; }) | ({ readonly "attempts": number; readonly "diagnostic": PayloadType; readonly "input": PayloadType; readonly "inputBindings": ReadonlyArray<InputBinding>; readonly "instructions"?: NodeInstructions | null; readonly "kind": "verifier"; readonly "name": string; readonly "output": PayloadType; readonly "signals": { readonly [key: string]: ReadonlyArray<string> }; readonly "timeoutMs": number; readonly "worker": string; readonly "writeBindings": ReadonlyArray<WriteBinding>; }) | { readonly "children": NonEmptyVec_of_GraphNode; readonly "kind": "seq"; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | ({ readonly "branches": NonEmptyVec_of_ChoiceBranch; readonly "kind": "choice"; readonly "name": string; readonly "otherwise"?: GraphNode | null; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; }) | { readonly "branches": NonEmptyVec_of_GraphNode; readonly "join": Join; readonly "kind": "par"; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | ({ readonly "body": GraphNode; readonly "kind": "loop"; readonly "maxIterations": number; readonly "name": string; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; readonly "until"?: Guard | null; }) | { readonly "body": GraphNode; readonly "kind": "map"; readonly "maxItems": number; readonly "name": string; readonly "over": DataSelector; readonly "promotedStatePaths": ReadonlyArray<ReadonlyArray<string>>; readonly "state": PayloadType; } | { readonly "bindings": ReadonlyArray<InputBinding>; readonly "kind": "succeed"; readonly "name": string; readonly "output": PayloadType; } | { readonly "kind": "fail"; readonly "name": string; readonly "reason": string; };
 export type GraphProfile = "openengine.graph.full/v1" | "openengine.graph.single-worker/v1";
 export type GraphSpec = { readonly "initialInput": PayloadType; readonly "policy": PolicyBinding; readonly "profile": GraphProfile; readonly "root": GraphNode; };
 export type Guard = { readonly "kind": "in"; readonly "labels": ReadonlyArray<string>; readonly "value": ControlSelector; } | { readonly "guards": NonEmptyVec_of_Guard; readonly "kind": "all"; } | { readonly "guards": NonEmptyVec_of_Guard; readonly "kind": "any"; } | { readonly "guard": Guard; readonly "kind": "not"; } | { readonly "count": number; readonly "kind": "k_of_n"; readonly "labels": ReadonlyArray<string>; readonly "values": NonEmptyVec_of_ControlSelector; } | { readonly "count": number; readonly "kind": "k_of_map"; readonly "labels": ReadonlyArray<string>; readonly "value": ControlSelector; };
@@ -74,6 +78,8 @@ export type Join = { readonly "kind": "all"; } | { readonly "kind": "any"; } | {
 export type JsonRpcError = { readonly "code": number; readonly "data"?: DomainErrorData | null; readonly "message": string; };
 export type JsonRpcErrorResponse = { readonly "error": JsonRpcError; readonly "id"?: RequestId | null; readonly "jsonrpc": string; };
 export type JsonRpcNotification = { readonly "jsonrpc": string; readonly "method": string; readonly "params": EventNotification; };
+export type JsonRpcNotification10 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunLogEventNotification; };
+export type JsonRpcNotification11 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunAttachEventNotification; };
 export type JsonRpcNotification2 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": SubscriptionCancelParams; };
 export type JsonRpcNotification3 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": SubscriptionClosedNotification; };
 export type JsonRpcNotification4 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": CancelRequestParams; };
@@ -81,10 +87,18 @@ export type JsonRpcNotification5 = { readonly "jsonrpc": string; readonly "metho
 export type JsonRpcNotification6 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": LogsClosedNotification; };
 export type JsonRpcNotification7 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachEventNotification; };
 export type JsonRpcNotification8 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachClosedNotification; };
+export type JsonRpcNotification9 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunWatchEventNotification; };
 export type JsonRpcRequest = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": InitializeParams; };
 export type JsonRpcRequest10 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": WatchParams; };
 export type JsonRpcRequest11 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": LogsParams; };
 export type JsonRpcRequest12 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachParams; };
+export type JsonRpcRequest13 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunSubmitParams; };
+export type JsonRpcRequest14 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunListParams; };
+export type JsonRpcRequest15 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunStatusParams; };
+export type JsonRpcRequest16 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunWatchParams; };
+export type JsonRpcRequest17 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunLogsParams; };
+export type JsonRpcRequest18 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunAttachParams; };
+export type JsonRpcRequest19 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunForceParams; };
 export type JsonRpcRequest2 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": PlanParams; };
 export type JsonRpcRequest3 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": ApplyParams; };
 export type JsonRpcRequest4 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": GetParams; };
@@ -97,6 +111,13 @@ export type JsonRpcResponse = JsonRpcSuccess | JsonRpcErrorResponse;
 export type JsonRpcResponse10 = JsonRpcSuccess10 | JsonRpcErrorResponse;
 export type JsonRpcResponse11 = JsonRpcSuccess11 | JsonRpcErrorResponse;
 export type JsonRpcResponse12 = JsonRpcSuccess12 | JsonRpcErrorResponse;
+export type JsonRpcResponse13 = JsonRpcSuccess13 | JsonRpcErrorResponse;
+export type JsonRpcResponse14 = JsonRpcSuccess14 | JsonRpcErrorResponse;
+export type JsonRpcResponse15 = JsonRpcSuccess15 | JsonRpcErrorResponse;
+export type JsonRpcResponse16 = JsonRpcSuccess16 | JsonRpcErrorResponse;
+export type JsonRpcResponse17 = JsonRpcSuccess17 | JsonRpcErrorResponse;
+export type JsonRpcResponse18 = JsonRpcSuccess18 | JsonRpcErrorResponse;
+export type JsonRpcResponse19 = JsonRpcSuccess19 | JsonRpcErrorResponse;
 export type JsonRpcResponse2 = JsonRpcSuccess2 | JsonRpcErrorResponse;
 export type JsonRpcResponse3 = JsonRpcSuccess3 | JsonRpcErrorResponse;
 export type JsonRpcResponse4 = JsonRpcSuccess4 | JsonRpcErrorResponse;
@@ -109,6 +130,13 @@ export type JsonRpcSuccess = { readonly "id": RequestId; readonly "jsonrpc": str
 export type JsonRpcSuccess10 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": WatchResult; };
 export type JsonRpcSuccess11 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": LogsResult; };
 export type JsonRpcSuccess12 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": AgentAttachResult; };
+export type JsonRpcSuccess13 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunSubmitResult; };
+export type JsonRpcSuccess14 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunListResult; };
+export type JsonRpcSuccess15 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunStatusResult; };
+export type JsonRpcSuccess16 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunWatchResult; };
+export type JsonRpcSuccess17 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunLogsResult; };
+export type JsonRpcSuccess18 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunAttachResult; };
+export type JsonRpcSuccess19 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunForceResult; };
 export type JsonRpcSuccess2 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": PlanResult; };
 export type JsonRpcSuccess3 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": ApplyResult; };
 export type JsonRpcSuccess4 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": GetResult; };
@@ -126,8 +154,10 @@ export type LogsClosedNotification = { readonly "reason": SubscriptionCloseReaso
 export type LogsParams = Record<string, never>;
 export type LogsResult = { readonly "subscriptionId": string; };
 export type NodeAddress = { readonly "attempt": number; readonly "node": string; };
+export type NodeInstructions = string;
 export type NodeOutputChannel = "out" | "signal" | "diagnostic";
 export type NodeOutputSelector = { readonly "channel": NodeOutputChannel; readonly "node": string; readonly "path": ReadonlyArray<string>; };
+export type NodeRuntimeBinding = ({ readonly "effort"?: ReasoningEffort | null; readonly "env"?: DeclaredEnvironment; readonly "kind": "agent"; readonly "model": string; readonly "sessionScope"?: SessionScope; }) | { readonly "env"?: DeclaredEnvironment; readonly "kind": "git_delivery"; };
 export type NonEmptyVec_of_ChoiceBranch = ReadonlyArray<ChoiceBranch>;
 export type NonEmptyVec_of_ControlSelector = ReadonlyArray<ControlSelector>;
 export type NonEmptyVec_of_FieldPath = ReadonlyArray<ReadonlyArray<string>>;
@@ -141,14 +171,38 @@ export type PlanParams = { readonly "graph": GraphSpec; };
 export type PlanResult = { readonly "bounds"?: StructuralBounds | null; readonly "diagnostics": ReadonlyArray<GraphDiagnostic>; readonly "ok": boolean; };
 export type PolicyBinding = { readonly "default": PolicyDefault; readonly "policy": string; };
 export type PolicyDefault = "deny";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type RecordField = { readonly "required": boolean; readonly "type": PayloadType; };
 export type RedactionClass = "public" | "internal" | "confidential" | "restricted";
 export type RequestId = string | number;
+export type ResolvedSource = { readonly "branch": string; readonly "repository": string; readonly "revision": string; };
 export type ResubmitParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; readonly "ifRunId": string; readonly "replacementInput"?: unknown; };
 export type ResubmitResult = { readonly "atCursor": string; readonly "deduped": boolean; readonly "generation": number; readonly "operational": OperationalStatus; readonly "phase": Phase; readonly "priorRunId": string; readonly "runId": string; };
 export type RetryParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; };
 export type RetryResult = { readonly "atCursor": string; readonly "deduped": boolean; readonly "generation": number; readonly "operational": OperationalStatus; readonly "phase": Phase; readonly "retriedTurnId": string; readonly "retryTurnId": string; readonly "runId": string; };
+export type RunAttachEventNotification = { readonly "event": AgentAttachEvent; readonly "execution": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunAttachParams = { readonly "execution": string; readonly "runId": string; };
+export type RunAttachResult = { readonly "execution": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunForceParams = { readonly "runId": string; };
+export type RunForceResult = { readonly "atCursor": string; readonly "runId": string; readonly "size": RunSize; readonly "source": ResolvedSource; readonly "status": RunStatus; readonly "title": string; };
+export type RunListParams = Record<string, never>;
+export type RunListResult = { readonly "runs": ReadonlyArray<RunStatusResult>; };
+export type RunLogEventNotification = { readonly "cursor": string; readonly "execution"?: string | null; readonly "record": LogRecord; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunLogsParams = { readonly "execution"?: string | null; readonly "fromCursor"?: string | null; readonly "runId": string; };
+export type RunLogsResult = { readonly "atCursor": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunSize = "tiny" | "small" | "standard" | "large";
+export type RunStatus = { readonly "phase": "admitted"; } | { readonly "activeExecutions": ReadonlyArray<ActiveExecution>; readonly "phase": "running"; } | { readonly "activeExecutions": ReadonlyArray<ActiveExecution>; readonly "phase": "stopping"; } | { readonly "phase": "finished"; readonly "terminalResult": TerminalResult; };
+export type RunStatusParams = { readonly "runId": string; };
+export type RunStatusResult = { readonly "atCursor": string; readonly "runId": string; readonly "size": RunSize; readonly "source": ResolvedSource; readonly "status": RunStatus; readonly "title": string; };
+export type RunSubmission = { readonly "graph": GraphSpec; readonly "initialInput": unknown; readonly "runtime": RuntimePlan; readonly "source": ResolvedSource; readonly "submissionKey": string; readonly "title": string; };
+export type RunSubmitParams = { readonly "runId": string; readonly "submission": RunSubmission; };
+export type RunSubmitResult = { readonly "runId": string; };
+export type RunWatchEventNotification = { readonly "cursor": string; readonly "runId": string; readonly "size": RunSize; readonly "source": ResolvedSource; readonly "status": RunStatus; readonly "subscriptionId": string; readonly "title": string; };
+export type RunWatchParams = { readonly "fromCursor"?: string | null; readonly "runId": string; };
+export type RunWatchResult = { readonly "atCursor": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RuntimePlan = { readonly "harness": "codex"; readonly "nodes": Record<string, never>; readonly "provider": CodexProvider; readonly "size": RunSize; } | { readonly "harness": "claude"; readonly "nodes": Record<string, never>; readonly "provider": ClaudeProvider; readonly "size": RunSize; };
 export type ServerCapabilities = { readonly "agentAttach"?: boolean; readonly "graphProfiles"?: ReadonlyArray<GraphProfile>; readonly "logs"?: boolean; };
+export type SessionScope = "execution" | "node_instance";
 export type StopMode = "drain" | "force";
 export type StopParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; readonly "mode": StopMode; };
 export type StopResult = { readonly "acceptedMode": StopMode; readonly "atCursor": string; readonly "deduped": boolean; readonly "effectiveMode": StopMode; readonly "generation": number; readonly "operational": OperationalStatus; readonly "phase": Phase; readonly "runId": string; };
@@ -174,6 +228,10 @@ export interface ClusterMethodParams {
   readonly update: UpdateParams; readonly stop: StopParams; readonly retry: RetryParams;
   readonly resubmit: ResubmitParams; readonly delete: DeleteParams; readonly get: GetParams;
   readonly watch: WatchParams; readonly logs: LogsParams; readonly 'agent/attach': AgentAttachParams;
+  readonly 'run/submit': RunSubmitParams; readonly 'run/list': RunListParams;
+  readonly 'run/status': RunStatusParams; readonly 'run/watch': RunWatchParams;
+  readonly 'run/logs': RunLogsParams; readonly 'run/attach': RunAttachParams;
+  readonly 'run/force': RunForceParams;
 }
 
 export interface ClusterMethodResults {
@@ -181,4 +239,8 @@ export interface ClusterMethodResults {
   readonly update: UpdateResult; readonly stop: StopResult; readonly retry: RetryResult;
   readonly resubmit: ResubmitResult; readonly delete: DeleteResult; readonly get: GetResult;
   readonly watch: WatchResult; readonly logs: LogsResult; readonly 'agent/attach': AgentAttachResult;
+  readonly 'run/submit': RunSubmitResult; readonly 'run/list': RunListResult;
+  readonly 'run/status': RunStatusResult; readonly 'run/watch': RunWatchResult;
+  readonly 'run/logs': RunLogsResult; readonly 'run/attach': RunAttachResult;
+  readonly 'run/force': RunForceResult;
 }

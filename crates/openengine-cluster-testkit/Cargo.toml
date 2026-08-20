@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+getrandom.workspace = true
 openengine-cluster-client.workspace = true
 openengine-cluster-protocol.workspace = true
 openengine-cluster-server.workspace = true

@@ -13,6 +13,8 @@ use openengine_cluster_protocol::{
 };
 use openengine_cluster_server::watch::fixtures::FixtureStore;
 
+use crate::support::AssertValue;
+
 /// The fixture's queue is bounded to 2 entries; the third publish overflows it, forcing a
 /// deterministic `SLOW_CONSUMER` close for these tests to reconnect from.
 pub const FIXTURE_QUEUE_CAPACITY: usize = 2;
@@ -61,7 +63,7 @@ pub async fn overflow_and_close_with(
 
     let mut received = Vec::new();
     loop {
-        match stream.next_event().await.unwrap() {
+        match stream.next_event().await.assert_value() {
             EventOrClosed::Event(record) => received.push(record.cursor.clone()),
             EventOrClosed::Closed {
                 reason,
@@ -87,9 +89,11 @@ pub async fn assert_reconnect_replays_and_dedups(
     mut received: Vec<Cursor>,
 ) {
     // The reconnect must replay cursor-3 (recorded despite the overflow) with no gap.
-    let Some(EventOrClosed::Event(record)) = stream.next_event().await else {
-        panic!("expected the reconnect to replay the un-delivered cursor-3 event");
-    };
+    let record = match stream.next_event().await.assert_value() {
+        EventOrClosed::Event(record) => Some(record),
+        EventOrClosed::Closed { .. } => None,
+    }
+    .assert_value_with("expected the reconnect to replay cursor-3");
     assert_eq!(record.cursor, Cursor::new("cursor-3"));
     received.push(record.cursor);
 
@@ -105,22 +109,20 @@ pub async fn assert_reconnect_replays_and_dedups(
 
     let mut finished_count = 0;
     while finished_count == 0 {
-        match stream.next_event().await.unwrap() {
-            EventOrClosed::Event(record) => {
-                assert!(
-                    !received.contains(&record.cursor),
-                    "duplicate cursor delivered to the client: {:?}",
-                    record.cursor
-                );
-                if matches!(record.event, WatchEvent::Finished { .. }) {
-                    finished_count += 1;
-                }
-                received.push(record.cursor);
-            }
-            EventOrClosed::Closed { .. } => {
-                panic!("stream closed before the Finished event was observed")
-            }
+        let record = match stream.next_event().await.assert_value() {
+            EventOrClosed::Event(record) => Some(record),
+            EventOrClosed::Closed { .. } => None,
         }
+        .assert_value_with("expected the stream to remain open until Finished");
+        assert!(
+            !received.contains(&record.cursor),
+            "duplicate cursor delivered to the client: {:?}",
+            record.cursor
+        );
+        if matches!(record.event, WatchEvent::Finished { .. }) {
+            finished_count += 1;
+        }
+        received.push(record.cursor);
     }
     assert_eq!(finished_count, 1);
     assert_eq!(received, store.history_cursors().await);

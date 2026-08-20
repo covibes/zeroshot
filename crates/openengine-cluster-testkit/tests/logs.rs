@@ -29,7 +29,7 @@ async fn logs_capability_is_true_only_when_a_log_store_is_injected() {
     let plain_capabilities = plain
         .initialize(&ConnectionContext::default(), initialize_params())
         .await
-        .unwrap()
+        .assert_value()
         .capabilities;
     assert_logs_capability(&plain_capabilities, false);
 
@@ -41,7 +41,7 @@ async fn logs_capability_is_true_only_when_a_log_store_is_injected() {
     let with_store_capabilities = with_store
         .initialize(&ConnectionContext::default(), initialize_params())
         .await
-        .unwrap()
+        .assert_value()
         .capabilities;
     assert_logs_capability(&with_store_capabilities, true);
 }
@@ -49,14 +49,14 @@ async fn logs_capability_is_true_only_when_a_log_store_is_injected() {
 #[test]
 fn logs_capability_vector_matches_server_capabilities() {
     let disabled = ServerCapabilities {
-        graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
+        graph_profiles: GraphProfileSet::new(vec![]).assert_value(),
         logs: false,
         agent_attach: false,
     };
     assert_logs_capability(&disabled, false);
 
     let enabled = ServerCapabilities {
-        graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
+        graph_profiles: GraphProfileSet::new(vec![]).assert_value(),
         logs: true,
         agent_attach: false,
     };
@@ -67,9 +67,15 @@ fn logs_capability_vector_matches_server_capabilities() {
 async fn generated_logs_goldens_validate_against_the_published_schema() {
     let artifacts = openengine_cluster_testkit::artifacts::generate_artifacts().await;
     let schema = find_schema(&artifacts);
-    let mut event_schema = schema["$defs"]["LogEventNotification"].clone();
-    event_schema["$defs"] = schema["$defs"].clone();
-    let event_validator = jsonschema::validator_for(&event_schema).unwrap();
+    let mut event_schema = schema
+        .assert_key("$defs")
+        .assert_key("LogEventNotification")
+        .clone();
+    event_schema
+        .as_object_mut()
+        .assert_value()
+        .insert("$defs".to_owned(), schema.assert_key("$defs").clone());
+    let event_validator = jsonschema::validator_for(&event_schema).assert_value();
 
     let session = artifacts
         .iter()
@@ -78,14 +84,19 @@ async fn generated_logs_goldens_validate_against_the_published_schema() {
                 .relative_path
                 .ends_with("/goldens/logs-session.json")
         })
-        .unwrap();
-    let notifications: Vec<LogEventNotification> = serde_json::from_slice(&session.bytes).unwrap();
+        .assert_value();
+    let notifications: Vec<LogEventNotification> =
+        serde_json::from_slice(&session.bytes).assert_value();
     assert!(!notifications.is_empty());
     for notification in &notifications {
-        let value = serde_json::to_value(notification).unwrap();
+        let value = serde_json::to_value(notification).assert_value();
         assert!(
             event_validator.is_valid(&value),
             "generated log event notification failed schema validation: {value}"
         );
     }
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;
+
+use openengine_cluster_testkit::assertions::JsonAt;

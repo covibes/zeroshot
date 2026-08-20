@@ -8,7 +8,7 @@ use serde_json::json;
 use super::{VerificationError, finalize_verified_with_invariant_probe};
 
 #[test]
-fn post_validation_invariant_failure_is_internal() {
+fn post_validation_invariant_failure_is_internal() -> Result<(), Box<dyn std::error::Error>> {
     let graph: GraphSpec = serde_json::from_value(json!({
         "profile":"openengine.graph.full/v1",
         "initialInput":{"kind":"null"},
@@ -21,16 +21,16 @@ fn post_validation_invariant_failure_is_internal() {
             ],
             "promotedStatePaths":[]
         }
-    }))
-    .unwrap();
-    let one = PositiveInteger::new(1).unwrap();
+    }))?;
+    let one = PositiveInteger::new(1)?;
+    let duplicate = NodeName::new("duplicate")?;
     let bounds = StructuralBounds {
         termination: TerminationWitness::Acyclic {
-            order: NonEmptyVec::new(vec![NodeName::new("duplicate").unwrap()]).unwrap(),
+            order: NonEmptyVec::new(vec![duplicate.clone()])?,
         },
         max_node_executions: one,
         peak_concurrency: one,
-        attempts_per_node: BTreeMap::from([(NodeName::new("duplicate").unwrap(), one)]),
+        attempts_per_node: BTreeMap::from([(duplicate, one)]),
     };
 
     assert_eq!(
@@ -39,4 +39,5 @@ fn post_validation_invariant_failure_is_internal() {
             "injected post-validation invariant failure".to_owned()
         ))
     );
+    Ok(())
 }

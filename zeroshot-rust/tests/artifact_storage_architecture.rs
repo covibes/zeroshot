@@ -58,15 +58,8 @@ fn artifact_storage_stays_product_private_and_receipts_stay_byte_free() {
     }
 
     let lib = read(&product.join("src/lib.rs"));
-    let native_admission = read(&product.join("src/native_admission.rs"));
-    assert!(
-        native_admission.contains("pub struct NativeBackend"),
-        "NativeBackend must own the direct admission composition"
-    );
     assert!(!lib.contains("ArtifactStore>"));
     assert!(!lib.contains("artifact_store:"));
-    assert!(!native_admission.contains("ArtifactStore>"));
-    assert!(!native_admission.contains("artifact_store:"));
 
     let lifecycle_and_backend = format!(
         "{}\n{}\n{}",

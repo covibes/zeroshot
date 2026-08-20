@@ -18,7 +18,7 @@ async fn subscription_is_registered_before_its_response_send_can_complete() {
     let dispatcher = Dispatcher::new(FixtureBackend::new(store), ConnectionContext::default());
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(1);
-    outbound_tx.send("occupied".to_owned()).await.unwrap();
+    assert!(outbound_tx.send("occupied".to_owned()).await.is_ok());
 
     let subscriptions: SubscriptionMap = Arc::new(Mutex::new(HashMap::new()));
     let state = ConnectionState {

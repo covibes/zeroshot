@@ -1,6 +1,6 @@
 //! Transport-neutral, cursorless, future-only agent-attach event streaming and subscription
 //! cancellation. Unlike [`crate::logs`], establishing a subscription is fallible: the caller's
-//! [`ExecutionRef`](openengine_cluster_protocol::ExecutionRef) must resolve to a live execution.
+//! [`ExecutionRef`] must resolve to a live execution.
 
 pub mod fixtures;
 pub mod ports;

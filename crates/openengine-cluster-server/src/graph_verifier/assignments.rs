@@ -151,7 +151,7 @@ pub(super) fn enumerate_assignments(dimensions: Vec<Vec<Assignment>>) -> Vec<Ass
         let capacity = assignments
             .len()
             .saturating_mul(dimension.len())
-            .min(FULL_V1_MAX_GUARD_ASSIGNMENTS as usize);
+            .min(usize::try_from(FULL_V1_MAX_GUARD_ASSIGNMENTS).unwrap_or(usize::MAX));
         let mut next = Vec::with_capacity(capacity);
         for prefix in &assignments {
             for choice in &dimension {
@@ -180,7 +180,7 @@ pub(super) fn compatible_assignment_count_is_bounded(
                 if !assignments_are_compatible(prefix, choice) {
                     continue;
                 }
-                if next.len() as u64 >= maximum {
+                if u64::try_from(next.len()).unwrap_or(u64::MAX) >= maximum {
                     return false;
                 }
                 let mut assignment = prefix.clone();

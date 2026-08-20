@@ -62,7 +62,7 @@ impl<'a> Analyzer<'a> {
     }
 
     pub(super) fn validate_global_limits(&mut self) {
-        if self.authored.len() as u64 > FULL_V1_MAX_GRAPH_NODES {
+        if u64::try_from(self.authored.len()).unwrap_or(u64::MAX) > FULL_V1_MAX_GRAPH_NODES {
             emit_diagnostic!(
                 self,
                 GraphDiagnosticCode::CeilingExceeded,
@@ -97,7 +97,9 @@ impl<'a> Analyzer<'a> {
             let ranking = self
                 .loops
                 .iter()
-                .map(|name| FieldPath::new(vec![field_name(name.as_str())]).ok())
+                .map(|name| {
+                    field_name(name.as_str()).and_then(|name| FieldPath::new(vec![name]).ok())
+                })
                 .collect::<Option<Vec<_>>>()?;
             TerminationWitness::Bounded {
                 ranking: NonEmptyVec::new(ranking).ok()?,
@@ -257,7 +259,9 @@ impl<'a> Analyzer<'a> {
         depth: u64,
     ) {
         self.loops.push(group.name.clone());
-        self.count_guard(&group.until, with_field(path, "until"));
+        if let Some(until) = &group.until {
+            self.count_guard(until, with_field(path, "until"));
+        }
         self.index_node(
             &group.body,
             named_child_path(path, "body", group.body.name()),

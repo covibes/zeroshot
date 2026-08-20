@@ -1,0 +1,23 @@
+{
+  "event": {
+    "cursor": "v2:9",
+    "execution": "opaque-verifier-b",
+    "record": {
+      "level": "info",
+      "message": "historical output",
+      "target": "agent"
+    },
+    "runId": "run-1",
+    "subscriptionId": "logs-1"
+  },
+  "params": {
+    "execution": "opaque-verifier-b",
+    "fromCursor": "v2:7",
+    "runId": "run-1"
+  },
+  "result": {
+    "atCursor": "v2:7",
+    "runId": "run-1",
+    "subscriptionId": "logs-1"
+  }
+}

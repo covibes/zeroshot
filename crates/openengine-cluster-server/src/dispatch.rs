@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use openengine_cluster_protocol::{
     ApplyParams, DeleteParams, DomainErrorData, GetParams, InitializeParams, PlanParams, RequestId,
-    ResubmitParams, RetryParams, StopParams, UpdateParams, APPLICATION_ERROR, INTERNAL_ERROR_CODE,
-    INVALID_PARAMS, METHOD_NOT_FOUND, PROTOCOL_VERSION, SCHEMA_VIOLATION,
-    UNSUPPORTED_PROTOCOL_VERSION,
+    ResubmitParams, RetryParams, RunForceParams, RunListParams, RunStatusParams, RunSubmitParams,
+    StopParams, UpdateParams, APPLICATION_ERROR, INTERNAL_ERROR_CODE, INVALID_PARAMS,
+    METHOD_NOT_FOUND, PROTOCOL_VERSION, RUN_FORCE_METHOD, RUN_LIST_METHOD, RUN_STATUS_METHOD,
+    RUN_SUBMIT_METHOD, SCHEMA_VIOLATION, UNSUPPORTED_PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -73,12 +74,36 @@ where
             "plan" => self.dispatch_plan(id, params).await,
             "apply" => self.dispatch_apply(id, params).await,
             "get" => self.dispatch_get(id, params).await,
+            _ => {
+                self.route_lifecycle_or_native(descriptor.name, id, params)
+                    .await
+            }
+        }
+    }
+
+    async fn route_lifecycle_or_native(
+        &self,
+        method: &str,
+        id: RequestId,
+        params: Value,
+    ) -> String {
+        match method {
             "update" => self.dispatch_update(id, params).await,
             "stop" => self.dispatch_stop(id, params).await,
             "retry" => self.dispatch_retry(id, params).await,
             "resubmit" => self.dispatch_resubmit(id, params).await,
             "delete" => self.dispatch_delete(id, params).await,
-            name => unreachable!("unrouted unary method in METHOD_REGISTRY: {name}"),
+            _ => self.route_native_v2(method, id, params).await,
+        }
+    }
+
+    async fn route_native_v2(&self, method: &str, id: RequestId, params: Value) -> String {
+        match method {
+            RUN_SUBMIT_METHOD => self.dispatch_run_submit(id, params).await,
+            RUN_LIST_METHOD => self.dispatch_run_list(id, params).await,
+            RUN_STATUS_METHOD => self.dispatch_run_status(id, params).await,
+            RUN_FORCE_METHOD => self.dispatch_run_force(id, params).await,
+            _ => serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None),
         }
     }
 
@@ -270,4 +295,57 @@ where
             Err(error) => serialize_backend_error(id, error),
         }
     }
+
+    async fn dispatch_run_submit(&self, id: RequestId, params: Value) -> String {
+        let params = match serde_json::from_value::<RunSubmitParams>(params) {
+            Ok(params) => params,
+            Err(_) => return native_v2_invalid_params(id),
+        };
+        match self.run_submit(params).await {
+            Ok(result) => serialize_success(id, result),
+            Err(error) => serialize_backend_error(id, error),
+        }
+    }
+
+    async fn dispatch_run_list(&self, id: RequestId, params: Value) -> String {
+        let params = match serde_json::from_value::<RunListParams>(params) {
+            Ok(params) => params,
+            Err(_) => return native_v2_invalid_params(id),
+        };
+        match self.run_list(params).await {
+            Ok(result) => serialize_success(id, result),
+            Err(error) => serialize_backend_error(id, error),
+        }
+    }
+
+    async fn dispatch_run_status(&self, id: RequestId, params: Value) -> String {
+        let params = match serde_json::from_value::<RunStatusParams>(params) {
+            Ok(params) => params,
+            Err(_) => return native_v2_invalid_params(id),
+        };
+        match self.run_status(params).await {
+            Ok(result) => serialize_success(id, result),
+            Err(error) => serialize_backend_error(id, error),
+        }
+    }
+
+    async fn dispatch_run_force(&self, id: RequestId, params: Value) -> String {
+        let params = match serde_json::from_value::<RunForceParams>(params) {
+            Ok(params) => params,
+            Err(_) => return native_v2_invalid_params(id),
+        };
+        match self.run_force(params).await {
+            Ok(result) => serialize_success(id, result),
+            Err(error) => serialize_backend_error(id, error),
+        }
+    }
+}
+
+fn native_v2_invalid_params(id: RequestId) -> String {
+    serialize_error(
+        Some(id),
+        INVALID_PARAMS,
+        "Invalid params",
+        Some(DomainErrorData::new(SCHEMA_VIOLATION)),
+    )
 }

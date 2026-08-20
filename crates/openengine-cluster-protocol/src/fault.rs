@@ -121,8 +121,7 @@ impl BackendFault {
             return Err(FaultProjectionError::InconsistentRetryAction);
         }
         let encoded_len = serde_json::to_vec(&BackendFaultRef::from(self))
-            .expect("BackendFaultRef fields serialize infallibly")
-            .len();
+            .map_or(usize::MAX, |encoded| encoded.len());
         if encoded_len > MAX_FAULT_ENCODED_BYTES {
             return Err(FaultProjectionError::EncodedTooLarge);
         }

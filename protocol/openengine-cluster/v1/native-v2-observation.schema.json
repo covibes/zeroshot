@@ -1,0 +1,1047 @@
+{
+  "$defs": {
+    "ActiveExecution": {
+      "additionalProperties": false,
+      "description": "One currently active graph-leaf execution.\n\n`execution` is the stable selector used by logs and attach. `node` is the graph-visible\nidentity that makes multiple simultaneous verifier executions obvious to a client.",
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "node": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution",
+        "node"
+      ],
+      "type": "object"
+    },
+    "AgentAttachEvent": {
+      "description": "The closed public agent-attach progress algebra. This is the only representable shape:\nreasoning, tools, provider frames, usage, and session identifiers have no variant. `Working`\nand `Settled` are empty struct variants rather than bare units: serde's internally tagged enum\ndeserialization silently ignores unknown fields on a unit variant regardless of\n`deny_unknown_fields`, which would otherwise let an unrepresentable field ride along\nundetected on either of these two variants.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "working",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "maxLength": 16384,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
+            },
+            "type": {
+              "const": "output",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "settled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DomainErrorData": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": true
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "JsonRpcError": {
+      "properties": {
+        "code": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DomainErrorData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "JsonRpcErrorResponse": {
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/JsonRpcError"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "jsonrpc": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "error"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunWatchEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification2": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunLogEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification3": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunAttachEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunStatusParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest2": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunWatchParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest3": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunLogsParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest4": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunAttachParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest5": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RunForceParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcResponse": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse2": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess2"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse3": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess3"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse4": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess4"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse5": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess5"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcSuccess": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RunStatusResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess2": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RunWatchResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess3": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RunLogsResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess4": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RunAttachResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess5": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RunForceResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "LogLevel": {
+      "enum": [
+        "trace",
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "type": "string"
+    },
+    "LogRecord": {
+      "additionalProperties": false,
+      "description": "The closed public log record shape: a level, a bounded target, and a bounded (possibly\nredacted) message. No raw bytes, reasoning, tools, credentials, env, or provider/session IDs\nare representable.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/LogLevel"
+        },
+        "message": {
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "target",
+        "message"
+      ],
+      "type": "object"
+    },
+    "RequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        }
+      ]
+    },
+    "ResolvedSource": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "RunAttachEventNotification": {
+      "additionalProperties": false,
+      "description": "One live read-only attach event. Carrying both identities prevents events from simultaneous\nverifier attachments being confused on a multiplexed transport.",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/AgentAttachEvent"
+        },
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "execution",
+        "event"
+      ],
+      "type": "object"
+    },
+    "RunAttachParams": {
+      "additionalProperties": false,
+      "description": "Establishes a live, read-only view of exactly one execution.\n\nAttach has no cursor and no replay. Historical output is available through [`RunLogsParams`].\nNo client-to-execution input message exists in this contract.",
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "execution"
+      ],
+      "type": "object"
+    },
+    "RunAttachResult": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "execution"
+      ],
+      "type": "object"
+    },
+    "RunForceParams": {
+      "additionalProperties": false,
+      "description": "Requests the MVP's only stop mode: force. Repeated requests are idempotent at the run ledger.",
+      "properties": {
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "type": "object"
+    },
+    "RunForceResult": {
+      "additionalProperties": false,
+      "description": "The durable run status after recording the force request.",
+      "properties": {
+        "atCursor": {
+          "description": "Durable cursor after the force request was recorded.",
+          "type": "string"
+        },
+        "runId": {
+          "description": "Public identity of the run whose force request was recorded.",
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/$defs/RunSize",
+          "description": "Immutable execution size selected for the run."
+        },
+        "source": {
+          "$ref": "#/$defs/ResolvedSource",
+          "description": "Immutable repository snapshot captured when the run was admitted."
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus",
+          "description": "Public phase projected after the force request was recorded."
+        },
+        "title": {
+          "description": "Immutable title captured when the run was admitted.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "title",
+        "source",
+        "size",
+        "atCursor",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RunLogEventNotification": {
+      "additionalProperties": false,
+      "description": "One durable, reconnectable safe log record. Run-wide system records have no execution;\nexecution output carries the stable opaque selector used by status and attach.",
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record": {
+          "$ref": "#/$defs/LogRecord"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "cursor",
+        "record"
+      ],
+      "type": "object"
+    },
+    "RunLogsParams": {
+      "additionalProperties": false,
+      "description": "Establishes durable run log replay followed by live delivery.\n\nAn optional execution filter selects one active or settled execution using the exact opaque\nreference advertised by status. `fromCursor` is exclusive, with the same reconnect semantics\nas [`RunWatchParams`]. Omitting both fields after `runId` replays the run's complete retained\nsafe log history.",
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fromCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "type": "object"
+    },
+    "RunLogsResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "atCursor"
+      ],
+      "type": "object"
+    },
+    "RunSize": {
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ],
+      "type": "string"
+    },
+    "RunStatus": {
+      "description": "Public run state. The closed phase variants make impossible combinations unrepresentable:\nadmitted runs have no execution, stopping means force was requested, and finished runs have\nexactly one terminal result and no active execution. Running/stopping report every active\nexecution rather than a single \"current worker\" slot.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "phase": {
+              "const": "admitted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activeExecutions": {
+              "items": {
+                "$ref": "#/$defs/ActiveExecution"
+              },
+              "type": "array"
+            },
+            "phase": {
+              "const": "running",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase",
+            "activeExecutions"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "activeExecutions": {
+              "items": {
+                "$ref": "#/$defs/ActiveExecution"
+              },
+              "type": "array"
+            },
+            "phase": {
+              "const": "stopping",
+              "type": "string"
+            }
+          },
+          "required": [
+            "phase",
+            "activeExecutions"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "phase": {
+              "const": "finished",
+              "type": "string"
+            },
+            "terminalResult": {
+              "$ref": "#/$defs/TerminalResult"
+            }
+          },
+          "required": [
+            "phase",
+            "terminalResult"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunStatusParams": {
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "type": "object"
+    },
+    "RunStatusResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/ResolvedSource"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId",
+        "title",
+        "source",
+        "size",
+        "atCursor",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RunWatchEventNotification": {
+      "additionalProperties": false,
+      "description": "One durable public status projection. `cursor` is stable run history, not a connection-local\nsequence; clients resume strictly after it.",
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/ResolvedSource"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "subscriptionId": {
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "title",
+        "source",
+        "size",
+        "cursor",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RunWatchParams": {
+      "additionalProperties": false,
+      "description": "Establishes a durable run watch.\n\n`fromCursor` is exclusive. Reconnecting with the last delivered cursor therefore returns each\nlater watch record once, with no replayed boundary record and no skipped later record.",
+      "properties": {
+        "fromCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "type": "object"
+    },
+    "RunWatchResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "atCursor"
+      ],
+      "type": "object"
+    },
+    "TerminalResult": {
+      "description": "Authoritative terminal value for backends that can durably reconstruct a completed graph.\n\nThis is additive to [`GetResult`]: backends that do not yet expose terminal values leave the\noptional field absent, including when their status is already `finished`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "output": true,
+            "status": {
+              "const": "succeeded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+              "type": "string"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "attach_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification3"
+    },
+    "attach_request": {
+      "$ref": "#/$defs/JsonRpcRequest4"
+    },
+    "attach_response": {
+      "$ref": "#/$defs/JsonRpcResponse4"
+    },
+    "force_request": {
+      "$ref": "#/$defs/JsonRpcRequest5"
+    },
+    "force_response": {
+      "$ref": "#/$defs/JsonRpcResponse5"
+    },
+    "log_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification2"
+    },
+    "logs_request": {
+      "$ref": "#/$defs/JsonRpcRequest3"
+    },
+    "logs_response": {
+      "$ref": "#/$defs/JsonRpcResponse3"
+    },
+    "status_request": {
+      "$ref": "#/$defs/JsonRpcRequest"
+    },
+    "status_response": {
+      "$ref": "#/$defs/JsonRpcResponse"
+    },
+    "watch_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification"
+    },
+    "watch_request": {
+      "$ref": "#/$defs/JsonRpcRequest2"
+    },
+    "watch_response": {
+      "$ref": "#/$defs/JsonRpcResponse2"
+    }
+  },
+  "required": [
+    "status_request",
+    "status_response",
+    "watch_request",
+    "watch_response",
+    "watch_event_notification",
+    "logs_request",
+    "logs_response",
+    "log_event_notification",
+    "attach_request",
+    "attach_response",
+    "attach_event_notification",
+    "force_request",
+    "force_response"
+  ],
+  "title": "NativeV2ObservationSchema",
+  "type": "object"
+}

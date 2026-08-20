@@ -6,13 +6,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ClusterStatus, GetParams, GetResult, InitializeParams, InitializeResult, LogRecord, LogsParams,
-    LogsResult, ServerCapabilities, SubscriptionId,
+    BoundedLogMessage, BoundedLogTarget, ClusterStatus, GetParams, GetResult, InitializeParams,
+    InitializeResult, LogLevel, LogRecord, LogsParams, LogsResult, ServerCapabilities,
+    SubscriptionId,
 };
 use tokio::sync::{mpsc, Mutex};
 
 use super::{subscribe_and_stream_logs, LogEventStream, LogStore, LogSubscription, LogsHandle};
 use crate::{BackendError, ClusterBackend, ConnectionContext};
+
+/// Builds a deterministic log record for transport and store fixtures.
+#[must_use]
+pub fn fixture_log_record(level: LogLevel, message: &str) -> Option<LogRecord> {
+    Some(LogRecord {
+        level,
+        target: BoundedLogTarget::new("worker-dispatch").ok()?,
+        message: BoundedLogMessage::new(message).ok()?,
+    })
+}
 
 #[derive(Default)]
 struct LiveSlots {

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -6,7 +7,7 @@ use tokio::time::Instant;
 
 use crate::execution::driver::{DriverCancellation, WorkspaceCapability};
 
-use super::platform::{capture_process_tree, register_process_tree_for};
+use super::platform::{ProcessContainment, capture_process_tree, register_process_tree_for};
 use super::session_runtime::{
     SupervisorRequest, TailBuffer, WriterCommand, spawn_stderr_pump, spawn_stdout_pump,
     spawn_writer, supervise_session,
@@ -24,13 +25,29 @@ pub const MAX_PROCESS_FRAME_BYTES: usize =
 
 pub const PROCESS_STDIN_CAPACITY: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProcessSessionCommand {
     pub program: String,
     pub argv: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub workspace: WorkspaceCapability,
     pub deadline: Instant,
+}
+
+impl fmt::Debug for ProcessSessionCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessSessionCommand")
+            .field("program", &self.program)
+            .field("argv", &self.argv)
+            .field(
+                "environment_names",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("workspace", &self.workspace)
+            .field("deadline", &self.deadline)
+            .finish()
+    }
 }
 
 impl ProcessSessionCommand {
@@ -201,6 +218,46 @@ impl Drop for ProcessSession {
     }
 }
 
+async fn spawn_contained_process(
+    command: &ProcessSessionCommand,
+    containment: ProcessContainment,
+) -> Result<SpawnRecovery, ProcessRunnerError> {
+    let process_tree_registration = register_process_tree_for(containment).map_err(|_| {
+        ProcessRunnerError::Launch("process containment registration failed".to_owned())
+    })?;
+    let mut recovery = SpawnRecovery::registered();
+    let mut child_command = build_child_command(
+        ChildCommandSpec {
+            program: &command.program,
+            argv: &command.argv,
+            environment: &command.environment,
+            workspace: &command.workspace,
+        },
+        containment,
+    );
+    child_command.kill_on_drop(true);
+    let child = child_command.spawn().map_err(|_| {
+        ProcessRunnerError::Launch("operating system rejected process launch".to_owned())
+    })?;
+    recovery.capture(child);
+    let Some(recovery_child) = recovery.child_mut() else {
+        return Err(ProcessRunnerError::Launch(
+            "launched process was not retained".to_owned(),
+        ));
+    };
+    let process_tree = match capture_process_tree(process_tree_registration, recovery_child) {
+        Ok(process_tree) => process_tree,
+        Err(_) => {
+            recovery.recover().await;
+            return Err(ProcessRunnerError::Io(
+                "process containment capture failed".to_owned(),
+            ));
+        }
+    };
+    recovery.capture_process_tree(process_tree);
+    Ok(recovery)
+}
+
 impl LocalProcessRunner {
     pub async fn open(
         &self,
@@ -209,37 +266,13 @@ impl LocalProcessRunner {
     ) -> Result<ProcessSession, ProcessRunnerError> {
         command.validate()?;
 
-        let process_tree_registration =
-            register_process_tree_for(self.containment).map_err(|_| {
-                ProcessRunnerError::Launch("process containment registration failed".to_owned())
-            })?;
-        let mut recovery = SpawnRecovery::registered();
-        let mut child_command = build_child_command(
-            ChildCommandSpec {
-                program: &command.program,
-                argv: &command.argv,
-                environment: &command.environment,
-                workspace: &command.workspace,
-            },
-            self.containment,
-        );
-        child_command.kill_on_drop(true);
-        let child = child_command.spawn().map_err(|_| {
-            ProcessRunnerError::Launch("operating system rejected process launch".to_owned())
-        })?;
-        recovery.capture(child);
-        let process_tree =
-            match capture_process_tree(process_tree_registration, recovery.child_mut()) {
-                Ok(process_tree) => process_tree,
-                Err(_) => {
-                    recovery.recover().await;
-                    return Err(ProcessRunnerError::Io(
-                        "process containment capture failed".to_owned(),
-                    ));
-                }
-            };
-        recovery.capture_process_tree(process_tree);
-        let child = recovery.child_mut();
+        let mut recovery = spawn_contained_process(&command, self.containment).await?;
+        let Some(child) = recovery.child_mut() else {
+            recovery.recover().await;
+            return Err(ProcessRunnerError::Io(
+                "contained process was not retained".to_owned(),
+            ));
+        };
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -258,7 +291,9 @@ impl LocalProcessRunner {
         let stderr_task =
             spawn_stderr_pump(stderr, Arc::clone(&stderr_tail), io_failure_tx.clone());
         let writer_task = spawn_writer(stdin, stdin_rx, writer_stop_rx, io_failure_tx);
-        let (child, process_tree) = recovery.disarm();
+        let (child, process_tree) = recovery.disarm().ok_or_else(|| {
+            ProcessRunnerError::Io("process recovery state was incomplete".to_owned())
+        })?;
         tokio::spawn(supervise_session(SupervisorRequest {
             child,
             process_tree,

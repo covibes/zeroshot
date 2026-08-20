@@ -1,3 +1,13 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/schema.rs"]
+mod schema;
+
+#[path = "support/json_read.rs"]
+mod json_read;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{DeleteParams, Generation, IdempotencyKey, RunId};
 use serde_json::json;
 
@@ -8,9 +18,9 @@ fn delete_wire_is_closed_and_carries_no_provider_or_config_fields() {
         "ifRunId":"run-1",
         "idempotencyKey":"delete-1"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(
-        serde_json::to_value(delete).unwrap(),
+        serde_json::to_value(delete).assert_value(),
         json!({
             "ifGeneration":7,
             "ifRunId":"run-1",
@@ -44,10 +54,10 @@ fn delete_if_run_id_is_omitted_when_absent_and_round_trips_when_present() {
         "ifGeneration":0,
         "idempotencyKey":"no-run-id"
     }))
-    .unwrap();
+    .assert_value();
     assert!(without_run_id.if_run_id.is_none());
     assert_eq!(
-        serde_json::to_value(without_run_id).unwrap(),
+        serde_json::to_value(without_run_id).assert_value(),
         json!({
             "ifGeneration":0,
             "idempotencyKey":"no-run-id"
@@ -59,7 +69,7 @@ fn delete_if_run_id_is_omitted_when_absent_and_round_trips_when_present() {
         "idempotencyKey":"null-run-id",
         "ifRunId":null
     }))
-    .unwrap();
+    .assert_value();
     assert!(with_null_run_id.if_run_id.is_none());
 
     let with_run_id: DeleteParams = serde_json::from_value(json!({
@@ -67,9 +77,9 @@ fn delete_if_run_id_is_omitted_when_absent_and_round_trips_when_present() {
         "idempotencyKey":"with-run-id",
         "ifRunId":"run-1"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(
-        serde_json::to_value(with_run_id).unwrap(),
+        serde_json::to_value(with_run_id).assert_value(),
         json!({
             "ifGeneration":1,
             "idempotencyKey":"with-run-id",
@@ -81,19 +91,17 @@ fn delete_if_run_id_is_omitted_when_absent_and_round_trips_when_present() {
 #[test]
 fn delete_constructors_remain_typed() {
     let delete = DeleteParams {
-        if_generation: Generation::new(1).unwrap(),
+        if_generation: Generation::new(1).assert_value(),
         if_run_id: Some(RunId::new("run-1")),
-        idempotency_key: IdempotencyKey::new("delete").unwrap(),
+        idempotency_key: IdempotencyKey::new("delete").assert_value(),
     };
-    assert_eq!(delete.if_generation, Generation::new(1).unwrap());
+    assert_eq!(delete.if_generation, Generation::new(1).assert_value());
     assert_eq!(delete.if_run_id, Some(RunId::new("run-1")));
 }
 
 #[test]
 fn delete_schema_field_names_are_closed() {
-    let params_schema = serde_json::to_value(schemars::schema_for!(DeleteParams)).unwrap();
-    let properties = params_schema["properties"].as_object().unwrap();
-    for forbidden in [
+    const PRIVATE_FIELDS: &[&str] = &[
         "turnId",
         "executionId",
         "session",
@@ -101,33 +109,14 @@ fn delete_schema_field_names_are_closed() {
         "provider",
         "config",
         "source",
-        "replacementInput",
-    ] {
-        assert!(
-            !properties.contains_key(forbidden),
-            "DeleteParams schema unexpectedly exposes {forbidden}"
-        );
-    }
-
-    let result_schema = serde_json::to_value(schemars::schema_for!(
-        openengine_cluster_protocol::DeleteResult
-    ))
-    .unwrap();
-    let properties = result_schema["properties"].as_object().unwrap();
-    for forbidden in [
-        "turnId",
-        "executionId",
-        "session",
-        "workspacePath",
-        "provider",
-        "config",
-        "source",
-    ] {
-        assert!(
-            !properties.contains_key(forbidden),
-            "DeleteResult schema unexpectedly exposes {forbidden}"
-        );
-    }
+    ];
+    let mut params_fields = PRIVATE_FIELDS.to_vec();
+    params_fields.push("replacementInput");
+    schema::assert_schema_omits::<DeleteParams>("DeleteParams", &params_fields);
+    schema::assert_schema_omits::<openengine_cluster_protocol::DeleteResult>(
+        "DeleteResult",
+        PRIVATE_FIELDS,
+    );
 }
 
 #[test]
@@ -138,8 +127,8 @@ fn delete_result_round_trips() {
         "deduped":false
     });
     let result: openengine_cluster_protocol::DeleteResult =
-        serde_json::from_value(finalized.clone()).unwrap();
-    assert_eq!(serde_json::to_value(result).unwrap(), finalized);
+        serde_json::from_value(finalized.clone()).assert_value();
+    assert_eq!(serde_json::to_value(result).assert_value(), finalized);
 
     let pending = json!({
         "deleted":false,
@@ -150,6 +139,6 @@ fn delete_result_round_trips() {
         "deduped":false
     });
     let result: openengine_cluster_protocol::DeleteResult =
-        serde_json::from_value(pending.clone()).unwrap();
-    assert_eq!(serde_json::to_value(result).unwrap(), pending);
+        serde_json::from_value(pending.clone()).assert_value();
+    assert_eq!(serde_json::to_value(result).assert_value(), pending);
 }

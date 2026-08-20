@@ -8,6 +8,8 @@ pub fn find_schema(artifacts: &[Artifact]) -> serde_json::Value {
     let schema = artifacts
         .iter()
         .find(|artifact| artifact.relative_path.ends_with("/schema.json"))
-        .unwrap();
-    serde_json::from_slice(&schema.bytes).unwrap()
+        .assert_value();
+    serde_json::from_slice(&schema.bytes).assert_value()
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

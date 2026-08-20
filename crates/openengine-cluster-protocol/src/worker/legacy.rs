@@ -7,7 +7,10 @@ use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use super::{RegistryProfileRef, WorkerContractError};
-use crate::{ArtifactRef, EnumLabel, FieldName, NonEmptyEnumSet, PayloadType, RecordField};
+use crate::{
+    ArtifactRef, ContractValueError, EnumLabel, FieldName, NonEmptyEnumSet, PayloadType,
+    RecordField,
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -292,16 +295,19 @@ impl JsonSchema for LegacyShipResult {
 }
 
 /// Canonical graph-level input contract reserved for `legacy.zeroshot.ship@1`.
-#[must_use]
-pub fn legacy_ship_request_payload_type() -> PayloadType {
+pub fn legacy_ship_request_payload_type() -> Result<PayloadType, ContractValueError> {
     record([
-        ("source", enumeration(["issue", "prompt", "artifact"]), true),
+        (
+            "source",
+            enumeration(["issue", "prompt", "artifact"])?,
+            true,
+        ),
         ("issue", PayloadType::String, false),
         ("prompt", PayloadType::String, false),
         (
             "artifacts",
             PayloadType::Array {
-                items: Box::new(artifact_ref_payload_type()),
+                items: Box::new(artifact_ref_payload_type()?),
             },
             true,
         ),
@@ -311,22 +317,21 @@ pub fn legacy_ship_request_payload_type() -> PayloadType {
         ("provider", PayloadType::String, true),
         (
             "modelLevel",
-            enumeration(["level1", "level2", "level3"]),
+            enumeration(["level1", "level2", "level3"])?,
             true,
         ),
     ])
 }
 
 /// Canonical graph-level terminal result contract reserved for `legacy.zeroshot.ship@1`.
-#[must_use]
-pub fn legacy_ship_result_payload_type() -> PayloadType {
+pub fn legacy_ship_result_payload_type() -> Result<PayloadType, ContractValueError> {
     record([
         ("summary", PayloadType::String, true),
-        ("status", enumeration(["succeeded", "failed"]), true),
+        ("status", enumeration(["succeeded", "failed"])?, true),
         (
             "artifacts",
             PayloadType::Array {
-                items: Box::new(artifact_ref_payload_type()),
+                items: Box::new(artifact_ref_payload_type()?),
             },
             true,
         ),
@@ -337,7 +342,7 @@ pub fn legacy_ship_result_payload_type() -> PayloadType {
     ])
 }
 
-fn artifact_ref_payload_type() -> PayloadType {
+fn artifact_ref_payload_type() -> Result<PayloadType, ContractValueError> {
     record([
         ("artifactId", PayloadType::String, true),
         ("sha256", PayloadType::String, true),
@@ -349,7 +354,7 @@ fn artifact_ref_payload_type() -> PayloadType {
             record([
                 ("node", PayloadType::String, true),
                 ("worker", PayloadType::String, true),
-            ]),
+            ])?,
             true,
         ),
         (
@@ -358,42 +363,39 @@ fn artifact_ref_payload_type() -> PayloadType {
                 ("generation", PayloadType::Integer, true),
                 ("runId", PayloadType::String, true),
                 ("attempt", PayloadType::Integer, true),
-            ]),
+            ])?,
             true,
         ),
         (
             "redaction",
-            enumeration(["public", "internal", "confidential", "restricted"]),
+            enumeration(["public", "internal", "confidential", "restricted"])?,
             true,
         ),
     ])
 }
 
-fn record<const N: usize>(fields: [(&str, PayloadType, bool); N]) -> PayloadType {
-    PayloadType::Record {
-        fields: fields
-            .into_iter()
-            .map(|(name, value_type, required)| {
-                (
-                    FieldName::new(name).expect("legacy contract field names are valid"),
-                    RecordField {
-                        value_type,
-                        required,
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>(),
+fn record<const N: usize>(
+    fields: [(&str, PayloadType, bool); N],
+) -> Result<PayloadType, ContractValueError> {
+    let mut result = BTreeMap::new();
+    for (name, value_type, required) in fields {
+        result.insert(
+            FieldName::new(name)?,
+            RecordField {
+                value_type,
+                required,
+            },
+        );
     }
+    Ok(PayloadType::Record { fields: result })
 }
 
-fn enumeration<const N: usize>(values: [&str; N]) -> PayloadType {
-    PayloadType::Enum {
-        values: NonEmptyEnumSet::new(
-            values
-                .into_iter()
-                .map(|value| EnumLabel::new(value).expect("legacy enum labels are valid"))
-                .collect(),
-        )
-        .expect("legacy enum sets are non-empty"),
-    }
+fn enumeration<const N: usize>(values: [&str; N]) -> Result<PayloadType, ContractValueError> {
+    let values = values
+        .into_iter()
+        .map(EnumLabel::new)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PayloadType::Enum {
+        values: NonEmptyEnumSet::new(values)?,
+    })
 }

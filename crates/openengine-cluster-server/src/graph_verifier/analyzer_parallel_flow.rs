@@ -5,6 +5,12 @@ struct ParallelMergeContext<'a> {
     path: &'a [DiagnosticPathSegment],
 }
 
+struct FirstParallelMergeContext<'a> {
+    incoming: &'a Flow,
+    path: &'a [DiagnosticPathSegment],
+    when: &'a Guard,
+}
+
 impl<'a> Analyzer<'a> {
     pub(super) fn validate_par(
         &mut self,
@@ -78,12 +84,20 @@ impl<'a> Analyzer<'a> {
         branches: &[Effects],
         context: ParallelMergeContext<'_>,
     ) -> Effects {
-        if matches!(group.join, Join::First { .. }) {
-            return self.merge_first_parallel(group, branches, context);
+        if let Join::First { when } = &group.join {
+            return self.merge_first_parallel(
+                group,
+                branches,
+                FirstParallelMergeContext {
+                    incoming: context.incoming,
+                    path: context.path,
+                    when,
+                },
+            );
         }
         let join = &group.join;
         let required = parallel_required_completions(join, branches.len());
-        if required > branches.len() as u64 {
+        if required > u64::try_from(branches.len()).unwrap_or(u64::MAX) {
             // Shape validation owns the invalid quorum diagnostic. Assume continuation so
             // terminal analysis does not cascade it into a misleading reachability error.
             return Effects {
@@ -130,7 +144,8 @@ impl<'a> Analyzer<'a> {
                         branch.completion.evaluate(assignment).then_some(index)
                     })
                     .collect::<BTreeSet<_>>();
-                (completing.len() as u64 >= required).then_some(completing)
+                (u64::try_from(completing.len()).unwrap_or(u64::MAX) >= required)
+                    .then_some(completing)
             })
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -144,18 +159,15 @@ impl<'a> Analyzer<'a> {
         &mut self,
         group: &ParNode,
         branches: &[Effects],
-        context: ParallelMergeContext<'_>,
+        context: FirstParallelMergeContext<'_>,
     ) -> Effects {
-        let Join::First { when } = &group.join else {
-            unreachable!("merge_first_parallel requires a first join")
-        };
         let satisfiers = branches
             .iter()
             .map(|branch| {
-                if self.first_guard_available_on_branch(when, branch, context.incoming) {
+                if self.first_guard_available_on_branch(context.when, branch, context.incoming) {
                     CompletionPredicate::all([
                         branch.completion.clone(),
-                        CompletionPredicate::Guard(when.clone()),
+                        CompletionPredicate::Guard(context.when.clone()),
                     ])
                 } else {
                     CompletionPredicate::Never

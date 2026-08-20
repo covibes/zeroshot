@@ -1,244 +1,153 @@
+//! Shipped native-v2 CLI entrypoint.
+
+mod native_v2_target;
+
+use std::io::Write;
 use std::path::PathBuf;
 
-use openengine_cluster_server::identity::{
-    BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
-};
-use openengine_cluster_server::stdio::serve_stdio;
 use thiserror::Error;
-use tokio::sync::watch;
+#[cfg(unix)]
+use zeroshot_engine::native_v2_cli::local::{LOCAL_CONTROLLER_MODE, LocalCliBackend};
+use zeroshot_engine::native_v2_cli::oecp::NamedTargetCliBackend;
+use zeroshot_engine::native_v2_cli::{
+    execute_native_v2_cli, parse_native_v2_args, try_execute_native_v2_static, CtrlCDetachSignal,
+    NativeV2CliCommand, NativeV2CliError,
+};
+#[cfg(unix)]
+use zeroshot_engine::native_v2_portable_controller::{PortableControllerError, run_controller_process};
 
-use zeroshot_engine::cluster_ledger::{LedgerError, OwnerId, ResourceId};
-use zeroshot_engine::{
-    binding_for_route, run_deterministic_worker, run_greeting_validator, NativeAdmissionOpenError,
-    ProductionNativeBackendFactory, NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS,
-    NATIVE_VALIDATOR_MODE, NATIVE_WORKER_MODE,
+use native_v2_target::{
+    default_target_registry_path, parse_target_serve, serve_direct_target, FileTargetRegistry,
+    NativeV2TargetConnector, TargetConnectorError, TargetHttpControlAuthority,
+    TargetOecpWebSocketDialer, TargetServeError,
 };
 
 #[derive(Debug, Error)]
 enum ProcessError {
-    #[error("invalid arguments for the native stdio entrypoint")]
-    Usage,
-    #[error("state directory must be an absolute path")]
-    RelativeStateDirectory,
-    #[error("workspace must be a canonical absolute directory")]
-    InvalidWorkspace,
-    #[error("process identity randomness is unavailable")]
-    Randomness,
     #[error(transparent)]
-    Admission(#[from] NativeAdmissionOpenError),
-    #[error("native cluster transport failed: {0}")]
-    Transport(#[from] std::io::Error),
-    #[error("native cluster lease failed: {0}")]
-    Lease(#[from] LedgerError),
-    #[error("native cluster lease renewal task failed")]
-    RenewalTask,
-    #[error("native validation failed")]
-    Validation,
-}
-
-struct ServeArgs {
-    state_dir: PathBuf,
-    cluster_id: ResourceId,
-    workspace: PathBuf,
-}
-
-enum ProcessMode {
-    Serve(ServeArgs),
-    DeterministicWorker { effect_id: String },
-    GreetingValidator,
-}
-
-fn parse_args() -> Result<ProcessMode, ProcessError> {
-    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if let Some(effect_id) = parse_worker_args(&args)? {
-        return Ok(ProcessMode::DeterministicWorker { effect_id });
-    }
-    if args.as_slice() == [NATIVE_VALIDATOR_MODE] {
-        return Ok(ProcessMode::GreetingValidator);
-    }
-    parse_serve_args(&args).map(ProcessMode::Serve)
-}
-
-fn parse_worker_args(args: &[std::ffi::OsString]) -> Result<Option<String>, ProcessError> {
-    let [command, effect_flag, effect_id] = args else {
-        return Ok(None);
-    };
-    if command != NATIVE_WORKER_MODE || effect_flag != "--effect-id" {
-        return Ok(None);
-    }
-    let effect_id = effect_id.to_str().ok_or(ProcessError::Usage)?;
-    let valid = effect_id.len() == 64
-        && effect_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if !valid {
-        return Err(ProcessError::Usage);
-    }
-    Ok(Some(effect_id.to_owned()))
-}
-
-fn parse_serve_args(args: &[std::ffi::OsString]) -> Result<ServeArgs, ProcessError> {
-    let (state_dir, cluster_id, workspace) = serve_values(args)?;
-    let state_dir = PathBuf::from(state_dir);
-    if !state_dir.is_absolute() {
-        return Err(ProcessError::RelativeStateDirectory);
-    }
-    let cluster_id = cluster_id.to_str().ok_or(ProcessError::Usage)?;
-    let cluster_id = ResourceId::new(cluster_id).map_err(|_| ProcessError::Usage)?;
-    let workspace = canonical_workspace(workspace)?;
-    Ok(ServeArgs {
-        state_dir,
-        cluster_id,
-        workspace,
-    })
-}
-
-fn serve_values(
-    args: &[std::ffi::OsString],
-) -> Result<(&std::ffi::OsStr, &std::ffi::OsStr, &std::ffi::OsStr), ProcessError> {
-    let [
-        command,
-        state_flag,
-        state_dir,
-        cluster_flag,
-        cluster_id,
-        workspace_flag,
-        workspace,
-    ] = args
-    else {
-        return Err(ProcessError::Usage);
-    };
-    let actual = (
-        command.as_os_str(),
-        state_flag.as_os_str(),
-        cluster_flag.as_os_str(),
-        workspace_flag.as_os_str(),
-    );
-    let expected = (
-        std::ffi::OsStr::new("serve-stdio"),
-        std::ffi::OsStr::new("--state-dir"),
-        std::ffi::OsStr::new("--cluster-id"),
-        std::ffi::OsStr::new("--workspace"),
-    );
-    if actual != expected {
-        return Err(ProcessError::Usage);
-    }
-    Ok((state_dir, cluster_id, workspace))
-}
-
-fn canonical_workspace(workspace: &std::ffi::OsStr) -> Result<PathBuf, ProcessError> {
-    let supplied_workspace = PathBuf::from(workspace);
-    if !supplied_workspace.is_absolute() {
-        return Err(ProcessError::InvalidWorkspace);
-    }
-    let workspace =
-        std::fs::canonicalize(&supplied_workspace).map_err(|_| ProcessError::InvalidWorkspace)?;
-    if workspace != supplied_workspace {
-        return Err(ProcessError::InvalidWorkspace);
-    }
-    Ok(workspace)
-}
-
-fn process_owner() -> Result<OwnerId, ProcessError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| ProcessError::Randomness)?;
-    let mut suffix = String::with_capacity(random.len() * 2);
-    for byte in random {
-        use std::fmt::Write as _;
-        write!(&mut suffix, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    OwnerId::new(format!("process-{}-{suffix}", std::process::id()))
-        .map_err(|_| ProcessError::Randomness)
+    Target(#[from] TargetConnectorError),
+    #[error(transparent)]
+    Cli(#[from] NativeV2CliError),
+    #[cfg(unix)]
+    #[error(transparent)]
+    Portable(#[from] PortableControllerError),
+    #[error(transparent)]
+    Serve(#[from] TargetServeError),
+    #[error("could not write CLI output: {0}")]
+    Output(#[from] std::io::Error),
 }
 
 async fn run() -> Result<(), ProcessError> {
-    match parse_args()? {
-        ProcessMode::Serve(args) => serve(args).await,
-        ProcessMode::DeterministicWorker { effect_id } => {
-            run_deterministic_worker(&effect_id)?;
-            Ok(())
-        }
-        ProcessMode::GreetingValidator => {
-            run_greeting_validator().map_err(|_| ProcessError::Validation)
-        }
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    #[cfg(unix)]
+    if run_private_controller(&arguments).await? {
+        return Ok(());
+    }
+    if let Some(config) = parse_target_serve(&arguments)? {
+        serve_direct_target(config).await?;
+        return Ok(());
+    }
+    run_public_command(arguments).await
+}
+
+#[cfg(unix)]
+async fn run_private_controller(arguments: &[std::ffi::OsString]) -> Result<bool, ProcessError> {
+    let Some(bootstrap) = private_controller_bootstrap(arguments)? else {
+        return Ok(false);
+    };
+    run_controller_process(&bootstrap).await?;
+    Ok(true)
+}
+
+async fn run_public_command(arguments: Vec<std::ffi::OsString>) -> Result<(), ProcessError> {
+    let command = parse_native_v2_args(arguments)?;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    if try_execute_native_v2_static(&command, &mut output)?.is_some() {
+        return Ok(());
+    }
+
+    let mut detach = CtrlCDetachSignal;
+    if is_local_command(&command) {
+        return run_local_command(command, &mut detach, &mut output).await;
+    }
+    run_named_target_command(command, &mut detach, &mut output).await
+}
+
+async fn run_named_target_command(
+    command: NativeV2CliCommand,
+    detach: &mut CtrlCDetachSignal,
+    output: &mut impl Write,
+) -> Result<(), ProcessError> {
+    let registry = FileTargetRegistry::new(default_target_registry_path()?);
+    let connector = NativeV2TargetConnector::new(
+        registry,
+        TargetHttpControlAuthority::production().map_err(TargetConnectorError::Authority)?,
+        TargetOecpWebSocketDialer,
+    );
+    let backend = NamedTargetCliBackend::new(connector);
+    execute_native_v2_cli(command, &backend, detach, output).await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn run_local_command(
+    command: NativeV2CliCommand,
+    detach: &mut CtrlCDetachSignal,
+    output: &mut impl Write,
+) -> Result<(), ProcessError> {
+    let backend = LocalCliBackend::production()?;
+    execute_native_v2_cli(command, &backend, detach, output).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn run_local_command(
+    _command: NativeV2CliCommand,
+    _detach: &mut CtrlCDetachSignal,
+    _output: &mut impl Write,
+) -> Result<(), ProcessError> {
+    Err(
+        NativeV2CliError::Local("local controllers are unavailable on this platform".to_owned())
+            .into(),
+    )
+}
+
+fn is_local_command(command: &NativeV2CliCommand) -> bool {
+    match command {
+        NativeV2CliCommand::Run(run) => run.target.is_none(),
+        NativeV2CliCommand::List { target } => target.is_none(),
+        NativeV2CliCommand::Status(run)
+        | NativeV2CliCommand::Watch(run)
+        | NativeV2CliCommand::Logs(run)
+        | NativeV2CliCommand::ForceStop(run) => run.target.is_none(),
+        NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
+        NativeV2CliCommand::Help
+        | NativeV2CliCommand::Version
+        | NativeV2CliCommand::TemplateList
+        | NativeV2CliCommand::TemplateShow { .. }
+        | NativeV2CliCommand::TargetAdd(_)
+        | NativeV2CliCommand::TargetLogin { .. }
+        | NativeV2CliCommand::TargetSetup(_) => false,
     }
 }
 
-async fn serve(args: ServeArgs) -> Result<(), ProcessError> {
-    let factory = ProductionNativeBackendFactory::open(
-        &args.state_dir,
-        args.cluster_id,
-        process_owner()?,
-        &args.workspace,
-    )
-    .await?;
-
-    let renewal_factory = factory.clone();
-    let renewal_ledger = factory.ledger().clone();
-    let (stop_renewal, mut renewal_stop) = watch::channel(false);
-    let mut renewal_task = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                changed = renewal_stop.changed() => {
-                    if changed.is_err() || *renewal_stop.borrow() {
-                        return Ok(());
-                    }
-                }
-                () = tokio::time::sleep(std::time::Duration::from_millis(
-                    NATIVE_FENCE_RENEW_INTERVAL_MS,
-                )) => {
-                    if let Err(error) = renewal_ledger.renew_fence(NATIVE_FENCE_TTL_MS).await {
-                        renewal_factory.mark_lease_lost();
-                        return Err(error);
-                    }
-                }
-            }
-        }
-    });
-
-    if let Err(error) = factory.recover_pending().await {
-        let _ = stop_renewal.send(true);
-        let _ = renewal_task.await;
-        let _ = factory.ledger().release_fence().await;
-        return Err(error.into());
+#[cfg(unix)]
+fn private_controller_bootstrap(
+    arguments: &[std::ffi::OsString],
+) -> Result<Option<PathBuf>, NativeV2CliError> {
+    if arguments
+        .first()
+        .is_none_or(|value| value != LOCAL_CONTROLLER_MODE)
+    {
+        return Ok(None);
     }
-
-    let identity = ConnectionIdentity::new(ConnectionIdentityConfig {
-        principal: PrincipalId::new("local-native"),
-        tenant: TenantId::new("local-native"),
-        issued_at_ms: None,
-        expires_at_ms: u64::MAX,
-        binding_attributes: BindingAttributes::default(),
-    });
-    let binding = binding_for_route(&factory, identity);
-    let server = serve_stdio(binding);
-    tokio::pin!(server);
-    tokio::select! {
-        server_result = &mut server => {
-            let _ = stop_renewal.send(true);
-            match renewal_task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    factory.mark_lease_lost();
-                    return Err(error.into());
-                }
-                Err(_) => {
-                    factory.mark_lease_lost();
-                    return Err(ProcessError::RenewalTask);
-                }
-            }
-            factory.ledger().release_fence().await?;
-            server_result?;
-            Ok(())
-        }
-        renewal_result = &mut renewal_task => {
-            factory.mark_lease_lost();
-            match renewal_result {
-                Ok(Err(error)) => Err(error.into()),
-                Ok(Ok(())) | Err(_) => Err(ProcessError::RenewalTask),
-            }
-        }
+    if arguments.len() != 3 || arguments.get(1).is_none_or(|value| value != "--bootstrap") {
+        return Err(NativeV2CliError::Usage(
+            "private controller bootstrap arguments are malformed".to_owned(),
+        ));
     }
+    Ok(arguments.get(2).cloned().map(PathBuf::from))
 }
 
 #[tokio::main]
@@ -246,5 +155,33 @@ async fn main() {
     if let Err(error) = run().await {
         eprintln!("zeroshot-rust: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use openengine_cluster_testkit::assertions::AssertValue;
+
+    use super::*;
+
+    #[test]
+    fn target_serve_is_intercepted_as_a_process_command() {
+        let arguments = [
+            "target",
+            "serve",
+            "--listen",
+            "127.0.0.1:8080",
+            "--public-origin",
+            "http://127.0.0.1:8080",
+            "--storage",
+            "/tmp/zeroshot-target",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+        assert!(parse_target_serve(&arguments).assert_value().is_some());
+        assert!(parse_native_v2_args(arguments).is_err());
     }
 }

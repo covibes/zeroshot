@@ -17,7 +17,7 @@ fn valid_running_snapshot() -> AdmissionSnapshot {
         control: ControlSnapshot {
             spec: Some(graph.clone()),
             compiled_ir: Some(compiled_from_graph_fixture(&graph)),
-            generation: Some(Generation::new(1).unwrap()),
+            generation: Some(Generation::new(1).assert_value()),
             run_id: Some(run_id.clone()),
             phase: Phase::Running,
             cursor: Some(cursor.clone()),
@@ -38,10 +38,10 @@ async fn admission_get_rejects_a_running_snapshot_without_a_verified_seed() {
     client
         .apply(committed(graph, json!(null), 0, "create"))
         .await
-        .unwrap();
+        .assert_value();
     store.remove_active_seed_for_test().await;
 
-    let error = client.get(GetParams::default()).await.unwrap_err();
+    let error = client.get(GetParams::default()).await.assert_error();
     assert_eq!(rpc_code(error), INTERNAL_ERROR_CODE);
 }
 
@@ -57,19 +57,19 @@ async fn admission_initialize_and_get_reject_every_malformed_phase_snapshot() {
             snapshot.control.generation = None;
         }),
         ("zero committed generation", |snapshot| {
-            snapshot.control.generation = Some(Generation::new(0).unwrap());
+            snapshot.control.generation = Some(Generation::new(0).assert_value());
         }),
         ("missing run", |snapshot| snapshot.control.run_id = None),
         ("missing cursor", |snapshot| snapshot.control.cursor = None),
         ("missing seed", |snapshot| snapshot.seed = None),
         ("seed run mismatch", |snapshot| {
-            snapshot.seed.as_mut().unwrap().run_id = RunId::new("other-run");
+            snapshot.seed.as_mut().assert_value().run_id = RunId::new("other-run");
         }),
         ("seed cursor mismatch", |snapshot| {
-            snapshot.seed.as_mut().unwrap().cursor = Cursor::new("other-cursor");
+            snapshot.seed.as_mut().assert_value().cursor = Cursor::new("other-cursor");
         }),
         ("seed input mismatch", |snapshot| {
-            snapshot.seed.as_mut().unwrap().input = json!(true);
+            snapshot.seed.as_mut().assert_value().input = json!(true);
         }),
     ];
     let committed = valid_running_snapshot();
@@ -90,7 +90,10 @@ async fn admission_initialize_and_get_reject_every_malformed_phase_snapshot() {
             "generation" => snapshot.control.generation = committed.control.generation,
             "run" => snapshot.control.run_id = committed.control.run_id.clone(),
             "cursor" => snapshot.control.cursor = committed.control.cursor.clone(),
-            _ => unreachable!(),
+            other => assert!(
+                matches!(other, "graph" | "ir" | "generation" | "run" | "cursor"),
+                "unknown committed field {other}"
+            ),
         }
         malformed.push((format!("empty with {field}"), snapshot));
     }
@@ -104,12 +107,12 @@ async fn admission_initialize_and_get_reject_every_malformed_phase_snapshot() {
         let (client, _, store) = client(vec![]);
         store.replace_snapshot_for_test(snapshot).await;
         assert_eq!(
-            rpc_code(client.initialize().await.unwrap_err()),
+            rpc_code(client.initialize().await.assert_error()),
             INTERNAL_ERROR_CODE,
             "initialize accepted {name}"
         );
         assert_eq!(
-            rpc_code(client.get(GetParams::default()).await.unwrap_err()),
+            rpc_code(client.get(GetParams::default()).await.assert_error()),
             INTERNAL_ERROR_CODE,
             "get accepted {name}"
         );
@@ -127,12 +130,19 @@ async fn admission_admitting_snapshot_preserves_complete_empty_or_committed_stat
         let (client, _, store) = client(vec![]);
         store.replace_snapshot_for_test(snapshot).await;
         assert_eq!(
-            client.initialize().await.unwrap().status.phase,
+            client.initialize().await.assert_value().status.phase,
             Phase::Admitting
         );
         assert_eq!(
-            client.get(GetParams::default()).await.unwrap().status.phase,
+            client
+                .get(GetParams::default())
+                .await
+                .assert_value()
+                .status
+                .phase,
             Phase::Admitting
         );
     }
 }
+
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};

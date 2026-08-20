@@ -124,7 +124,14 @@ function generate() {
   const watchRust = fs.readFileSync(WATCH_RS, 'utf8');
   const clientRust = fs.readFileSync(CLIENT_RS, 'utf8');
   const methods = openrpc.methods.map((method) => method.name);
-  const subscriptionMethods = new Set(['watch', 'logs', 'agent/attach']);
+  const subscriptionMethods = new Set([
+    'watch',
+    'logs',
+    'agent/attach',
+    'run/watch',
+    'run/logs',
+    'run/attach',
+  ]);
   const unaryMethods = methods.filter((method) => !subscriptionMethods.has(method));
   const resultDefinitions = Object.fromEntries(
     openrpc.methods.map((method) => [method.name, method.result.schema.$ref.split('/').at(-1)])
@@ -168,12 +175,20 @@ function generate() {
     `  readonly update: UpdateParams; readonly stop: StopParams; readonly retry: RetryParams;\n` +
     `  readonly resubmit: ResubmitParams; readonly delete: DeleteParams; readonly get: GetParams;\n` +
     `  readonly watch: WatchParams; readonly logs: LogsParams; readonly 'agent/attach': AgentAttachParams;\n` +
+    `  readonly 'run/submit': RunSubmitParams; readonly 'run/list': RunListParams;\n` +
+    `  readonly 'run/status': RunStatusParams; readonly 'run/watch': RunWatchParams;\n` +
+    `  readonly 'run/logs': RunLogsParams; readonly 'run/attach': RunAttachParams;\n` +
+    `  readonly 'run/force': RunForceParams;\n` +
     `}\n\n` +
     `export interface ClusterMethodResults {\n` +
     `  readonly initialize: InitializeResult; readonly plan: PlanResult; readonly apply: ApplyResult;\n` +
     `  readonly update: UpdateResult; readonly stop: StopResult; readonly retry: RetryResult;\n` +
     `  readonly resubmit: ResubmitResult; readonly delete: DeleteResult; readonly get: GetResult;\n` +
     `  readonly watch: WatchResult; readonly logs: LogsResult; readonly 'agent/attach': AgentAttachResult;\n` +
+    `  readonly 'run/submit': RunSubmitResult; readonly 'run/list': RunListResult;\n` +
+    `  readonly 'run/status': RunStatusResult; readonly 'run/watch': RunWatchResult;\n` +
+    `  readonly 'run/logs': RunLogsResult; readonly 'run/attach': RunAttachResult;\n` +
+    `  readonly 'run/force': RunForceResult;\n` +
     `}\n`
   );
 }

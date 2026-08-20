@@ -7,6 +7,8 @@
 //! yet (`#686` owns the native producer/adapter), so this reuses the server crate's minimal
 //! `agent_attach: true` fixture backend instead.
 
+use crate::fixture::*;
+
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{
@@ -62,12 +64,12 @@ pub(crate) async fn generate_agent_attach_goldens() -> Vec<Artifact> {
 }
 
 fn sample_execution_ref() -> ExecutionRef {
-    ExecutionRef::new("execution-1").expect("fixture execution ref must be valid")
+    ExecutionRef::new("execution-1").assert_value_with("fixture execution ref must be valid")
 }
 
 fn sample_output_event(text: &str) -> AgentAttachEvent {
     AgentAttachEvent::Output {
-        text: BoundedAssistantOutput::new(text).expect("fixture output must be valid"),
+        text: BoundedAssistantOutput::new(text).assert_value_with("fixture output must be valid"),
     }
 }
 
@@ -95,7 +97,9 @@ async fn agent_attach_session() -> Vec<AgentAttachEventNotification> {
             execution: execution.clone(),
         })
         .await
-        .expect("a backend configured with an agent attach store must support agent_attach");
+        .assert_value_with(
+            "a backend configured with an agent attach store must support agent_attach",
+        );
 
     store
         .publish(&execution, AgentAttachEvent::Working {})

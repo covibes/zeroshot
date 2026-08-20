@@ -17,6 +17,7 @@ repository = "https://github.com/the-open-engine/zeroshot"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
+dbus = { version = "0.9.7", features = ["vendored"] }
 fs2 = "0.4.3"
 getrandom = "0.3.4"
 httparse = "1.10.1"
@@ -41,6 +42,8 @@ rcgen = "=0.13.2"
 time = "=0.3.41"
 futures-util = "0.3"
 jsonschema = { version = "0.29.1", default-features = false }
+keyring = { version = "3.6.3", default-features = false }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 windows-sys = "0.61.2"
 

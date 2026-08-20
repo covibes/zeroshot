@@ -40,9 +40,10 @@ pub async fn assert_oversized_event_does_not_block_unary_responses<F>(
 
     write_line(write, &request_line(2, "get", json!({}))).await;
     let get_response = read_value(read).await;
-    assert_eq!(get_response["id"], 2);
+    assert_eq!(get_response.assert_at("id"), 2);
     assert!(
         get_response.get("result").is_some(),
         "connection must keep serving unary requests after an unencodable event: {get_response}"
     );
 }
+use crate::assert_at::AssertAt;

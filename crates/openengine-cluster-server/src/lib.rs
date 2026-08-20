@@ -7,6 +7,7 @@ pub mod identity;
 pub mod lifecycle;
 pub mod logs;
 pub mod method_registry;
+pub mod native_v2;
 pub mod stdio;
 pub mod watch;
 pub mod websocket;
@@ -25,13 +26,17 @@ use openengine_cluster_protocol::{
     AgentAttachParams, AgentAttachResult, ApplyParams, ApplyResult, DeleteParams, DeleteResult,
     GetParams, GetResult, InitializeParams, InitializeResult, LogsParams, LogsResult, PlanParams,
     PlanResult, INVALID_PHASE, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
-    StopParams, StopResult, UpdateParams, UpdateResult, WatchParams, WatchResult,
+    RunAttachParams, RunAttachResult, RunForceParams, RunForceResult, RunListParams, RunListResult,
+    RunLogsParams, RunLogsResult, RunStatusParams, RunStatusResult, RunSubmitParams,
+    RunSubmitResult, RunWatchParams, RunWatchResult, StopParams, StopResult, UpdateParams,
+    UpdateResult, WatchParams, WatchResult,
 };
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::agent_attach::{AgentAttachEventStream, AgentAttachHandle};
 use crate::logs::{LogEventStream, LogsHandle};
+use crate::native_v2::{RunAttachEventStream, RunLogEventStream, RunWatchEventStream};
 use crate::watch::{WatchEventStream, WatchHandle};
 use crate::identity::ConnectionIdentity;
 
@@ -257,6 +262,90 @@ pub trait ClusterBackend: Send + Sync + 'static {
         Err(BackendError::application(
             INVALID_PHASE,
             "Backend does not support agent attach",
+            None,
+        ))
+    }
+
+    async fn run_submit(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunSubmitParams,
+    ) -> Result<RunSubmitResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 submission",
+            None,
+        ))
+    }
+
+    async fn run_list(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunListParams,
+    ) -> Result<RunListResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 run inventory",
+            None,
+        ))
+    }
+
+    async fn run_status(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunStatusParams,
+    ) -> Result<RunStatusResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 run status",
+            None,
+        ))
+    }
+
+    async fn run_watch(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunWatchParams,
+    ) -> Result<(RunWatchResult, RunWatchEventStream), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 run watch",
+            None,
+        ))
+    }
+
+    async fn run_logs(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunLogsParams,
+    ) -> Result<(RunLogsResult, RunLogEventStream), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 run logs",
+            None,
+        ))
+    }
+
+    async fn run_attach(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunAttachParams,
+    ) -> Result<(RunAttachResult, RunAttachEventStream), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 read-only attach",
+            None,
+        ))
+    }
+
+    async fn run_force(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunForceParams,
+    ) -> Result<RunForceResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support native-v2 force stop",
             None,
         ))
     }

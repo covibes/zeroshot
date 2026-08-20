@@ -15,6 +15,8 @@ pub async fn terminal_run() -> (FixtureClient, Arc<InMemoryAdmissionStore>) {
     client
         .stop(stop(StopMode::Force, 1, "terminal-run-fixture"))
         .await
-        .expect("fixture force-stop reaches a terminal run");
+        .assert_value_with("fixture force-stop reaches a terminal run");
     (client, store)
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

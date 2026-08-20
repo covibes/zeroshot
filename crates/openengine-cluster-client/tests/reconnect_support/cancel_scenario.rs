@@ -11,6 +11,7 @@ use openengine_cluster_protocol::{Cursor, GetParams, RunId, WatchEvent, WatchPar
 use openengine_cluster_server::watch::fixtures::{FixtureBackend, FixtureStore};
 
 use crate::scenario_harness::ScenarioTransport;
+use crate::support::AssertValue;
 
 /// Connects a fresh `FixtureStore`/`T` pair, cancels a live watch subscription after its first
 /// event, and proves cancellation stops delivery: a synchronous `get` round trip on the same
@@ -26,35 +27,43 @@ pub async fn run_cancel_stops_delivery_scenario<T: ScenarioTransport>() {
     let (transport, server) = T::spawn(FixtureBackend::new(Arc::clone(&store))).await;
 
     let watch_client = WatchSubscriptionClient::new(&transport);
-    let (_result, mut stream) = watch_client.watch(WatchParams::default()).await.unwrap();
+    let (_result, mut stream) = watch_client
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
 
     store.publish(WatchEvent::Bookmark).await;
-    match stream.next().await.unwrap() {
-        EventOrClosed::Event(record) => assert_eq!(record.cursor, Cursor::new("cursor-1")),
-        other => panic!("expected an event, got {other:?}"),
+    let record = match stream.next().await.assert_value() {
+        EventOrClosed::Event(record) => Some(record),
+        EventOrClosed::Closed { .. } => None,
     }
+    .assert_value_with("expected the first watch event");
+    assert_eq!(record.cursor, Cursor::new("cursor-1"));
 
-    stream.cancel().await.unwrap();
+    stream.cancel().await.assert_value();
 
     ClusterClient::new(&transport)
         .get(GetParams::default())
         .await
-        .unwrap();
+        .assert_value();
 
     // The server-side subscription task may already be parked awaiting the next live event at
     // the moment cancellation is processed, so at most one further event (the one immediately
     // following cancellation) may still be delivered before it observes cancellation and stops
     // for good.
-    store.publish(WatchEvent::Bookmark).await; // may leak as cursor-2
-    store.publish(WatchEvent::Bookmark).await; // cursor-3, must never arrive
+    for _ in 0..2 {
+        store.publish(WatchEvent::Bookmark).await;
+    }
 
     let mut leaked = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
-            Ok(Some(EventOrClosed::Event(record))) => leaked.push(record.cursor),
-            Ok(Some(other)) => panic!("unexpected notification after cancel: {other:?}"),
-            Ok(None) | Err(_) => break,
+    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_millis(300), stream.next()).await
+    {
+        let cursor = match item {
+            EventOrClosed::Event(record) => Some(record.cursor),
+            EventOrClosed::Closed { .. } => None,
         }
+        .assert_value_with("expected only an event after cancellation");
+        leaked.push(cursor);
     }
     assert!(
         leaked.len() <= 1,

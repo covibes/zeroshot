@@ -1,0 +1,42 @@
+{
+  "harness": "claude",
+  "provider": "anthropic",
+  "size": "standard",
+  "nodes": {
+    "worker": {
+      "kind": "agent",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "sessionScope": "node_instance",
+      "env": ["ANTHROPIC_API_KEY"]
+    },
+    "acceptance": {
+      "kind": "agent",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "sessionScope": "node_instance",
+      "env": ["ANTHROPIC_API_KEY"]
+    },
+    "code": {
+      "kind": "agent",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "sessionScope": "node_instance",
+      "env": ["ANTHROPIC_API_KEY"]
+    },
+    "review_repair": {
+      "kind": "agent",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "sessionScope": "node_instance",
+      "env": ["ANTHROPIC_API_KEY"]
+    },
+    "delivery_repair": {
+      "kind": "agent",
+      "model": "claude-sonnet-5",
+      "effort": "max",
+      "sessionScope": "node_instance",
+      "env": ["ANTHROPIC_API_KEY"]
+    }
+  }
+}

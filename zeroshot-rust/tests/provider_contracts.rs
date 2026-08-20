@@ -10,27 +10,27 @@ fn digest(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
 }
 fn source_workspace(character: char) -> SourceWorkspaceId {
-    SourceWorkspaceId::new(digest(character)).unwrap()
+    SourceWorkspaceId::new(digest(character)).assert_value()
 }
 
 fn review() -> SourceReviewIdentity {
     SourceReviewIdentity::new(
-        SourceReviewId::new("review-7").unwrap(),
-        SourceBranchId::new("main").unwrap(),
-        SourceBranchId::new("delivery/7").unwrap(),
+        SourceReviewId::new("review-7").assert_value(),
+        SourceBranchId::new("main").assert_value(),
+        SourceBranchId::new("delivery/7").assert_value(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn satisfied_policy() -> SourceRequiredPolicy {
     SourceRequiredPolicy::new(
-        SourcePolicyDigest::new(digest('9')).unwrap(),
+        SourcePolicyDigest::new(digest('9')).assert_value(),
         BTreeMap::from([(
-            SourceCheckId::new("required/build").unwrap(),
+            SourceCheckId::new("required/build").assert_value(),
             SourceCheckConclusion::Satisfied,
         )]),
     )
-    .unwrap()
+    .assert_value()
 }
 
 struct ContractWorkspace {
@@ -58,11 +58,11 @@ fn verified_workspace(request: &SourceOperationRequest) -> ContractWorkspace {
 }
 
 fn source_ref(id: &str, version: u32) -> SourceProviderRef {
-    SourceProviderRef::new(SourceProviderId::new(id).unwrap(), version).unwrap()
+    SourceProviderRef::new(SourceProviderId::new(id).assert_value(), version).assert_value()
 }
 
 fn source_profile() -> SourceProfileId {
-    SourceProfileId::new("production").unwrap()
+    SourceProfileId::new("production").assert_value()
 }
 
 fn source_descriptor(
@@ -78,40 +78,40 @@ fn source_descriptor(
                 capabilities.into_iter().collect(),
                 native.into_iter().collect(),
             )
-            .unwrap(),
+            .assert_value(),
         )]),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn canonical_repository(reference: SourceProviderRef) -> CanonicalRepository {
     CanonicalRepository::new(
         reference,
         source_profile(),
-        SourceAccountId::new("open-engine").unwrap(),
-        SourceRepositoryId::new("the-open-engine/zeroshot").unwrap(),
+        SourceAccountId::new("open-engine").assert_value(),
+        SourceRepositoryId::new("the-open-engine/zeroshot").assert_value(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn source_operation(repository: CanonicalRepository) -> SourceOperationRequest {
     SourceOperationRequest::new(
         repository,
-        SourceCredentialHandleId::new("source-lease-7").unwrap(),
+        SourceCredentialHandleId::new("source-lease-7").assert_value(),
         (
             source_workspace('7'),
-            SourceOperationId::new("merge-7").unwrap(),
+            SourceOperationId::new("merge-7").assert_value(),
         ),
         SourceOperation::Merge {
             review: review(),
-            expected_base: SourceRevisionId::new("base-sha").unwrap(),
-            expected_head: SourceRevisionId::new("head-sha").unwrap(),
-            checked_revision: SourceRevisionId::new("head-sha").unwrap(),
+            expected_base: SourceRevisionId::new("base-sha").assert_value(),
+            expected_head: SourceRevisionId::new("head-sha").assert_value(),
+            checked_revision: SourceRevisionId::new("head-sha").assert_value(),
             policy: satisfied_policy(),
-            integrated_revision: SourceRevisionId::new("integrated-sha").unwrap(),
+            integrated_revision: SourceRevisionId::new("integrated-sha").assert_value(),
         },
     )
-    .unwrap()
+    .assert_value()
 }
 
 struct FakeSourceProvider {
@@ -136,22 +136,24 @@ impl FakeSourceProvider {
     }
 
     fn set_inspection(&self, inspection: SourceOperationInspection) {
-        *self.inspection.lock().unwrap() = inspection;
+        *self.inspection.lock().assert_value() = inspection;
     }
 
     fn set_operation_result(&self, receipt: SourceOperationReceipt) {
-        *self.operation_result.lock().unwrap() = Some(receipt);
+        *self.operation_result.lock().assert_value() = Some(receipt);
     }
 
     fn merge_receipt(&self, request: &SourceOperationRequest) -> SourceMergeReceipt {
-        let SourceOperation::Merge {
-            integrated_revision,
-            ..
-        } = request.operation()
-        else {
-            panic!("fake expected merge request")
+        let integrated_revision = match request.operation() {
+            SourceOperation::Merge {
+                integrated_revision,
+                ..
+            } => Some(integrated_revision),
+            _ => None,
         };
-        SourceMergeReceipt::new(request.clone(), integrated_revision.clone()).unwrap()
+        let integrated_revision =
+            integrated_revision.assert_value_with("fake expected merge request");
+        SourceMergeReceipt::new(request.clone(), integrated_revision.clone()).assert_value()
     }
 }
 
@@ -170,9 +172,9 @@ impl SourceCodeProvider for FakeSourceProvider {
             request.provider().clone(),
             request.profile().clone(),
             request.account().clone(),
-            SourceRepositoryId::new(request.reference().as_str()).unwrap(),
+            SourceRepositoryId::new(request.reference().as_str()).assert_value(),
         )
-        .unwrap())
+        .assert_value())
     }
 
     async fn inspect_repository(
@@ -181,10 +183,10 @@ impl SourceCodeProvider for FakeSourceProvider {
     ) -> Result<SourceRepositoryInspection, SourceProviderFailure> {
         Ok(SourceRepositoryInspection::new(
             request.repository().clone(),
-            SourceRevisionId::new("head-sha").unwrap(),
+            SourceRevisionId::new("head-sha").assert_value(),
             Vec::new(),
         )
-        .unwrap())
+        .assert_value())
     }
 
     async fn materialize(
@@ -194,13 +196,13 @@ impl SourceCodeProvider for FakeSourceProvider {
     ) -> Result<SourceMaterializationReceipt, SourceProviderFailure> {
         destination
             .write_file("materialized", b"provider-contract")
-            .expect("the engine-owned contract target accepts bounded writes");
+            .assert_value_with("the engine-owned contract target accepts bounded writes");
         Ok(SourceMaterializationReceipt::new(
             request.repository().clone(),
             request.revision().clone(),
-            SourceContentDigest::new(digest('b')).unwrap(),
+            SourceContentDigest::new(digest('b')).assert_value(),
         )
-        .unwrap())
+        .assert_value())
     }
 
     async fn inspect_operation(
@@ -208,7 +210,7 @@ impl SourceCodeProvider for FakeSourceProvider {
         _request: &SourceOperationRequest,
     ) -> Result<SourceOperationInspection, SourceProviderFailure> {
         self.inspect_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self.inspection.lock().unwrap().clone())
+        Ok(self.inspection.lock().assert_value().clone())
     }
 
     async fn operate(
@@ -220,21 +222,21 @@ impl SourceCodeProvider for FakeSourceProvider {
         let receipt = self
             .operation_result
             .lock()
-            .unwrap()
+            .assert_value()
             .clone()
             .unwrap_or_else(|| SourceOperationReceipt::Merge(self.merge_receipt(request)));
-        *self.inspection.lock().unwrap() =
+        *self.inspection.lock().assert_value() =
             SourceOperationInspection::Applied(Box::new(receipt.clone()));
         Ok(receipt)
     }
 }
 
 fn issue_ref(id: &str, version: u32) -> IssueProviderRef {
-    IssueProviderRef::new(IssueProviderId::new(id).unwrap(), version).unwrap()
+    IssueProviderRef::new(IssueProviderId::new(id).assert_value(), version).assert_value()
 }
 
 fn issue_profile() -> IssueProfileId {
-    IssueProfileId::new("production").unwrap()
+    IssueProfileId::new("production").assert_value()
 }
 
 fn issue_descriptor(
@@ -250,15 +252,19 @@ fn issue_descriptor(
                 capabilities.into_iter().collect(),
                 native.into_iter().collect(),
             )
-            .unwrap(),
+            .assert_value(),
         )]),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn merge_receipt_for_issue() -> SourceMergeReceipt {
     let request = source_operation(canonical_repository(source_ref("source.github", 1)));
-    SourceMergeReceipt::new(request, SourceRevisionId::new("integrated-sha").unwrap()).unwrap()
+    SourceMergeReceipt::new(
+        request,
+        SourceRevisionId::new("integrated-sha").assert_value(),
+    )
+    .assert_value()
 }
 
 fn resolved_linear_issue(reference: IssueProviderRef) -> ResolvedIssue {
@@ -266,25 +272,25 @@ fn resolved_linear_issue(reference: IssueProviderRef) -> ResolvedIssue {
         reference,
         issue_profile(),
         (
-            IssueAccountId::new("open-engine-linear").unwrap(),
-            IssueId::new("ENG-7").unwrap(),
+            IssueAccountId::new("open-engine-linear").assert_value(),
+            IssueId::new("ENG-7").assert_value(),
         ),
         (IssueState::Open, Vec::new()),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn issue_close_request(reference: IssueProviderRef) -> IssueCloseRequest {
     IssueCloseRequest::new(
         resolved_linear_issue(reference),
-        IssueCredentialHandleId::new("linear-lease").unwrap(),
+        IssueCredentialHandleId::new("linear-lease").assert_value(),
         (
-            IssueOperationId::new("close-ENG-7").unwrap(),
-            IssueOperationFingerprint::new(digest('d')).unwrap(),
+            IssueOperationId::new("close-ENG-7").assert_value(),
+            IssueOperationFingerprint::new(digest('d')).assert_value(),
         ),
         merge_receipt_for_issue(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 fn issue_close_receipt(request: &IssueCloseRequest) -> IssueCloseReceipt {
@@ -297,7 +303,7 @@ fn issue_close_receipt(request: &IssueCloseRequest) -> IssueCloseReceipt {
         request.source_merge().clone(),
         Vec::new(),
     )
-    .unwrap()
+    .assert_value()
 }
 
 struct FakeIssueProvider {
@@ -336,14 +342,14 @@ impl IssueProvider for FakeIssueProvider {
             request.profile().clone(),
             (
                 request.account().clone(),
-                IssueId::new(request.reference().as_str()).unwrap(),
+                IssueId::new(request.reference().as_str()).assert_value(),
             ),
             (
                 IssueState::Open,
-                vec![IssuePublicUrl::new("https://linear.app/issue/ENG-7").unwrap()],
+                vec![IssuePublicUrl::new("https://linear.app/issue/ENG-7").assert_value()],
             ),
         )
-        .unwrap())
+        .assert_value())
     }
 
     async fn inspect_close(
@@ -351,7 +357,7 @@ impl IssueProvider for FakeIssueProvider {
         _request: &IssueCloseRequest,
     ) -> Result<IssueCloseInspection, IssueProviderFailure> {
         self.inspect_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self.inspection.lock().unwrap().clone())
+        Ok(self.inspection.lock().assert_value().clone())
     }
 
     async fn close(
@@ -366,9 +372,9 @@ impl IssueProvider for FakeIssueProvider {
                 request.fingerprint().clone(),
             ),
             request.source_merge().clone(),
-            vec![IssuePublicUrl::new("https://linear.app/issue/ENG-7").unwrap()],
+            vec![IssuePublicUrl::new("https://linear.app/issue/ENG-7").assert_value()],
         )
-        .unwrap())
+        .assert_value())
     }
 }
 
@@ -376,3 +382,5 @@ impl IssueProvider for FakeIssueProvider {
 mod cases;
 #[path = "provider_contracts/merge_evidence.rs"]
 mod merge_evidence;
+
+use openengine_cluster_testkit::assertions::{AssertValue};

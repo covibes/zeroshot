@@ -8,13 +8,13 @@ fn source_registry_exact_lookup_and_errors_are_deterministic() {
         SourceOperationInspection::Unobserved,
     ));
     let mut registry = SourceCodeProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
     assert_eq!(
-        registry.lookup(&reference).unwrap().descriptor(),
+        registry.lookup(&reference).assert_value().descriptor(),
         provider.descriptor()
     );
     assert_eq!(
-        registry.register(provider).unwrap_err(),
+        registry.register(provider).assert_error(),
         SourceRegistryError::DuplicateRegistration {
             provider: reference.clone()
         }
@@ -23,7 +23,7 @@ fn source_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .lookup(&source_ref("source.bitbucket", 1))
             .err()
-            .unwrap()
+            .assert_value()
             .to_string(),
         "unknown source provider id source.bitbucket"
     );
@@ -31,7 +31,7 @@ fn source_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .lookup(&source_ref("source.github", 2))
             .err()
-            .unwrap(),
+            .assert_value(),
         SourceRegistryError::UnavailableVersion {
             provider: source_ref("source.github", 2)
         }
@@ -40,13 +40,13 @@ fn source_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .capability(
                 &reference,
-                &SourceProfileId::new("staging").unwrap(),
+                &SourceProfileId::new("staging").assert_value(),
                 SourceCapability::Read,
             )
-            .unwrap_err(),
+            .assert_error(),
         SourceRegistryError::UnavailableProfile {
             provider: reference,
-            profile: SourceProfileId::new("staging").unwrap()
+            profile: SourceProfileId::new("staging").assert_value()
         }
     );
 }
@@ -59,13 +59,13 @@ fn issue_registry_exact_lookup_and_errors_are_deterministic() {
         IssueCloseInspection::Unobserved,
     ));
     let mut registry = IssueProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
     assert_eq!(
-        registry.lookup(&reference).unwrap().descriptor(),
+        registry.lookup(&reference).assert_value().descriptor(),
         provider.descriptor()
     );
     assert_eq!(
-        registry.register(provider).unwrap_err(),
+        registry.register(provider).assert_error(),
         IssueRegistryError::DuplicateRegistration {
             provider: reference.clone()
         }
@@ -74,7 +74,7 @@ fn issue_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .lookup(&issue_ref("issue.github", 1))
             .err()
-            .unwrap()
+            .assert_value()
             .to_string(),
         "unknown issue provider id issue.github"
     );
@@ -82,7 +82,7 @@ fn issue_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .lookup(&issue_ref("issue.linear", 2))
             .err()
-            .unwrap(),
+            .assert_value(),
         IssueRegistryError::UnavailableVersion {
             provider: issue_ref("issue.linear", 2)
         }
@@ -91,13 +91,13 @@ fn issue_registry_exact_lookup_and_errors_are_deterministic() {
         registry
             .capability(
                 &reference,
-                &IssueProfileId::new("staging").unwrap(),
+                &IssueProfileId::new("staging").assert_value(),
                 IssueCapability::Read,
             )
-            .unwrap_err(),
+            .assert_error(),
         IssueRegistryError::UnavailableProfile {
             provider: reference,
-            profile: IssueProfileId::new("staging").unwrap(),
+            profile: IssueProfileId::new("staging").assert_value(),
         }
     );
 }
@@ -110,13 +110,13 @@ async fn unsupported_source_capability_is_rejected_before_fake_invocation() {
         SourceOperationInspection::Unobserved,
     ));
     let mut registry = SourceCodeProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
     let request = source_operation(canonical_repository(reference.clone()));
     let mut workspace = verified_workspace(&request);
     let error = registry
         .operate(&request, workspace.capability())
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(
         error,
         SourceCallError::Registry(SourceRegistryError::UnsupportedCapability {
@@ -137,11 +137,11 @@ async fn unsupported_issue_capability_is_rejected_before_fake_invocation() {
         IssueCloseInspection::Unobserved,
     ));
     let mut registry = IssueProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
     let error = registry
         .close(&issue_close_request(reference.clone()))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(
         error,
         IssueCallError::Registry(IssueRegistryError::UnsupportedCapability {
@@ -166,7 +166,7 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
         SourceOperationInspection::Pending,
     ));
     let mut registry = SourceCodeProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
     let request = source_operation(canonical_repository(reference));
     let mut workspace = verified_workspace(&request);
 
@@ -178,7 +178,7 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
         registry
             .operate(&request, workspace.capability())
             .await
-            .unwrap(),
+            .assert_value(),
         applied
     );
     assert_eq!(provider.operation_calls.load(Ordering::SeqCst), 0);
@@ -186,10 +186,10 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
     for inspection in [
         SourceOperationInspection::Pending,
         SourceOperationInspection::Conflict {
-            observed_fingerprint: SourceOperationFingerprint::new(digest('c')).unwrap(),
+            observed_fingerprint: SourceOperationFingerprint::new(digest('c')).assert_value(),
         },
         SourceOperationInspection::Indeterminate {
-            evidence: SourceFailureMessage::new("provider outcome unavailable").unwrap(),
+            evidence: SourceFailureMessage::new("provider outcome unavailable").assert_value(),
         },
     ] {
         provider.set_inspection(inspection.clone());
@@ -197,7 +197,7 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
             registry
                 .operate(&request, workspace.capability())
                 .await
-                .unwrap_err(),
+                .assert_error(),
             SourceCallError::UnsafeToInvoke { inspection }
         );
     }
@@ -208,7 +208,7 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
         registry
             .operate(&request, workspace.capability())
             .await
-            .unwrap(),
+            .assert_value(),
         SourceOperationReceipt::Merge(_)
     ));
     assert_eq!(provider.operation_calls.load(Ordering::SeqCst), 1);
@@ -223,13 +223,13 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
         SourceOperationInspection::Pending,
     ));
     let mut native_registry = SourceCodeProviderRegistry::new();
-    native_registry.register(native.clone()).unwrap();
+    native_registry.register(native.clone()).assert_value();
     let native_request = source_operation(canonical_repository(native_reference));
     let mut native_workspace = verified_workspace(&native_request);
     for inspection in [
         SourceOperationInspection::Pending,
         SourceOperationInspection::Indeterminate {
-            evidence: SourceFailureMessage::new("connection ended after submission").unwrap(),
+            evidence: SourceFailureMessage::new("connection ended after submission").assert_value(),
         },
     ] {
         native.set_inspection(inspection.clone());
@@ -237,7 +237,7 @@ async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
             native_registry
                 .operate(&native_request, native_workspace.capability())
                 .await
-                .unwrap_err(),
+                .assert_error(),
             SourceCallError::UnsafeToInvoke { inspection }
         );
     }
@@ -253,32 +253,33 @@ async fn issue_close_inspects_before_repeat_and_indeterminate_is_not_success() {
         IssueCloseInspection::Pending,
     ));
     let mut registry = IssueProviderRegistry::new();
-    registry.register(provider.clone()).unwrap();
+    registry.register(provider.clone()).assert_value();
 
     let applied = issue_close_receipt(&request);
-    *provider.inspection.lock().unwrap() = IssueCloseInspection::Applied(Box::new(applied.clone()));
-    assert_eq!(registry.close(&request).await.unwrap(), applied);
+    *provider.inspection.lock().assert_value() =
+        IssueCloseInspection::Applied(Box::new(applied.clone()));
+    assert_eq!(registry.close(&request).await.assert_value(), applied);
     assert_eq!(provider.close_calls.load(Ordering::SeqCst), 0);
 
     for inspection in [
         IssueCloseInspection::Pending,
         IssueCloseInspection::Conflict {
-            observed_fingerprint: IssueOperationFingerprint::new(digest('c')).unwrap(),
+            observed_fingerprint: IssueOperationFingerprint::new(digest('c')).assert_value(),
         },
         IssueCloseInspection::Indeterminate {
-            evidence: IssueFailureMessage::new("provider outcome unavailable").unwrap(),
+            evidence: IssueFailureMessage::new("provider outcome unavailable").assert_value(),
         },
     ] {
-        *provider.inspection.lock().unwrap() = inspection.clone();
+        *provider.inspection.lock().assert_value() = inspection.clone();
         assert_eq!(
-            registry.close(&request).await.unwrap_err(),
+            registry.close(&request).await.assert_error(),
             IssueCallError::UnsafeToInvoke { inspection }
         );
     }
     assert_eq!(provider.close_calls.load(Ordering::SeqCst), 0);
 
-    *provider.inspection.lock().unwrap() = IssueCloseInspection::Unobserved;
-    registry.close(&request).await.unwrap();
+    *provider.inspection.lock().assert_value() = IssueCloseInspection::Unobserved;
+    registry.close(&request).await.assert_value();
     assert_eq!(provider.close_calls.load(Ordering::SeqCst), 1);
 
     let native_reference = issue_ref("issue.github", 1);
@@ -291,16 +292,16 @@ async fn issue_close_inspects_before_repeat_and_indeterminate_is_not_success() {
         IssueCloseInspection::Pending,
     ));
     let mut native_registry = IssueProviderRegistry::new();
-    native_registry.register(native.clone()).unwrap();
+    native_registry.register(native.clone()).assert_value();
     let native_request = issue_close_request(native_reference);
     for inspection in [
         IssueCloseInspection::Pending,
         IssueCloseInspection::Indeterminate {
-            evidence: IssueFailureMessage::new("connection ended after submission").unwrap(),
+            evidence: IssueFailureMessage::new("connection ended after submission").assert_value(),
         },
     ] {
-        *native.inspection.lock().unwrap() = inspection;
-        native_registry.close(&native_request).await.unwrap();
+        *native.inspection.lock().assert_value() = inspection;
+        native_registry.close(&native_request).await.assert_value();
     }
     assert_eq!(native.close_calls.load(Ordering::SeqCst), 2);
 }
@@ -312,14 +313,14 @@ async fn applied_inspections_must_match_the_authoritative_request() {
     let source_request = source_operation(repository.clone());
     let other_source_request = SourceOperationRequest::new(
         repository,
-        SourceCredentialHandleId::new("source-lease-7").unwrap(),
+        SourceCredentialHandleId::new("source-lease-7").assert_value(),
         (
             source_request.workspace().clone(),
-            SourceOperationId::new("different-operation").unwrap(),
+            SourceOperationId::new("different-operation").assert_value(),
         ),
         source_request.operation().clone(),
     )
-    .unwrap();
+    .assert_value();
     let mut source_workspace = verified_workspace(&source_request);
     let source = Arc::new(FakeSourceProvider::new(
         source_descriptor(source_reference, [SourceCapability::Merge], []),
@@ -329,7 +330,7 @@ async fn applied_inspections_must_match_the_authoritative_request() {
         SourceOperationReceipt::Merge(source.merge_receipt(&other_source_request)),
     )));
     let mut sources = SourceCodeProviderRegistry::new();
-    sources.register(source.clone()).unwrap();
+    sources.register(source.clone()).assert_value();
     assert!(matches!(
         sources
             .operate(&source_request, source_workspace.capability())
@@ -344,18 +345,18 @@ async fn applied_inspections_must_match_the_authoritative_request() {
         issue_request.issue().clone(),
         issue_request.credential_handle().clone(),
         (
-            IssueOperationId::new("different-close").unwrap(),
+            IssueOperationId::new("different-close").assert_value(),
             issue_request.fingerprint().clone(),
         ),
         issue_request.source_merge().clone(),
     )
-    .unwrap();
+    .assert_value();
     let issue = Arc::new(FakeIssueProvider::new(
         issue_descriptor(issue_reference, [IssueCapability::Close], []),
         IssueCloseInspection::Applied(Box::new(issue_close_receipt(&other_issue_request))),
     ));
     let mut issues = IssueProviderRegistry::new();
-    issues.register(issue.clone()).unwrap();
+    issues.register(issue.clone()).assert_value();
     assert!(matches!(
         issues.close(&issue_request).await,
         Err(IssueCallError::InvalidEvidence { .. })
@@ -363,8 +364,11 @@ async fn applied_inspections_must_match_the_authoritative_request() {
     assert_eq!(issue.close_calls.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn linear_issue_close_is_gated_by_github_merge_receipt() {
+async fn github_merge() -> (
+    SourceProviderRef,
+    Arc<FakeSourceProvider>,
+    SourceMergeReceipt,
+) {
     let source_reference = source_ref("source.github", 1);
     let source = Arc::new(FakeSourceProvider::new(
         source_descriptor(
@@ -375,29 +379,35 @@ async fn linear_issue_close_is_gated_by_github_merge_receipt() {
         SourceOperationInspection::Unobserved,
     ));
     let mut sources = SourceCodeProviderRegistry::new();
-    sources.register(source.clone()).unwrap();
+    sources.register(source.clone()).assert_value();
     let identify = SourceIdentifyRepositoryRequest::new(
         source_reference.clone(),
         source_profile(),
         (
-            SourceAccountId::new("open-engine").unwrap(),
-            SourceCredentialHandleId::new("github-lease").unwrap(),
+            SourceAccountId::new("open-engine").assert_value(),
+            SourceCredentialHandleId::new("github-lease").assert_value(),
         ),
-        SourceRepositoryReference::new("the-open-engine/zeroshot").unwrap(),
+        SourceRepositoryReference::new("the-open-engine/zeroshot").assert_value(),
     )
-    .unwrap();
-    let repository = sources.identify_repository(&identify).await.unwrap();
+    .assert_value();
+    let repository = sources.identify_repository(&identify).await.assert_value();
     let request = source_operation(repository);
     let mut workspace = verified_workspace(&request);
     let merge = match sources
         .operate(&request, workspace.capability())
         .await
-        .unwrap()
+        .assert_value()
     {
-        SourceOperationReceipt::Merge(receipt) => receipt,
-        other => panic!("merge must return a typed merge receipt, got {other:?}"),
-    };
+        SourceOperationReceipt::Merge(receipt) => Some(receipt),
+        _ => None,
+    }
+    .assert_value_with("merge must return a typed merge receipt");
+    (source_reference, source, merge)
+}
 
+#[tokio::test]
+async fn linear_issue_close_is_gated_by_github_merge_receipt() {
+    let (source_reference, source, merge) = github_merge().await;
     let issue_reference = issue_ref("issue.linear", 1);
     let issue = Arc::new(FakeIssueProvider::new(
         issue_descriptor(
@@ -408,33 +418,33 @@ async fn linear_issue_close_is_gated_by_github_merge_receipt() {
         IssueCloseInspection::Unobserved,
     ));
     let mut issues = IssueProviderRegistry::new();
-    issues.register(issue.clone()).unwrap();
+    issues.register(issue.clone()).assert_value();
     let resolved = issues
         .resolve(
             &IssueResolveRequest::new(
                 issue_reference.clone(),
                 issue_profile(),
                 (
-                    IssueAccountId::new("open-engine-linear").unwrap(),
-                    IssueCredentialHandleId::new("linear-lease").unwrap(),
+                    IssueAccountId::new("open-engine-linear").assert_value(),
+                    IssueCredentialHandleId::new("linear-lease").assert_value(),
                 ),
-                IssueReference::new("ENG-7").unwrap(),
+                IssueReference::new("ENG-7").assert_value(),
             )
-            .unwrap(),
+            .assert_value(),
         )
         .await
-        .unwrap();
+        .assert_value();
     let close_request = IssueCloseRequest::new(
         resolved,
-        IssueCredentialHandleId::new("linear-lease").unwrap(),
+        IssueCredentialHandleId::new("linear-lease").assert_value(),
         (
-            IssueOperationId::new("close-ENG-7").unwrap(),
-            IssueOperationFingerprint::new(digest('d')).unwrap(),
+            IssueOperationId::new("close-ENG-7").assert_value(),
+            IssueOperationFingerprint::new(digest('d')).assert_value(),
         ),
         merge.clone(),
     )
-    .unwrap();
-    let close_receipt = issues.close(&close_request).await.unwrap();
+    .assert_value();
+    let close_receipt = issues.close(&close_request).await.assert_value();
 
     assert_eq!(close_receipt.source_merge(), &merge);
     assert_eq!(merge.request().repository().provider(), &source_reference);
@@ -453,21 +463,23 @@ async fn materialization_uses_only_an_ephemeral_destination_handle() {
         SourceOperationInspection::Unobserved,
     ));
     let mut registry = SourceCodeProviderRegistry::new();
-    registry.register(provider).unwrap();
+    registry.register(provider).assert_value();
     let repository = canonical_repository(reference);
     let request = SourceMaterializeRequest::new(
         repository.clone(),
-        SourceCredentialHandleId::new("source-lease").unwrap(),
-        SourceRevisionId::new("head-sha").unwrap(),
+        SourceCredentialHandleId::new("source-lease").assert_value(),
+        SourceRevisionId::new("head-sha").assert_value(),
     )
-    .unwrap();
+    .assert_value();
     // SAFETY: this harness is used only for the external provider contract and carries no path,
     // descriptor, or persisted workspace authority.
     let target = unsafe { SourceMaterializationContractHarness::new() };
     let receipt = registry
         .materialize(&request, target.destination())
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(target.write_count(), 1);
     assert_eq!(receipt.repository(), &repository);
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue, AssertError};

@@ -22,6 +22,19 @@ use tokio::io::AsyncWriteExt;
 #[path = "stdio_subprocess_support/mod.rs"]
 mod stdio_subprocess_support;
 
+async fn assert_admission_effects(store: &InMemoryAdmissionStore) {
+    let effects = store.inspect().await;
+    assert_eq!(effects.control_journal.len(), 1);
+    assert_eq!(
+        effects.seed_ledger.assert_at(0).input,
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        effects.control.cursor,
+        Some(effects.seed_ledger.assert_at(0).cursor.clone())
+    );
+}
+
 #[test]
 fn protocol_version_is_exact() {
     assert_eq!(PROTOCOL_VERSION, "openengine.cluster/v1");
@@ -39,7 +52,7 @@ fn canonical_empty_results_have_exact_wire_shape() {
     };
 
     assert_eq!(
-        serde_json::to_value(initialize).unwrap(),
+        serde_json::to_value(initialize).assert_value(),
         serde_json::json!({
             "protocolVersion": "openengine.cluster/v1",
             "capabilities": { "graphProfiles": [], "logs": false, "agentAttach": false },
@@ -52,7 +65,7 @@ fn canonical_empty_results_have_exact_wire_shape() {
         })
     );
     assert_eq!(
-        serde_json::to_value(get).unwrap(),
+        serde_json::to_value(get).assert_value(),
         serde_json::json!({
             "spec": null,
             "status": {
@@ -72,7 +85,7 @@ fn terminal_result_has_one_exact_closed_wire_algebra() {
         output: serde_json::json!({ "value": 42 }),
     };
     assert_eq!(
-        serde_json::to_value(&succeeded).unwrap(),
+        serde_json::to_value(&succeeded).assert_value(),
         serde_json::json!({ "status": "succeeded", "output": { "value": 42 } })
     );
     assert_eq!(
@@ -80,7 +93,7 @@ fn terminal_result_has_one_exact_closed_wire_algebra() {
             "status": "succeeded",
             "output": { "value": 42 }
         }))
-        .unwrap(),
+        .assert_value(),
         succeeded
     );
     assert!(
@@ -95,9 +108,9 @@ fn terminal_result_has_one_exact_closed_wire_algebra() {
         "status": "failed",
         "reason": "attempts_exhausted"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(
-        serde_json::to_value(failed).unwrap(),
+        serde_json::to_value(failed).assert_value(),
         serde_json::json!({ "status": "failed", "reason": "attempts_exhausted" })
     );
     assert!(
@@ -128,7 +141,12 @@ fn generation_is_bounded_to_javascript_safe_integers() {
     assert!(Generation::new(9_007_199_254_740_991).is_ok());
     assert!(Generation::new(9_007_199_254_740_992).is_err());
     assert!(serde_json::from_str::<Generation>("9007199254740992").is_err());
-    assert_eq!(serde_json::from_str::<Generation>("7.0").unwrap().get(), 7);
+    assert_eq!(
+        serde_json::from_str::<Generation>("7.0")
+            .assert_value()
+            .get(),
+        7
+    );
     assert!(serde_json::from_str::<Generation>("7.5").is_err());
 }
 
@@ -140,16 +158,16 @@ async fn initialize_and_get_match_across_transports() {
     let (subprocess, stdin, stdout) = stdio_subprocess_support::spawn();
     let stdio = ClusterClient::new(NdjsonTransport::new(stdout, stdin));
 
-    let in_process_initialize = in_process.initialize().await.unwrap();
+    let in_process_initialize = in_process.initialize().await.assert_value();
     let in_process_get = in_process
         .get(openengine_cluster_protocol::GetParams::default())
         .await
-        .unwrap();
-    let stdio_initialize = stdio.initialize().await.unwrap();
+        .assert_value();
+    let stdio_initialize = stdio.initialize().await.assert_value();
     let stdio_get = stdio
         .get(openengine_cluster_protocol::GetParams::default())
         .await
-        .unwrap();
+        .assert_value();
 
     assert_eq!(stdio_initialize, in_process_initialize);
     assert_eq!(stdio_get, in_process_get);
@@ -183,61 +201,55 @@ async fn admission_transcript_matches_in_process_and_stdio() {
     let stdio = ClusterClient::new(NdjsonTransport::new(stdout, stdin));
 
     assert_eq!(
-        stdio.initialize().await.unwrap(),
-        in_process.initialize().await.unwrap()
+        stdio.initialize().await.assert_value(),
+        in_process.initialize().await.assert_value()
     );
     let plan = PlanParams {
         graph: graph.clone(),
     };
     assert_eq!(
-        stdio.plan(plan.clone()).await.unwrap(),
-        in_process.plan(plan).await.unwrap()
+        stdio.plan(plan.clone()).await.assert_value(),
+        in_process.plan(plan).await.assert_value()
     );
     let apply = ApplyParams {
         graph: graph.clone(),
         input: Some(serde_json::Value::Null),
         dry_run: false,
-        if_generation: Some(Generation::new(0).unwrap()),
-        idempotency_key: Some(IdempotencyKey::new("transcript-create").unwrap()),
+        if_generation: Some(Generation::new(0).assert_value()),
+        idempotency_key: Some(IdempotencyKey::new("transcript-create").assert_value()),
     };
     assert_eq!(
-        stdio.apply(apply.clone()).await.unwrap(),
-        in_process.apply(apply).await.unwrap()
+        stdio.apply(apply.clone()).await.assert_value(),
+        in_process.apply(apply).await.assert_value()
     );
-    let stdio_get = stdio.get(GetParams::default()).await.unwrap();
-    let in_process_get = in_process.get(GetParams::default()).await.unwrap();
+    let stdio_get = stdio.get(GetParams::default()).await.assert_value();
+    let in_process_get = in_process.get(GetParams::default()).await.assert_value();
     assert_eq!(stdio_get, in_process_get);
     assert_eq!(stdio_get.spec, Some(graph));
-    let effects = store.inspect().await;
-    assert_eq!(effects.control_journal.len(), 1);
-    assert_eq!(effects.seed_ledger[0].input, serde_json::Value::Null);
-    assert_eq!(
-        effects.control.cursor,
-        Some(effects.seed_ledger[0].cursor.clone())
-    );
+    assert_admission_effects(store.as_ref()).await;
 
     let update = UpdateParams {
         labels: None,
         log_level: Some(openengine_cluster_protocol::LogLevel::Debug),
         suspended: Some(false),
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new("transport-update").unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new("transport-update").assert_value(),
     };
     assert_eq!(
-        stdio.update(update.clone()).await.unwrap(),
-        in_process.update(update).await.unwrap()
+        stdio.update(update.clone()).await.assert_value(),
+        in_process.update(update).await.assert_value()
     );
     let stop = StopParams {
         mode: StopMode::Drain,
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new("transport-stop").unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new("transport-stop").assert_value(),
     };
     assert_eq!(
-        stdio.stop(stop.clone()).await.unwrap(),
-        in_process.stop(stop).await.unwrap()
+        stdio.stop(stop.clone()).await.assert_value(),
+        in_process.stop(stop).await.assert_value()
     );
-    let stdio_finished = stdio.get(GetParams::default()).await.unwrap();
-    let in_process_finished = in_process.get(GetParams::default()).await.unwrap();
+    let stdio_finished = stdio.get(GetParams::default()).await.assert_value();
+    let in_process_finished = in_process.get(GetParams::default()).await.assert_value();
     assert_eq!(stdio_finished, in_process_finished);
     assert_eq!(
         stdio_finished.status.phase,
@@ -273,9 +285,13 @@ async fn rejects_invalid_jsonrpc_inputs_deterministically() {
 
     for (request, expected_code, expected_id) in cases {
         let response: serde_json::Value =
-            serde_json::from_str(&dispatcher.dispatch(request).await).unwrap();
-        assert_eq!(response["error"]["code"], expected_code, "{request}");
-        assert_eq!(response["id"], expected_id, "{request}");
+            serde_json::from_str(&dispatcher.dispatch(request).await).assert_value();
+        assert_eq!(
+            response.assert_key("error").assert_key("code"),
+            expected_code,
+            "{request}"
+        );
+        assert_eq!(response.assert_key("id"), &expected_id, "{request}");
     }
 }
 
@@ -292,9 +308,13 @@ async fn unknown_methods_ignore_parameter_shape() {
 
     for request in requests {
         let response: serde_json::Value =
-            serde_json::from_str(&dispatcher.dispatch(request).await).unwrap();
-        assert_eq!(response["id"], 10, "{request}");
-        assert_eq!(response["error"]["code"], -32601, "{request}");
+            serde_json::from_str(&dispatcher.dispatch(request).await).assert_value();
+        assert_eq!(response.assert_key("id"), 10, "{request}");
+        assert_eq!(
+            response.assert_key("error").assert_key("code"),
+            -32601,
+            "{request}"
+        );
     }
 }
 
@@ -306,13 +326,19 @@ async fn unsupported_protocol_version_has_stable_domain_code() {
     let error = client
         .initialize_with_version("openengine.cluster/v0")
         .await
-        .unwrap_err();
+        .assert_error();
     match error {
         ClientError::Rpc(error) => {
             assert_eq!(error.code, -32000);
-            assert_eq!(error.data.unwrap().code, "UNSUPPORTED_PROTOCOL_VERSION");
+            assert_eq!(
+                error.data.assert_value().code,
+                "UNSUPPORTED_PROTOCOL_VERSION"
+            );
         }
-        other => panic!("expected JSON-RPC error, received {other:?}"),
+        other => assert!(
+            matches!(other, ClientError::Rpc(_)),
+            "expected a JSON-RPC error"
+        ),
     }
 }
 
@@ -346,11 +372,17 @@ async fn backend_failures_are_structured_internal_errors() {
             .dispatch(r#"{"jsonrpc":"2.0","id":9,"method":"get","params":{}}"#)
             .await,
     )
-    .unwrap();
+    .assert_value();
 
-    assert_eq!(response["id"], 9);
-    assert_eq!(response["error"]["code"], -32603);
-    assert_eq!(response["error"]["data"]["code"], "BACKEND_FAILURE");
+    assert_eq!(response.assert_key("id"), 9);
+    assert_eq!(response.assert_key("error").assert_key("code"), -32603);
+    assert_eq!(
+        response
+            .assert_key("error")
+            .assert_key("data")
+            .assert_key("code"),
+        "BACKEND_FAILURE"
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -375,7 +407,7 @@ impl ClusterBackend for WrongVersionBackend {
         _context: &ConnectionContext,
         _params: openengine_cluster_protocol::GetParams,
     ) -> Result<GetResult, BackendError> {
-        unreachable!("this test only initializes")
+        None::<Result<GetResult, BackendError>>.assert_value_with("this test only initializes")
     }
 }
 
@@ -389,18 +421,24 @@ async fn dispatcher_rejects_a_backend_response_with_the_wrong_protocol_version()
             )
             .await,
     )
-    .unwrap();
+    .assert_value();
 
-    assert_eq!(response["id"], 10);
-    assert_eq!(response["error"]["code"], -32603);
-    assert_eq!(response["error"]["data"]["code"], "INTERNAL_ERROR");
+    assert_eq!(response.assert_key("id"), 10);
+    assert_eq!(response.assert_key("error").assert_key("code"), -32603);
+    assert_eq!(
+        response
+            .assert_key("error")
+            .assert_key("data")
+            .assert_key("code"),
+        "INTERNAL_ERROR"
+    );
     assert!(response.get("result").is_none());
 }
 
 #[tokio::test]
 async fn stdio_emits_protocol_frames_only() {
     let mut child = stdio_subprocess_support::spawn_child();
-    let mut stdin = child.stdin.take().unwrap();
+    let mut stdin = child.stdin.take().assert_value();
     stdin
         .write_all(
             concat!(
@@ -410,87 +448,22 @@ async fn stdio_emits_protocol_frames_only() {
             .as_bytes(),
         )
         .await
-        .unwrap();
+        .assert_value();
     drop(stdin);
 
-    let output = child.wait_with_output().await.unwrap();
+    let output = child.wait_with_output().await.assert_value();
     assert!(output.status.success());
     assert_eq!(output.stderr, b"");
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout).assert_value();
     let lines: Vec<_> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "stdout must contain exactly two frames");
     for line in lines {
         assert!(!line.is_empty());
-        serde_json::from_str::<serde_json::Value>(line).unwrap();
+        serde_json::from_str::<serde_json::Value>(line).assert_value();
     }
 }
 
-struct FixedResponseTransport(&'static str);
+#[path = "protocol_v1/client_rejections.rs"]
+mod client_rejections;
 
-#[async_trait]
-impl JsonRpcTransport for FixedResponseTransport {
-    async fn request(&self, _request: String) -> Result<String, TransportError> {
-        Ok(self.0.to_owned())
-    }
-}
-
-#[tokio::test]
-async fn client_rejects_a_response_with_the_wrong_id() {
-    let client = ClusterClient::new(FixedResponseTransport(
-        r#"{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"openengine.cluster/v1","capabilities":{},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}"#,
-    ));
-
-    let error = client.initialize().await.unwrap_err();
-    let rejected = matches!(
-        error,
-        ClientError::InvalidResponse(message) if message.contains("id mismatch")
-    );
-    assert!(rejected);
-}
-
-#[tokio::test]
-async fn client_rejects_a_success_with_the_wrong_protocol_version() {
-    let client = ClusterClient::new(FixedResponseTransport(
-        r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"openengine.cluster/v0","capabilities":{},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}"#,
-    ));
-
-    let error = client.initialize().await.unwrap_err();
-    let rejected = matches!(
-        error,
-        ClientError::InvalidResponse(message) if message.contains("protocol version mismatch")
-    );
-    assert!(rejected);
-}
-
-#[tokio::test]
-async fn client_rejects_a_success_that_does_not_echo_the_requested_version() {
-    let client = ClusterClient::new(FixedResponseTransport(
-        r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"openengine.cluster/v1","capabilities":{},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}"#,
-    ));
-
-    let error = client
-        .initialize_with_version("openengine.cluster/v0")
-        .await
-        .unwrap_err();
-    let rejected = matches!(
-        error,
-        ClientError::InvalidResponse(message)
-            if message.contains("requested openengine.cluster/v0")
-                && message.contains("received openengine.cluster/v1")
-    );
-    assert!(rejected);
-}
-
-#[tokio::test]
-async fn client_rejects_success_responses_without_a_non_null_id() {
-    for response in [
-        r#"{"jsonrpc":"2.0","result":{"protocolVersion":"openengine.cluster/v1","capabilities":{},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}"#,
-        r#"{"jsonrpc":"2.0","id":null,"result":{"protocolVersion":"openengine.cluster/v1","capabilities":{},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}"#,
-    ] {
-        let client = ClusterClient::new(FixedResponseTransport(response));
-        assert!(matches!(
-            client.initialize().await.unwrap_err(),
-            ClientError::InvalidResponse(_)
-        ));
-    }
-}
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue, JsonAt};

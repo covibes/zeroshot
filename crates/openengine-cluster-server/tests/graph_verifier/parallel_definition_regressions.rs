@@ -214,6 +214,6 @@ async fn jointly_successful_sequential_parallels_invalidate_stale_ancestor_types
     let error = ProductionGraphVerifier::new(registry)
         .verify(&graph)
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::SchemaSafety));
 }

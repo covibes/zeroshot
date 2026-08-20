@@ -7,8 +7,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
-use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::value::deserialize_validated_wire;
 
 use crate::{
     FieldName, GraphProfile, MediaType, NonEmptyEnumSet, PayloadType, RedactionClass, TypeId,
@@ -78,27 +79,31 @@ impl WorkerProtocolBinding {
     }
 
     pub fn acp_v1() -> Self {
-        Self::new(WorkerProtocol::Acp, ACP_VERSION, ACP_PROFILE)
-            .expect("built-in ACP binding is valid")
+        Self::known(WorkerProtocol::Acp, ACP_VERSION, ACP_PROFILE)
     }
 
     pub fn a2a_1_0() -> Self {
-        Self::new(WorkerProtocol::A2a, A2A_VERSION, A2A_PROFILE)
-            .expect("built-in A2A binding is valid")
+        Self::known(WorkerProtocol::A2a, A2A_VERSION, A2A_PROFILE)
     }
 
     pub fn legacy_zeroshot_ship_v1() -> Self {
-        Self::new(
+        Self::known(
             WorkerProtocol::LegacyZeroshot,
             LEGACY_ZEROSHOT_VERSION,
             LEGACY_ZEROSHOT_PROFILE,
         )
-        .expect("built-in legacy binding is valid")
     }
 
     pub fn builtin_v1() -> Self {
-        Self::new(WorkerProtocol::Builtin, BUILTIN_VERSION, BUILTIN_PROFILE)
-            .expect("built-in binding is valid")
+        Self::known(WorkerProtocol::Builtin, BUILTIN_VERSION, BUILTIN_PROFILE)
+    }
+
+    fn known(protocol: WorkerProtocol, version: &str, profile: &str) -> Self {
+        Self {
+            protocol,
+            version: version.to_owned(),
+            profile: profile.to_owned(),
+        }
     }
 
     pub fn validate(&self) -> Result<(), WorkerContractError> {
@@ -125,8 +130,9 @@ impl<'de> Deserialize<'de> for WorkerProtocolBinding {
     where
         D: Deserializer<'de>,
     {
-        let wire = WorkerProtocolBindingWire::deserialize(deserializer)?;
-        Self::new(wire.protocol, wire.version, wire.profile).map_err(de::Error::custom)
+        deserialize_validated_wire(deserializer, |wire: WorkerProtocolBindingWire| {
+            Self::new(wire.protocol, wire.version, wire.profile)
+        })
     }
 }
 
@@ -251,8 +257,12 @@ pub struct ArtifactResultProfile {
     pub minimum_redaction: RedactionClass,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "camelCase",
+    try_from = "WorkerDescriptorWire"
+)]
 pub struct WorkerDescriptor {
     pub worker: WorkerRef,
     pub graph_profiles: Vec<GraphProfile>,
@@ -306,10 +316,14 @@ impl WorkerDescriptor {
     fn validate_legacy_binding(&self) -> Result<(), WorkerContractError> {
         let protocol_is_legacy = self.binding.protocol == WorkerProtocol::LegacyZeroshot;
         let identity_is_legacy = self.worker.as_str() == LEGACY_ZEROSHOT_WORKER;
+        let input_is_legacy = legacy_ship_request_payload_type()
+            .is_ok_and(|expected| self.contract.input == expected);
+        let output_is_legacy = legacy_ship_result_payload_type()
+            .is_ok_and(|expected| self.contract.output == expected);
         let valid_legacy = identity_is_legacy
             && self.graph_profiles == [GraphProfile::SingleWorker]
-            && self.contract.input == legacy_ship_request_payload_type()
-            && self.contract.output == legacy_ship_result_payload_type()
+            && input_is_legacy
+            && output_is_legacy
             && self.contract.verifier.is_none()
             && self.contract.errors == RUNTIME_WORKER_ERRORS;
         if (protocol_is_legacy && !valid_legacy) || (identity_is_legacy && !protocol_is_legacy) {
@@ -330,12 +344,10 @@ impl WorkerDescriptor {
     }
 }
 
-impl<'de> Deserialize<'de> for WorkerDescriptor {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = WorkerDescriptorWire::deserialize(deserializer)?;
+impl TryFrom<WorkerDescriptorWire> for WorkerDescriptor {
+    type Error = WorkerContractError;
+
+    fn try_from(wire: WorkerDescriptorWire) -> Result<Self, Self::Error> {
         let descriptor = Self {
             worker: wire.worker,
             graph_profiles: wire.graph_profiles,
@@ -345,7 +357,7 @@ impl<'de> Deserialize<'de> for WorkerDescriptor {
             artifact_profile: wire.artifact_profile,
             credential_requirements: wire.credential_requirements,
         };
-        descriptor.validate().map_err(de::Error::custom)?;
+        descriptor.validate()?;
         Ok(descriptor)
     }
 }
@@ -357,14 +369,10 @@ impl JsonSchema for WorkerDescriptor {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let base = generator.subschema_for::<WorkerDescriptorWire>();
-        let legacy_binding = serde_json::to_value(WorkerProtocolBinding::legacy_zeroshot_ship_v1())
-            .expect("built-in legacy binding must serialize");
-        let legacy_input = serde_json::to_value(legacy_ship_request_payload_type())
-            .expect("legacy input payload type must serialize");
-        let legacy_output = serde_json::to_value(legacy_ship_result_payload_type())
-            .expect("legacy output payload type must serialize");
-        let runtime_errors = serde_json::to_value(RUNTIME_WORKER_ERRORS)
-            .expect("runtime worker errors must serialize");
+        let legacy_binding = schema_constant(WorkerProtocolBinding::legacy_zeroshot_ship_v1());
+        let legacy_input = schema_constant_result(legacy_ship_request_payload_type());
+        let legacy_output = schema_constant_result(legacy_ship_result_payload_type());
+        let runtime_errors = schema_constant(RUNTIME_WORKER_ERRORS);
 
         json_schema!({
             "allOf": [
@@ -437,12 +445,23 @@ where
     if values
         .iter()
         .enumerate()
-        .all(|(index, value)| !values[..index].contains(value))
+        .all(|(index, value)| !values.iter().take(index).any(|prior| prior == value))
     {
         Ok(())
     } else {
         Err(WorkerContractError::Duplicate(kind))
     }
+}
+
+fn schema_constant(value: impl Serialize) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or(serde_json::Value::Bool(false))
+}
+
+fn schema_constant_result<T, E>(value: Result<T, E>) -> serde_json::Value
+where
+    T: Serialize,
+{
+    value.map_or(serde_json::Value::Bool(false), schema_constant)
 }
 
 fn nonempty_unique_array_schema<T>(generator: &mut SchemaGenerator) -> Schema

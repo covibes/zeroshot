@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_protocol::RequestId;
+use openengine_cluster_protocol::{RequestId, SubscriptionId};
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
@@ -14,8 +14,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use super::admission::{acquire_task_slot, reject_duplicate, InFlightIds, MAX_CONNECTION_TASKS};
 use super::{
-    agent_attach, logs, run_watch_subscription, ConnectionState, DecodedOutcome, RequestKind,
-    SubscriptionMap,
+    agent_attach, logs, native_v2, run_watch_subscription, ConnectionState, DecodedOutcome,
+    RequestKind, SubscriptionMap,
 };
 use crate::method_registry::SubscriptionKind;
 use crate::{ClusterBackend, Dispatcher};
@@ -89,56 +89,81 @@ where
     B: ClusterBackend,
 {
     match kind {
-        RequestKind::Cancel(subscription_id) => {
-            if let Some(cancel) = ctx.state.subscriptions.lock().remove(&subscription_id) {
-                cancel.notify_one();
-            }
-            RequestDispatch::Handled
-        }
+        RequestKind::Cancel(subscription_id) => handle_cancel(ctx, &subscription_id),
         RequestKind::Subscription { kind, id, params } => {
-            match kind {
-                SubscriptionKind::Watch => {
-                    spawn_subscription_task(ctx, id, params, run_watch_subscription).await;
-                }
-                SubscriptionKind::Logs => {
-                    spawn_subscription_task(ctx, id, params, logs::run_logs_subscription).await;
-                }
-                SubscriptionKind::AgentAttach => {
-                    spawn_subscription_task(
-                        ctx,
-                        id,
-                        params,
-                        agent_attach::run_agent_attach_subscription,
-                    )
-                    .await;
-                }
-            }
+            dispatch_subscription(kind, id, params, ctx).await;
             RequestDispatch::Handled
         }
         RequestKind::Passthrough {
             admission_id,
             outcome,
-        } => {
-            if let Some(id) = admission_id.clone() {
-                if reject_duplicate(&ctx.state.in_flight_ids, &ctx.state.outbound_tx, id).await {
-                    return RequestDispatch::Handled;
-                }
-            }
-            let Some(permit) =
-                acquire_task_slot(ctx.task_slots, &ctx.state.outbound_tx, admission_id.clone())
-                    .await
-            else {
-                if let Some(id) = admission_id {
-                    ctx.state.in_flight_ids.lock().remove(&id);
-                }
-                return RequestDispatch::Handled;
-            };
-            RequestDispatch::Passthrough {
-                admission_id,
-                outcome,
-                permit,
-            }
+        } => admit_passthrough(admission_id, outcome, ctx).await,
+    }
+}
+
+fn handle_cancel<B>(ctx: &DispatchCtx<'_, B>, subscription_id: &SubscriptionId) -> RequestDispatch {
+    if let Some(cancel) = ctx.state.subscriptions.lock().remove(subscription_id) {
+        cancel.notify_one();
+    }
+    RequestDispatch::Handled
+}
+
+async fn dispatch_subscription<B>(
+    kind: SubscriptionKind,
+    id: RequestId,
+    params: Value,
+    ctx: &mut DispatchCtx<'_, B>,
+) where
+    B: ClusterBackend,
+{
+    match kind {
+        SubscriptionKind::Watch => {
+            spawn_subscription_task(ctx, id, params, run_watch_subscription).await;
         }
+        SubscriptionKind::Logs => {
+            spawn_subscription_task(ctx, id, params, logs::run_logs_subscription).await;
+        }
+        SubscriptionKind::AgentAttach => {
+            spawn_subscription_task(ctx, id, params, agent_attach::run_agent_attach_subscription)
+                .await;
+        }
+        SubscriptionKind::RunWatch => {
+            spawn_subscription_task(ctx, id, params, native_v2::run_run_watch_subscription).await;
+        }
+        SubscriptionKind::RunLogs => {
+            spawn_subscription_task(ctx, id, params, native_v2::run_run_logs_subscription).await;
+        }
+        SubscriptionKind::RunAttach => {
+            spawn_subscription_task(ctx, id, params, native_v2::run_run_attach_subscription).await;
+        }
+    }
+}
+
+async fn admit_passthrough<B>(
+    admission_id: Option<RequestId>,
+    outcome: DecodedOutcome,
+    ctx: &DispatchCtx<'_, B>,
+) -> RequestDispatch
+where
+    B: ClusterBackend,
+{
+    if let Some(id) = admission_id.clone() {
+        if reject_duplicate(&ctx.state.in_flight_ids, &ctx.state.outbound_tx, id).await {
+            return RequestDispatch::Handled;
+        }
+    }
+    let Some(permit) =
+        acquire_task_slot(ctx.task_slots, &ctx.state.outbound_tx, admission_id.clone()).await
+    else {
+        if let Some(id) = admission_id {
+            ctx.state.in_flight_ids.lock().remove(&id);
+        }
+        return RequestDispatch::Handled;
+    };
+    RequestDispatch::Passthrough {
+        admission_id,
+        outcome,
+        permit,
     }
 }
 

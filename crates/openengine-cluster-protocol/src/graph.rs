@@ -15,6 +15,9 @@ use crate::{
     PositiveInteger,
 };
 
+mod instructions;
+
+pub use instructions::{NodeInstructions, NodeInstructionsError, MAX_NODE_INSTRUCTIONS_BYTES};
 pub use crate::graph_profile::{
     GraphProfile, GraphProfileSet, GraphProfilesError, FULL_GRAPH_PROFILE, GRAPH_PROFILES,
     SINGLE_WORKER_GRAPH_PROFILE,
@@ -268,6 +271,8 @@ pub enum Join {
 pub struct StepNode {
     pub name: NodeName,
     pub worker: WorkerRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<NodeInstructions>,
     pub input: PayloadType,
     pub output: PayloadType,
     pub input_bindings: Vec<InputBinding>,
@@ -292,6 +297,8 @@ pub struct VerifierNode {
     )]
     pub signals: BTreeMap<FieldName, NonEmptyEnumSet>,
     pub diagnostic: PayloadType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<NodeInstructions>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -336,7 +343,8 @@ pub struct LoopNode {
     pub name: NodeName,
     pub state: PayloadType,
     pub body: Box<GraphNode>,
-    pub until: Guard,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Guard>,
     pub max_iterations: PositiveInteger,
     pub promoted_state_paths: Vec<FieldPath>,
 }

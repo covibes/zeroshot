@@ -57,16 +57,16 @@ async fn websocket_watch_transcript_matches_in_process_and_shares_its_connection
 
     let transport = WebSocketTransport::new(ws);
     let ws_client = ClusterClient::new(&transport);
-    ws_client.initialize().await.unwrap();
+    ws_client.initialize().await.assert_value();
     let ws_watch = WatchSubscriptionClient::new(&transport);
 
-    let (_parked, mut ws_stream) = ws_watch.watch(WatchParams::default()).await.unwrap();
+    let (_parked, mut ws_stream) = ws_watch.watch(WatchParams::default()).await.assert_value();
 
     // AC: `subscription/cancel` releases only the cancelled subscription. A second, still-parked
     // subscription is cancelled immediately; it must observe nothing further even though it would
     // otherwise park-attach to the very run committed below.
-    let (_parked, cancel_probe) = ws_watch.watch(WatchParams::default()).await.unwrap();
-    cancel_probe.cancel().await.unwrap();
+    let (_parked, cancel_probe) = ws_watch.watch(WatchParams::default()).await.assert_value();
+    cancel_probe.cancel().await.assert_value();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let apply_result = ws_client
@@ -77,20 +77,20 @@ async fn websocket_watch_transcript_matches_in_process_and_shares_its_connection
             "websocket-wire-create",
         ))
         .await
-        .unwrap();
-    let generation = apply_result.generation.unwrap().get();
+        .assert_value();
+    let generation = apply_result.generation.assert_value().get();
     // AC: a unary request completes correctly while the watch subscription is actively
     // streaming on the same connection.
-    let get_result = ws_client.get(GetParams::default()).await.unwrap();
+    let get_result = ws_client.get(GetParams::default()).await.assert_value();
     assert_eq!(get_result.spec, Some(graph.clone()));
     ws_client
         .stop(stop(StopMode::Drain, generation, "websocket-wire-stop"))
         .await
-        .unwrap();
+        .assert_value();
     let ws_events = collect_transcript!(ws_stream);
 
     assert_transcripts_match(&in_process_events, &ws_events);
-    assert_cancel_probe_leak_model(cancel_probe, &ws_events[0].cursor).await;
+    assert_cancel_probe_leak_model(cancel_probe, &ws_events.assert_at(0).cursor).await;
 
     drop(ws_stream);
     drop(transport);
@@ -129,13 +129,13 @@ where
             Some(openengine_cluster_server::websocket::websocket_config()),
         )
         .await
-        .expect("server handshake must succeed");
+        .assert_value_with("server handshake must succeed");
         openengine_cluster_server::websocket::serve_websocket(binding, ws).await
     });
     let (client, _response) =
         tokio_tungstenite::client_async("ws://localhost/websocket", client_io)
             .await
-            .expect("client handshake must succeed");
+            .assert_value_with("client handshake must succeed");
     (client, server)
 }
 
@@ -159,8 +159,8 @@ async fn same_tenant_connections_share_backend_cas_and_idempotency() {
     let client_a = ClusterClient::new(&transport_a);
     let client_b = ClusterClient::new(&transport_b);
 
-    client_a.initialize().await.unwrap();
-    client_b.initialize().await.unwrap();
+    client_a.initialize().await.assert_value();
+    client_b.initialize().await.assert_value();
 
     // Connection A commits the run.
     let apply_a = client_a
@@ -171,7 +171,7 @@ async fn same_tenant_connections_share_backend_cas_and_idempotency() {
             "shared-backend-create",
         ))
         .await
-        .unwrap();
+        .assert_value();
     assert!(!apply_a.deduped);
 
     // The backend shares one CAS/idempotency domain for this tenant across both connections.
@@ -183,14 +183,14 @@ async fn same_tenant_connections_share_backend_cas_and_idempotency() {
             "shared-backend-create",
         ))
         .await
-        .unwrap();
+        .assert_value();
     assert!(apply_b.deduped);
     assert_eq!(apply_b.generation, apply_a.generation);
     assert_eq!(apply_b.run_id, apply_a.run_id);
 
     // Identity is stable per connection, while state ownership remains with the shared backend.
-    let get_a = client_a.get(GetParams::default()).await.unwrap();
-    let get_b = client_b.get(GetParams::default()).await.unwrap();
+    let get_a = client_a.get(GetParams::default()).await.assert_value();
+    let get_b = client_b.get(GetParams::default()).await.assert_value();
     assert_eq!(get_a.spec, Some(graph.clone()));
     assert_eq!(get_a, get_b);
 
@@ -212,7 +212,8 @@ impl TenantPartitioningBackend {
         match context.identity().tenant().as_str() {
             "tenant-a" => &self.tenant_a,
             "tenant-b" => &self.tenant_b,
-            tenant => panic!("unexpected fixture tenant {tenant}"),
+            tenant => None::<&FixtureCoordinator>
+                .assert_value_with(&format!("unexpected fixture tenant {tenant}")),
         }
     }
 }
@@ -261,8 +262,8 @@ async fn distinct_tenants_share_state_when_backend_does_not_partition() {
     let transport_b = WebSocketTransport::new(conn_b);
     let client_a = ClusterClient::new(&transport_a);
     let client_b = ClusterClient::new(&transport_b);
-    client_a.initialize().await.unwrap();
-    client_b.initialize().await.unwrap();
+    client_a.initialize().await.assert_value();
+    client_b.initialize().await.assert_value();
 
     let first = client_a
         .apply(committed(
@@ -272,7 +273,7 @@ async fn distinct_tenants_share_state_when_backend_does_not_partition() {
             "non-partitioning-key",
         ))
         .await
-        .unwrap();
+        .assert_value();
     let second = client_b
         .apply(committed(
             graph.clone(),
@@ -281,11 +282,11 @@ async fn distinct_tenants_share_state_when_backend_does_not_partition() {
             "non-partitioning-key",
         ))
         .await
-        .unwrap();
+        .assert_value();
     assert!(!first.deduped);
     assert!(second.deduped);
     assert_eq!(
-        client_b.get(GetParams::default()).await.unwrap().spec,
+        client_b.get(GetParams::default()).await.assert_value().spec,
         Some(graph)
     );
 
@@ -323,27 +324,30 @@ async fn distinct_tenants_are_isolated_only_when_backend_partitions() {
     let transport_b = WebSocketTransport::new(conn_b);
     let client_a = ClusterClient::new(&transport_a);
     let client_b = ClusterClient::new(&transport_b);
-    client_a.initialize().await.unwrap();
-    client_b.initialize().await.unwrap();
+    client_a.initialize().await.assert_value();
+    client_b.initialize().await.assert_value();
 
     let first = client_a
         .apply(committed(graph_a.clone(), Value::Null, 0, "same-key"))
         .await
-        .unwrap();
+        .assert_value();
     assert!(!first.deduped);
-    assert_eq!(client_b.get(GetParams::default()).await.unwrap().spec, None);
+    assert_eq!(
+        client_b.get(GetParams::default()).await.assert_value().spec,
+        None
+    );
 
     let second = client_b
         .apply(committed(graph_b.clone(), Value::Null, 0, "same-key"))
         .await
-        .unwrap();
+        .assert_value();
     assert!(!second.deduped);
     assert_eq!(
-        client_a.get(GetParams::default()).await.unwrap().spec,
+        client_a.get(GetParams::default()).await.assert_value().spec,
         Some(graph_a)
     );
     assert_eq!(
-        client_b.get(GetParams::default()).await.unwrap().spec,
+        client_b.get(GetParams::default()).await.assert_value().spec,
         Some(graph_b)
     );
 
@@ -352,3 +356,5 @@ async fn distinct_tenants_are_isolated_only_when_backend_partitions() {
     await_websocket_shutdown(server_a).await;
     await_websocket_shutdown(server_b).await;
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertValue};

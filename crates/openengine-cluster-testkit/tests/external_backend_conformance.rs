@@ -204,7 +204,7 @@ impl BackendFactory for ReorderedProfileFactory {
                     GraphProfile::Full,
                     GraphProfile::SingleWorker,
                 ])
-                .unwrap(),
+                .assert_value(),
                 logs: false,
                 agent_attach: false,
             },
@@ -243,7 +243,7 @@ impl BackendFactory for OptionalCapabilityFactory {
     async fn create(&self) -> Result<Self::Backend, Self::Error> {
         Ok(OptionalCapabilityBackend {
             capabilities: ServerCapabilities {
-                graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
+                graph_profiles: GraphProfileSet::new(vec![]).assert_value(),
                 logs: true,
                 agent_attach: true,
             },
@@ -309,7 +309,7 @@ impl BackendFactory for NonCloneFactory {
     async fn create(&self) -> Result<Self::Backend, Self::Error> {
         Ok(NonCloneBackend(OptionalCapabilityBackend {
             capabilities: ServerCapabilities {
-                graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
+                graph_profiles: GraphProfileSet::new(vec![]).assert_value(),
                 logs: false,
                 agent_attach: false,
             },
@@ -330,7 +330,9 @@ impl BackendFactory for NonCloneFactory {
 
 #[tokio::test]
 async fn runner_uses_the_exact_non_clone_backend_for_dispatch_reset_and_cleanup() {
-    let report = run_backend_conformance(&NonCloneFactory).await.unwrap();
+    let report = run_backend_conformance(&NonCloneFactory)
+        .await
+        .assert_value();
     assert_eq!(report.passed(), 16);
     assert_eq!(report.skipped(), 2);
 }
@@ -338,7 +340,7 @@ async fn runner_uses_the_exact_non_clone_backend_for_dispatch_reset_and_cleanup(
 #[tokio::test]
 async fn scripted_backend_factory_runs_every_portable_required_case() {
     let factory = ScriptedBackendFactory::new(vec![]);
-    let report = run_backend_conformance(&factory).await.unwrap();
+    let report = run_backend_conformance(&factory).await.assert_value();
 
     assert_eq!(report.cases().len(), conformance_catalog().len());
     assert_eq!(report.passed(), 16);
@@ -352,7 +354,7 @@ async fn scripted_backend_factory_runs_every_portable_required_case() {
 async fn graph_profile_registration_order_is_semantic() {
     let report = run_backend_conformance(&ReorderedProfileFactory)
         .await
-        .unwrap();
+        .assert_value();
 
     assert_eq!(report.passed(), 16);
     assert_eq!(report.skipped(), 2);
@@ -361,7 +363,7 @@ async fn graph_profile_registration_order_is_semantic() {
 #[tokio::test]
 async fn graph_profile_mismatch_fails_but_still_resets_and_cleans() {
     let factory = ScriptedBackendFactory::new(vec![GraphProfile::SingleWorker]);
-    let failures = run_backend_conformance(&factory).await.unwrap_err();
+    let failures = run_backend_conformance(&factory).await.assert_error();
 
     assert!(
         failures
@@ -388,7 +390,7 @@ async fn graph_profile_mismatch_fails_but_still_resets_and_cleans() {
 #[tokio::test]
 async fn advertised_optional_modules_execute_and_unadvertised_modules_only_skip_themselves() {
     let disabled = ScriptedBackendFactory::new(vec![]);
-    let disabled_report = run_backend_conformance(&disabled).await.unwrap();
+    let disabled_report = run_backend_conformance(&disabled).await.assert_value();
     let skipped: Vec<_> = disabled_report
         .cases()
         .iter()
@@ -401,7 +403,7 @@ async fn advertised_optional_modules_execute_and_unadvertised_modules_only_skip_
     );
 
     let enabled = OptionalCapabilityFactory;
-    let enabled_report = run_backend_conformance(&enabled).await.unwrap();
+    let enabled_report = run_backend_conformance(&enabled).await.assert_value();
     assert_eq!(enabled_report.passed(), conformance_catalog().len());
     assert_eq!(enabled_report.skipped(), 0);
 }
@@ -426,10 +428,10 @@ fn transport_applicability_matches_each_portable_probe_surface() {
             ConformanceModule::Watch | ConformanceModule::Logs | ConformanceModule::AgentAttach => {
                 assert!(!applicability.dispatcher, "{}", case.id());
                 assert!(applicability.typed_in_process, "{}", case.id());
-                let request: serde_json::Value = serde_json::from_str(case.input()).unwrap();
-                assert_eq!(request["jsonrpc"], "2.0", "{}", case.id());
-                assert!(request["method"].is_string(), "{}", case.id());
-                assert!(request["params"].is_object(), "{}", case.id());
+                let request: serde_json::Value = serde_json::from_str(case.input()).assert_value();
+                assert_eq!(request.assert_key("jsonrpc"), "2.0", "{}", case.id());
+                assert!(request.assert_key("method").is_string(), "{}", case.id());
+                assert!(request.assert_key("params").is_object(), "{}", case.id());
             }
         }
     }
@@ -440,6 +442,10 @@ fn transport_applicability_matches_each_portable_probe_surface() {
 async fn portable_backend_conformance_stress_load() {
     let factory = ScriptedBackendFactory::new(vec![]);
     for _ in 0..100 {
-        run_backend_conformance(&factory).await.unwrap();
+        run_backend_conformance(&factory).await.assert_value();
     }
 }
+
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
+
+use openengine_cluster_testkit::assertions::JsonAt;

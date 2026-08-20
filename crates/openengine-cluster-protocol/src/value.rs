@@ -67,6 +67,23 @@ impl Sha256String {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn from_digest(bytes: &[u8]) -> Self {
+        let mut encoded = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            encoded.push(hex_digit(byte >> 4));
+            encoded.push(hex_digit(byte & 0x0f));
+        }
+        Self(encoded)
+    }
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + value - 10),
+        _ => '?',
+    }
 }
 
 impl<'de> Deserialize<'de> for Sha256String {
@@ -146,10 +163,15 @@ where
         where
             E: de::Error,
         {
-            if (self.minimum..=MAX_SAFE_GENERATION).contains(&value) {
-                Ok(value)
-            } else {
+            if value < self.minimum {
+                Err(E::custom(format!(
+                    "integer must be at least {}",
+                    self.minimum
+                )))
+            } else if value > MAX_SAFE_GENERATION {
                 Err(E::custom("integer is outside the JavaScript-safe range"))
+            } else {
+                Ok(value)
             }
         }
 
@@ -168,14 +190,34 @@ where
             if !value.is_finite() || value.fract() != 0.0 {
                 return Err(E::custom("number is not an integer"));
             }
-            if value < self.minimum as f64 || value > MAX_SAFE_GENERATION as f64 {
+            if value < self.minimum as f64 {
+                return Err(E::custom(format!(
+                    "integer must be at least {}",
+                    self.minimum
+                )));
+            }
+            if value > MAX_SAFE_GENERATION as f64 {
                 return Err(E::custom("integer is outside the JavaScript-safe range"));
             }
-            self.visit_u64(value as u64)
+            integral_f64_to_u64(value)
+                .ok_or_else(|| E::custom("number is not a JavaScript-safe integer"))
+                .and_then(|value| self.visit_u64(value))
         }
     }
 
     deserializer.deserialize_any(SafeIntegerVisitor { minimum })
+}
+
+pub(crate) fn deserialize_validated_wire<'de, D, W, T, E>(
+    deserializer: D,
+    convert: impl FnOnce(W) -> Result<T, E>,
+) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    W: Deserialize<'de>,
+    E: fmt::Display,
+{
+    convert(W::deserialize(deserializer)?).map_err(de::Error::custom)
 }
 
 pub(crate) fn deserialize_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -217,11 +259,20 @@ where
             if value < 0.0 || value > f64::from(u32::MAX) {
                 return Err(E::custom("integer is outside the u32 range"));
             }
-            self.visit_u64(value as u64)
+            integral_f64_to_u64(value)
+                .ok_or_else(|| E::custom("number is not an integer in the u32 range"))
+                .and_then(|value| self.visit_u64(value))
         }
     }
 
     deserializer.deserialize_any(U32Visitor)
+}
+
+fn integral_f64_to_u64(value: f64) -> Option<u64> {
+    if value == 0.0 {
+        return Some(0);
+    }
+    value.to_string().parse().ok()
 }
 
 pub(crate) fn javascript_safe_integer_schema(minimum: u64) -> Schema {

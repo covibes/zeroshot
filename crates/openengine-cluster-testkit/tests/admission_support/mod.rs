@@ -20,8 +20,12 @@ pub fn client(
 }
 
 pub fn rpc_code(error: ClientError) -> String {
-    match error {
-        ClientError::Rpc(error) => error.data.expect("domain error data").code,
-        other => panic!("expected RPC error, got {other}"),
+    let rpc_error = match error {
+        ClientError::Rpc(error) => Some(error),
+        _ => None,
     }
+    .assert_value_with("expected an RPC error");
+    rpc_error.data.assert_value_with("domain error data").code
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

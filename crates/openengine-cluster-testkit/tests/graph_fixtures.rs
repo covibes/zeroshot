@@ -12,15 +12,15 @@ fn json_artifact(
     let artifact = artifacts
         .iter()
         .find(|artifact| artifact.relative_path.ends_with(suffix))
-        .unwrap_or_else(|| panic!("missing artifact {suffix}"));
-    serde_json::from_slice(&artifact.bytes).unwrap()
+        .assert_value_with(&format!("missing artifact {suffix}"));
+    serde_json::from_slice(&artifact.bytes).assert_value()
 }
 
 fn component_schema(graph_schema: &Value, name: &str) -> Value {
     json!({
-        "$schema": graph_schema["$schema"],
+        "$schema": graph_schema.assert_key("$schema"),
         "$ref": format!("#/$defs/{name}"),
-        "$defs": graph_schema["$defs"]
+        "$defs": graph_schema.assert_key("$defs")
     })
 }
 
@@ -68,6 +68,7 @@ const RUST_REJECTION_MARKERS: &[(&str, &str)] = &[
         "value must be at most 256 non-control characters",
         "INVALID_ARTIFACT_VALUE",
     ),
+    ("integer must be at least", "INVALID_BOUND"),
     (
         "integer is outside the JavaScript-safe range",
         "INVALID_BOUND",
@@ -160,12 +161,13 @@ fn classify_artifact_schema(schema_name: &str, document: &Value) -> Option<&'sta
 }
 
 fn classify_bounds_schema(schema_name: &str, document: &Value) -> Option<&'static str> {
-    let bounds = &document["bounds"];
+    let bounds = document.get("bounds")?;
     let zero_scalar = ["maxNodeExecutions", "peakConcurrency"]
         .iter()
         .any(|field| bounds.get(field).and_then(Value::as_u64) == Some(0));
-    let zero_attempt = bounds["attemptsPerNode"]
-        .as_object()
+    let zero_attempt = bounds
+        .get("attemptsPerNode")
+        .and_then(Value::as_object)
         .is_some_and(|attempts| attempts.values().any(|value| value.as_u64() == Some(0)));
     (schema_name == "compiled-ir" && (zero_scalar || zero_attempt)).then_some("INVALID_BOUND")
 }
@@ -246,7 +248,7 @@ fn duplicate_enum(object: &Map<String, Value>) -> bool {
                 values
                     .iter()
                     .enumerate()
-                    .any(|(index, value)| values[..index].contains(value))
+                    .any(|(index, value)| values.assert_slice_to(index).contains(value))
             })
 }
 
@@ -314,27 +316,42 @@ fn classify_schema_rejection(schema_name: &str, document: &Value) -> Option<&'st
     .next()
 }
 
+fn rust_rejection(schema_name: &str, document: &Value) -> String {
+    match schema_name {
+        "graph" => serde_json::from_value::<GraphSpec>(document.clone())
+            .assert_error()
+            .to_string(),
+        "compiled-ir" => serde_json::from_value::<CompiledGraphIr>(document.clone())
+            .assert_error()
+            .to_string(),
+        "artifact" => serde_json::from_value::<ArtifactRef>(document.clone())
+            .assert_error()
+            .to_string(),
+        other => None::<String>.assert_value_with(&format!("unknown fixture schema {other}")),
+    }
+}
+
 #[tokio::test]
 async fn positive_fixtures_round_trip_through_rust_and_generated_schemas() {
     let artifacts = generate_artifacts().await;
     let graph_schema = json_artifact(&artifacts, "/graph.schema.json");
     let compiled_schema = json_artifact(&artifacts, "/compiled-ir.schema.json");
-    let graph_validator = jsonschema::validator_for(&graph_schema).unwrap();
-    let compiled_validator = jsonschema::validator_for(&compiled_schema).unwrap();
+    let graph_validator = jsonschema::validator_for(&graph_schema).assert_value();
+    let compiled_validator = jsonschema::validator_for(&compiled_schema).assert_value();
 
     for suffix in [
         "/positive/full-all-nodes.json",
         "/positive/single-worker.json",
     ] {
         let value = json_artifact(&artifacts, suffix);
-        let parsed: GraphSpec = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        let parsed: GraphSpec = serde_json::from_value(value.clone()).assert_value();
+        assert_eq!(serde_json::to_value(parsed).assert_value(), value);
         assert!(graph_validator.is_valid(&value), "schema rejected {suffix}");
     }
 
     let compiled = json_artifact(&artifacts, "/positive/compiled-ir.json");
-    let parsed: CompiledGraphIr = serde_json::from_value(compiled.clone()).unwrap();
-    assert_eq!(serde_json::to_value(parsed).unwrap(), compiled);
+    let parsed: CompiledGraphIr = serde_json::from_value(compiled.clone()).assert_value();
+    assert_eq!(serde_json::to_value(parsed).assert_value(), compiled);
     assert!(compiled_validator.is_valid(&compiled));
 
     for (suffix, component) in [
@@ -344,25 +361,32 @@ async fn positive_fixtures_round_trip_through_rust_and_generated_schemas() {
         let value = json_artifact(&artifacts, suffix);
         match component {
             "GraphDiagnostic" => {
-                let parsed: GraphDiagnostic = serde_json::from_value(value.clone()).unwrap();
-                assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+                let parsed: GraphDiagnostic = serde_json::from_value(value.clone()).assert_value();
+                assert_eq!(serde_json::to_value(parsed).assert_value(), value);
             }
             "ArtifactRef" => {
-                let parsed: ArtifactRef = serde_json::from_value(value.clone()).unwrap();
-                assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+                let parsed: ArtifactRef = serde_json::from_value(value.clone()).assert_value();
+                assert_eq!(serde_json::to_value(parsed).assert_value(), value);
             }
-            _ => unreachable!(),
+            other => assert!(
+                matches!(other, "GraphDiagnostic" | "ArtifactRef"),
+                "unknown component {other}"
+            ),
         }
         let schema = component_schema(&graph_schema, component);
-        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+        assert!(
+            jsonschema::validator_for(&schema)
+                .assert_value()
+                .is_valid(&value)
+        );
     }
 
-    let bounds = compiled["bounds"].clone();
-    serde_json::from_value::<StructuralBounds>(bounds.clone()).unwrap();
+    let bounds = compiled.assert_key("bounds").clone();
+    serde_json::from_value::<StructuralBounds>(bounds.clone()).assert_value();
     let bounds_schema = component_schema(&graph_schema, "StructuralBounds");
     assert!(
         jsonschema::validator_for(&bounds_schema)
-            .unwrap()
+            .assert_value()
             .is_valid(&bounds)
     );
 }
@@ -374,14 +398,17 @@ async fn every_negative_fixture_is_rejected_with_its_committed_stable_code() {
     let compiled_schema = json_artifact(&artifacts, "/compiled-ir.schema.json");
     let artifact_schema = component_schema(&graph_schema, "ArtifactRef");
     let validators = [
-        ("graph", jsonschema::validator_for(&graph_schema).unwrap()),
+        (
+            "graph",
+            jsonschema::validator_for(&graph_schema).assert_value(),
+        ),
         (
             "compiled-ir",
-            jsonschema::validator_for(&compiled_schema).unwrap(),
+            jsonschema::validator_for(&compiled_schema).assert_value(),
         ),
         (
             "artifact",
-            jsonschema::validator_for(&artifact_schema).unwrap(),
+            jsonschema::validator_for(&artifact_schema).assert_value(),
         ),
     ];
     let mut rejected = Vec::new();
@@ -390,33 +417,26 @@ async fn every_negative_fixture_is_rejected_with_its_committed_stable_code() {
         .iter()
         .filter(|artifact| artifact.relative_path.contains("/fixtures/graph/negative/"))
     {
-        let fixture: Value = serde_json::from_slice(&artifact.bytes).unwrap();
-        let code = fixture["expectedCode"].as_str().unwrap().to_owned();
+        let fixture: Value = serde_json::from_slice(&artifact.bytes).assert_value();
+        let code = fixture
+            .assert_key("expectedCode")
+            .as_str()
+            .assert_value()
+            .to_owned();
         assert!(
             code.bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte == b'_'),
             "unstable diagnostic code in {}",
             artifact.relative_path
         );
-        let schema_name = fixture["schema"].as_str().unwrap();
-        let document = &fixture["document"];
-        let rust_error = match schema_name {
-            "graph" => serde_json::from_value::<GraphSpec>(document.clone())
-                .unwrap_err()
-                .to_string(),
-            "compiled-ir" => serde_json::from_value::<CompiledGraphIr>(document.clone())
-                .unwrap_err()
-                .to_string(),
-            "artifact" => serde_json::from_value::<ArtifactRef>(document.clone())
-                .unwrap_err()
-                .to_string(),
-            _ => panic!("unknown fixture schema {schema_name}"),
-        };
+        let schema_name = fixture.assert_key("schema").as_str().assert_value();
+        let document = fixture.assert_key("document");
+        let rust_error = rust_rejection(schema_name, document);
         let validator = validators
             .iter()
             .find(|(name, _)| *name == schema_name)
             .map(|(_, validator)| validator)
-            .unwrap();
+            .assert_value();
         assert!(
             !validator.is_valid(document),
             "JSON Schema accepted {}",
@@ -445,56 +465,7 @@ async fn every_negative_fixture_is_rejected_with_its_committed_stable_code() {
     assert_eq!(rejected.len(), 27);
 }
 
-#[tokio::test]
-async fn canonical_goldens_prove_equivalence_digest_and_semantic_order_sensitivity() {
-    let artifacts = generate_artifacts().await;
-    let compiled_schema = json_artifact(&artifacts, "/compiled-ir.schema.json");
-    let compiled_validator = jsonschema::validator_for(&compiled_schema).unwrap();
-    let base_value = json_artifact(&artifacts, "/canonical/base.json");
-    let reordered_value = json_artifact(&artifacts, "/canonical/reordered.json");
-    let mutated_value = json_artifact(&artifacts, "/canonical/sequence-mutated.json");
-    for (name, value) in [
-        ("base", &base_value),
-        ("reordered", &reordered_value),
-        ("sequence-mutated", &mutated_value),
-    ] {
-        assert!(
-            compiled_validator.is_valid(value),
-            "compiled IR schema rejected canonical fixture {name}: {:?}",
-            compiled_validator
-                .iter_errors(value)
-                .map(|error| error.to_string())
-                .collect::<Vec<_>>()
-        );
-    }
-    let base: CompiledGraphIr = serde_json::from_value(base_value).unwrap();
-    let reordered: CompiledGraphIr = serde_json::from_value(reordered_value).unwrap();
-    let mutated: CompiledGraphIr = serde_json::from_value(mutated_value).unwrap();
-    let bytes = &artifacts
-        .iter()
-        .find(|artifact| {
-            artifact
-                .relative_path
-                .ends_with("/canonical/base.canonical.json")
-        })
-        .unwrap()
-        .bytes;
-    let digest = std::str::from_utf8(
-        artifacts
-            .iter()
-            .find(|artifact| artifact.relative_path.ends_with("/canonical/base.sha256"))
-            .unwrap()
-            .bytes
-            .strip_suffix(b"\n")
-            .unwrap(),
-    )
-    .unwrap();
+#[path = "graph_fixtures/canonical.rs"]
+mod canonical;
 
-    assert_eq!(base.canonical_bytes().unwrap(), bytes.as_slice());
-    let raw_digest = Sha256::digest(bytes);
-    assert_eq!(format!("{raw_digest:x}"), digest);
-    assert_eq!(base.identity().unwrap().as_str(), digest);
-    assert_eq!(base.identity().unwrap(), reordered.identity().unwrap());
-    assert_ne!(base.identity().unwrap(), mutated.identity().unwrap());
-    println!("{digest}");
-}
+use openengine_cluster_testkit::assertions::{AssertError, AssertSlice, AssertValue, JsonAt};

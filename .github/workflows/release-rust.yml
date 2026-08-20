@@ -1,0 +1,699 @@
+name: Release Rust
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Build without publishing, release Rust artifacts and image, or publish the optional npm shim.
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - release
+          - publish-npm-shim
+      version:
+        description: Explicit Rust release version in X.Y.Z form.
+        required: true
+        type: string
+      release_commit:
+        description: Exact full lowercase commit SHA from main.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rust
+  cancel-in-progress: false
+
+env:
+  RUST_IMAGE: ghcr.io/the-open-engine/zeroshot-rust-target
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      tag: ${{ steps.release.outputs.tag }}
+      tag-exists: ${{ steps.release.outputs.tag-exists }}
+      publish-latest: ${{ steps.release.outputs.publish-latest }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Validate explicit release inputs
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::version must match X.Y.Z"
+            exit 1
+          }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::release_commit must be a full lowercase SHA"
+            exit 1
+          }
+
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.release_commit }}
+
+      - name: Verify exact main commit and independent tag
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ACTION: ${{ inputs.action }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags --force
+          current_commit="$(git rev-parse HEAD)"
+          [[ "$current_commit" == "$RELEASE_COMMIT" ]] || {
+            echo "::error::checkout resolved to $current_commit, not $RELEASE_COMMIT"
+            exit 1
+          }
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main || {
+            echo "::error::release commit $RELEASE_COMMIT is not on main"
+            exit 1
+          }
+
+          release_tag="zeroshot-rust-v$RELEASE_VERSION"
+          tag_exists=false
+          if tag_commit="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}")"; then
+            [[ "$tag_commit" == "$RELEASE_COMMIT" ]] || {
+              echo "::error::$release_tag already resolves to $tag_commit"
+              exit 1
+            }
+            tag_exists=true
+          fi
+          if [[ "$RELEASE_ACTION" == "publish-npm-shim" ]]; then
+            [[ "$tag_exists" == "true" ]] || {
+              echo "::error::$release_tag must exist before publishing the npm shim"
+              exit 1
+            }
+            gh release view "$release_tag" >/dev/null
+          fi
+          if [[ "$tag_exists" == "false" ]]; then
+            green_required="$(
+              gh api "/repos/$GITHUB_REPOSITORY/commits/$RELEASE_COMMIT/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.name == "required" and .app.slug == "github-actions" and .status == "completed" and .conclusion == "success")] | length'
+            )"
+            [[ "$green_required" -gt 0 ]] || {
+              echo "::error::$RELEASE_COMMIT has no successful CI / required check"
+              exit 1
+            }
+          fi
+
+          latest_rust_tag="$(
+            git tag --list 'zeroshot-rust-v[0-9]*' --sort=-version:refname | head -n 1
+          )"
+          publish_latest=false
+          if [[ "$tag_exists" == "false" ]]; then
+            if [[ -n "$latest_rust_tag" ]]; then
+              latest_version="${latest_rust_tag#zeroshot-rust-v}"
+              highest_version="$(printf '%s\n%s\n' "$latest_version" "$RELEASE_VERSION" | sort -V | tail -n 1)"
+              [[ "$highest_version" == "$RELEASE_VERSION" && "$latest_version" != "$RELEASE_VERSION" ]] || {
+                echo "::error::new Rust version $RELEASE_VERSION must be newer than $latest_version"
+                exit 1
+              }
+            fi
+            publish_latest=true
+          elif [[ "$latest_rust_tag" == "$release_tag" ]]; then
+            publish_latest=true
+          fi
+
+          {
+            echo "commit=$RELEASE_COMMIT"
+            echo "tag=$release_tag"
+            echo "tag-exists=$tag_exists"
+            echo "publish-latest=$publish_latest"
+            echo "version=$RELEASE_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+  rust-binaries:
+    needs: [plan]
+    if: inputs.action == 'dry-run' || inputs.action == 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            executable: zeroshot-rust.exe
+            c-compiler: cl.exe
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      BINARY_PATH: target/${{ matrix.target }}/release/${{ matrix.executable }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Setup Rust 1.97.0 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+
+      - name: Verify bundled SQLite C toolchain
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          C_COMPILER: ${{ matrix.c-compiler }}
+        run: command -v "$C_COMPILER"
+
+      - name: Verify bundled SQLite MSVC toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $installation) {
+            throw 'MSVC C toolchain required by bundled SQLite is unavailable'
+          }
+
+      - name: Stage explicit Rust package version
+        run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"
+        shell: bash
+
+      - name: Verify staged Rust package version
+        run: node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"
+        shell: bash
+
+      - name: Build standalone Rust release binary
+        run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}
+
+      - name: Run standalone Rust release binary
+        run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"
+        shell: bash
+
+      - name: Package target archive
+        run: |
+          node scripts/rust-distribution.js package \
+            --target "${{ matrix.target }}" \
+            --version "$RELEASE_TAG" \
+            --binary "$BINARY_PATH" \
+            --out rust-release
+        shell: bash
+
+      - name: Run executable extracted from target archive
+        run: |
+          node scripts/rust-distribution.js smoke-archive \
+            --target "${{ matrix.target }}" \
+            --archive "rust-release/zeroshot-rust-v${{ needs.plan.outputs.version }}-${{ matrix.target }}.tar.gz"
+        shell: bash
+
+      - name: Upload target archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-archive-${{ matrix.target }}
+          path: rust-release/*.tar.gz
+          if-no-files-found: error
+
+  rust-manifest:
+    needs: [plan, rust-binaries]
+    if: always() && needs.rust-binaries.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download every target archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: zeroshot-rust-archive-*
+          path: rust-release
+          merge-multiple: true
+
+      - name: Build and verify complete checksum manifest
+        run: node scripts/rust-distribution.js manifest --version "$RELEASE_TAG" --dir rust-release
+        shell: bash
+
+      - name: Upload complete Rust distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-distribution-v${{ needs.plan.outputs.version }}
+          path: |
+            rust-release/*.tar.gz
+            rust-release/SHA256SUMS
+          if-no-files-found: error
+
+  rust-image-input:
+    needs: [plan]
+    if: inputs.action == 'dry-run' || inputs.action == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Stage explicit Rust package version
+        run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"
+
+      - name: Build linux/amd64 target image
+        run: |
+          docker build --platform linux/amd64 \
+            --build-arg "VCS_REF=$RELEASE_COMMIT" \
+            --build-arg "ZEROSHOT_RUST_VERSION=$RELEASE_VERSION" \
+            --file docker/zeroshot-rust-target/Dockerfile \
+            --tag "$RUST_IMAGE:$RELEASE_VERSION" .
+
+      - name: Smoke target image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            "$RUST_IMAGE:$RELEASE_VERSION" --help >/dev/null
+          actual_version="$(
+            docker run --rm --platform linux/amd64 \
+              "$RUST_IMAGE:$RELEASE_VERSION" --version
+          )"
+          [[ "$actual_version" == "zeroshot-rust $RELEASE_VERSION" ]] || {
+            echo "::error::target image reports $actual_version"
+            exit 1
+          }
+
+      - name: Save exact image publication input
+        run: |
+          mkdir -p rust-image
+          docker image save --output rust-image/zeroshot-rust-target.tar "$RUST_IMAGE:$RELEASE_VERSION"
+
+      - name: Upload exact image publication input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-target-image-v${{ needs.plan.outputs.version }}
+          path: rust-image/zeroshot-rust-target.tar
+          if-no-files-found: error
+
+  rust-image-publish:
+    needs: [plan, rust-image-input, rust-publish]
+    if: |
+      inputs.action == 'release' &&
+      needs.rust-image-input.result == 'success' &&
+      needs.rust-publish.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+      PUBLISH_LATEST: ${{ needs.plan.outputs.publish-latest }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Download exact image publication input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeroshot-rust-target-image-v${{ needs.plan.outputs.version }}
+          path: rust-image
+
+      - name: Load exact target image publication input
+        run: |
+          docker image load --input rust-image/zeroshot-rust-target.tar
+          docker image tag "$RUST_IMAGE:$RELEASE_VERSION" "$RUST_IMAGE:release-candidate"
+
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Publish source-verified image tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUST_IMAGE:release-candidate"
+          pull_log="$RUNNER_TEMP/zeroshot-rust-image-pull.log"
+
+          image_label() {
+            docker image inspect --format "{{ index .Config.Labels \"$1\" }}" "$2"
+          }
+
+          pull_verified() {
+            reference="$1"
+            if docker pull "$reference" >"$pull_log" 2>&1; then
+              existing_revision="$(image_label org.opencontainers.image.revision "$reference")"
+              existing_version="$(image_label org.opencontainers.image.version "$reference")"
+              [[ "$existing_revision" == "$RELEASE_COMMIT" && "$existing_version" == "$RELEASE_VERSION" ]] || {
+                echo "::error::$reference already belongs to $existing_revision / $existing_version"
+                exit 1
+              }
+              return 0
+            fi
+            if ! grep --quiet --ignore-case --extended-regexp 'manifest unknown|not found' "$pull_log"; then
+              cat "$pull_log" >&2
+              exit 1
+            fi
+            return 1
+          }
+
+          candidate_revision="$(image_label org.opencontainers.image.revision "$candidate")"
+          candidate_version="$(image_label org.opencontainers.image.version "$candidate")"
+          [[ "$candidate_revision" == "$RELEASE_COMMIT" && "$candidate_version" == "$RELEASE_VERSION" ]] || {
+            echo "::error::candidate image does not identify the exact release source"
+            exit 1
+          }
+
+          version_ref="$RUST_IMAGE:$RELEASE_VERSION"
+          commit_ref="$RUST_IMAGE:$RELEASE_COMMIT"
+          version_exists=false
+          commit_exists=false
+          if pull_verified "$version_ref"; then version_exists=true; fi
+          if pull_verified "$commit_ref"; then commit_exists=true; fi
+
+          canonical="$candidate"
+          if [[ "$version_exists" == "true" ]]; then canonical="$version_ref"; fi
+          if [[ "$commit_exists" == "true" ]]; then
+            if [[ "$version_exists" == "true" ]]; then
+              version_id="$(docker image inspect --format '{{.Id}}' "$version_ref")"
+              commit_id="$(docker image inspect --format '{{.Id}}' "$commit_ref")"
+              [[ "$version_id" == "$commit_id" ]] || {
+                echo "::error::immutable Rust image tags resolve to different images"
+                exit 1
+              }
+            else
+              canonical="$commit_ref"
+            fi
+          fi
+
+          if [[ "$version_exists" == "false" ]]; then
+            docker image tag "$canonical" "$version_ref"
+            docker push "$version_ref"
+          fi
+          if [[ "$commit_exists" == "false" ]]; then
+            docker image tag "$canonical" "$commit_ref"
+            docker push "$commit_ref"
+          fi
+          if [[ "$PUBLISH_LATEST" == "true" ]]; then
+            docker image tag "$canonical" "$RUST_IMAGE:latest"
+            docker push "$RUST_IMAGE:latest"
+          else
+            echo "Keeping latest on the newer Rust release"
+          fi
+
+      - name: Verify anonymous image installation
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/zeroshot-rust-anonymous-docker
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          docker pull "$RUST_IMAGE:$RELEASE_VERSION"
+
+  rust-publish:
+    needs: [plan, rust-image-input, rust-manifest]
+    if: |
+      always() &&
+      inputs.action == 'release' &&
+      needs.rust-image-input.result == 'success' &&
+      needs.rust-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+      TAG_EXISTS: ${{ needs.plan.outputs.tag-exists }}
+    steps:
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download complete Rust distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeroshot-rust-distribution-v${{ needs.plan.outputs.version }}
+          path: rust-release
+
+      - name: Create or verify independent GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "$RELEASE_TAG already has a GitHub Release"
+          elif [[ "$TAG_EXISTS" == "true" ]]; then
+            gh release create "$RELEASE_TAG" \
+              --verify-tag --latest=false \
+              --title "Zeroshot Rust v$RELEASE_VERSION" \
+              --notes "Standalone Zeroshot Rust v$RELEASE_VERSION."
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$RELEASE_COMMIT" --latest=false \
+              --title "Zeroshot Rust v$RELEASE_VERSION" \
+              --notes "Standalone Zeroshot Rust v$RELEASE_VERSION."
+          fi
+
+      - name: Verify existing assets and upload only missing names
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release
+
+  rust-shim-input:
+    needs: [plan, rust-manifest]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      (
+        (inputs.action == 'dry-run' && needs.rust-manifest.result == 'success') ||
+        inputs.action == 'publish-npm-shim'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Checkout exact Rust release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download dry-run Rust distribution
+        if: inputs.action == 'dry-run'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeroshot-rust-distribution-v${{ needs.plan.outputs.version }}
+          path: rust-release
+
+      - name: Download published Rust distribution
+        if: inputs.action == 'publish-npm-shim'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$RELEASE_TAG" \
+            --pattern 'SHA256SUMS' \
+            --pattern "zeroshot-rust-v${RELEASE_VERSION}-*.tar.gz" \
+            --dir rust-release
+
+      - name: Verify exact shim distribution inputs
+        run: node scripts/rust-distribution.js verify --version "$RELEASE_VERSION" --dir rust-release
+
+      - name: Stage explicit npm shim version
+        working-directory: npm/zeroshot-rust
+        run: npm version "$RELEASE_VERSION" --no-git-tag-version
+
+      - name: Pack exact npm shim publication input
+        shell: bash
+        run: |
+          mkdir -p shim-release
+          npm pack ./npm/zeroshot-rust --pack-destination shim-release
+
+      - name: Install exact shim tarball against verified release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$RUNNER_TEMP/zeroshot-rust-shim-install"
+          tarballs=(shim-release/*.tgz)
+          [[ "${#tarballs[@]}" -eq 1 ]]
+          npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"
+          package_root="$install_root/node_modules/@the-open-engine/zeroshot-rust"
+          node - "$package_root" "$PWD/rust-release" <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const [packageRoot, releaseDirectory] = process.argv.slice(2);
+          const { install } = require(path.join(packageRoot, 'lib', 'install'));
+          install({
+            packageRoot,
+            platform: 'linux',
+            arch: 'x64',
+            fetchBuffer(url) {
+              const filename = path.basename(new URL(url).pathname);
+              return Promise.resolve(fs.readFileSync(path.join(releaseDirectory, filename)));
+            },
+          }).catch((error) => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+          actual_version="$("$install_root/node_modules/.bin/zeroshot-rust" --version)"
+          [[ "$actual_version" == "zeroshot-rust $RELEASE_VERSION" ]]
+
+      - name: Dry-run npm shim publication
+        if: inputs.action == 'dry-run'
+        shell: bash
+        run: |
+          npm publish --dry-run --access public shim-release/*.tgz
+
+      - name: Upload exact npm shim publication input
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-shim-v${{ needs.plan.outputs.version }}
+          path: shim-release/*.tgz
+          if-no-files-found: error
+
+  rust-shim-publish:
+    needs: [plan, rust-shim-input]
+    if: inputs.action == 'publish-npm-shim' && needs.rust-shim-input.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Download exact npm shim publication input
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeroshot-rust-shim-v${{ needs.plan.outputs.version }}
+          path: shim-release
+
+      - name: Idempotently publish standalone Rust shim package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="@the-open-engine/zeroshot-rust@$RELEASE_VERSION"
+          tarballs=(shim-release/*.tgz)
+          [[ "${#tarballs[@]}" -eq 1 ]]
+          local_integrity="$(
+            node - "${tarballs[0]}" <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const digest = crypto
+            .createHash('sha512')
+            .update(fs.readFileSync(process.argv[2]))
+            .digest('base64');
+          process.stdout.write(`sha512-${digest}`);
+          NODE
+          )"
+          if published="$(npm view "$package" version 2>/dev/null)"; then
+            [[ "$published" == "$RELEASE_VERSION" ]] || {
+              echo "::error::$package resolved to unexpected version $published"
+              exit 1
+            }
+            registry_integrity="$(npm view "$package" dist.integrity)"
+            [[ "$registry_integrity" == "$local_integrity" ]] || {
+              echo "::error::$package exists with different tarball integrity"
+              exit 1
+            }
+            echo "$package is already published; recovery is complete"
+          else
+            npm publish --provenance --access public shim-release/*.tgz
+          fi

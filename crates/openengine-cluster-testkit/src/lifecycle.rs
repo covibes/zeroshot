@@ -1,5 +1,7 @@
 //! Scripted lifecycle fixture helpers.
 
+use crate::fixture::*;
+
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     Cursor, DispatchState, Generation, IdempotencyKey, Phase, RetryResult, RunId, StopMode,
@@ -165,7 +167,7 @@ impl StoreState {
             .lifecycle
             .operational
             .as_mut()
-            .expect("running lifecycle metadata checked before update");
+            .assert_value_with("running lifecycle metadata checked before update");
         if let Some(labels) = params.labels.clone() {
             operational.labels = labels;
         }
@@ -190,7 +192,7 @@ impl StoreState {
                 .lifecycle
                 .operational
                 .clone()
-                .expect("running lifecycle metadata exists"),
+                .assert_value_with("running lifecycle metadata exists"),
             at_cursor,
             deduped: false,
         })
@@ -252,7 +254,7 @@ impl StoreState {
             .lifecycle
             .operational
             .as_mut()
-            .expect("running lifecycle metadata checked before stop");
+            .assert_value_with("running lifecycle metadata checked before stop");
         operational.stop_mode = Some(effective_mode);
         operational.dispatch_state = dispatch_state_for_stop(effective_mode);
         self.append_lifecycle(LifecycleEvent::StopRequested {
@@ -301,12 +303,12 @@ impl StoreState {
                 .lifecycle
                 .operational
                 .clone()
-                .expect("lifecycle metadata exists"),
+                .assert_value_with("lifecycle metadata exists"),
             at_cursor: self
                 .lifecycle
                 .latest_cursor
                 .clone()
-                .expect("admitted lifecycle has a cursor"),
+                .assert_value_with("admitted lifecycle has a cursor"),
             deduped: false,
         })
     }
@@ -320,7 +322,7 @@ impl StoreState {
                 .lifecycle
                 .operational
                 .as_mut()
-                .expect("admitted lifecycle metadata exists");
+                .assert_value_with("admitted lifecycle metadata exists");
             operational.dispatch_state = DispatchState::Stopped;
             operational.stop_mode = Some(mode);
             operational.in_flight = 0;

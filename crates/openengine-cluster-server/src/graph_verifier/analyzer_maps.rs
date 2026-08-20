@@ -125,7 +125,7 @@ impl<'a> Analyzer<'a> {
                     },
                 );
                 if parallel_required_completions(&parallel.join, parallel.branches.as_slice().len())
-                    == parallel.branches.as_slice().len() as u64
+                    == u64::try_from(parallel.branches.as_slice().len()).unwrap_or(u64::MAX)
                 {
                     for branch in parallel.branches.as_slice() {
                         self.collect_map_node_execution(branch, owner, presence.clone());

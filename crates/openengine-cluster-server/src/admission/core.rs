@@ -109,14 +109,18 @@ where
         if context.cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
+        let idempotency_key = params.idempotency_key.ok_or_else(|| {
+            BackendError::new(
+                INTERNAL_ERROR_CODE,
+                "Committed apply mode requires an idempotency key",
+            )
+        })?;
         let proposal = CommitProposal {
             graph: params.graph,
             compiled_ir: verified.compiled_ir,
             input: params.input,
             if_generation: params.if_generation,
-            idempotency_key: params
-                .idempotency_key
-                .expect("committed apply mode requires an idempotency key"),
+            idempotency_key,
             fingerprint,
         };
         self.store

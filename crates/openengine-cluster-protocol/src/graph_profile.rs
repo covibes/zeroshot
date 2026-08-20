@@ -51,7 +51,10 @@ pub enum GraphProfilesError {
 
 fn reject_out_of_order(values: &[GraphProfile]) -> Result<(), GraphProfilesError> {
     for pair in values.windows(2) {
-        match pair[0].cmp(&pair[1]) {
+        let [left, right] = pair else {
+            continue;
+        };
+        match left.cmp(right) {
             std::cmp::Ordering::Equal => return Err(GraphProfilesError::Duplicate),
             std::cmp::Ordering::Greater => return Err(GraphProfilesError::Unordered),
             std::cmp::Ordering::Less => {}

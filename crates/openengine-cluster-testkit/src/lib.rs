@@ -5,6 +5,7 @@ mod admission_artifacts;
 pub mod agent_attach;
 mod agent_attach_artifacts;
 pub mod artifacts;
+pub mod assertions;
 pub mod capability_vectors;
 pub mod conformance;
 pub mod fixture;
@@ -13,6 +14,8 @@ pub mod lifecycle;
 mod lifecycle_artifacts;
 pub mod logs;
 mod logs_artifacts;
+mod native_v2_observation_artifacts;
+pub use native_v2_observation_artifacts::{NativeV2ObservationSchema, native_v2_source_fixture};
 mod negative_graph_fixtures;
 mod schema_helpers;
 pub mod watch;
@@ -21,6 +24,7 @@ pub mod worker_artifacts;
 pub mod worker_profiles;
 
 pub use conformance::{run_backend_conformance, BackendFactory};
+pub use fixture::TemporaryDirectory;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{

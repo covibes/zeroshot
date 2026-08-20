@@ -27,6 +27,10 @@ use serde_json::json;
 use tokio::io::DuplexStream;
 use tokio::sync::Notify;
 
+#[path = "support/mod.rs"]
+pub mod support;
+use support::AssertValue;
+
 #[path = "reconnect_support/mod.rs"]
 mod reconnect_support;
 use reconnect_support::FIXTURE_QUEUE_CAPACITY;
@@ -49,9 +53,9 @@ async fn unary_initialize_and_get_round_trip_over_websocket_transport() {
     let transport = WebSocketTransport::new(ws);
     let client = ClusterClient::new(&transport);
 
-    let init = client.initialize().await.unwrap();
+    let init = client.initialize().await.assert_value();
     assert_eq!(init.protocol_version, PROTOCOL_VERSION);
-    let get_result = client.get(GetParams::default()).await.unwrap();
+    let get_result = client.get(GetParams::default()).await.assert_value();
     assert!(get_result.spec.is_none());
 
     drop(transport);
@@ -141,16 +145,18 @@ async fn cancel_request_aborts_in_flight_response_with_no_effect_and_keeps_conne
     })
     .to_string();
     let mut pending = transport.request(request);
-    tokio::select! {
-        _ = &mut pending => panic!("gated get must not resolve before its gate is released"),
-        () = tokio::time::sleep(Duration::from_millis(50)) => {}
-    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut pending)
+            .await
+            .is_err(),
+        "gated get must not resolve before its gate is released"
+    );
 
     // AC5: best-effort `$/cancelRequest` aborts response delivery for the in-flight request.
     transport
         .cancel_request(RequestId::String("gated-get".to_owned()))
         .await
-        .unwrap();
+        .assert_value();
 
     let outcome = tokio::time::timeout(Duration::from_millis(300), pending).await;
     assert!(outcome.is_err(), "a cancelled request must never resolve");
@@ -161,7 +167,10 @@ async fn cancel_request_aborts_in_flight_response_with_no_effect_and_keeps_conne
     );
 
     // AC5: the connection remains usable after the cancellation.
-    ClusterClient::new(&transport).initialize().await.unwrap();
+    ClusterClient::new(&transport)
+        .initialize()
+        .await
+        .assert_value();
 
     drop(transport);
     await_websocket_shutdown(server).await;

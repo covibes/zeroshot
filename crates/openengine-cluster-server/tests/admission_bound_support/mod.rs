@@ -147,13 +147,19 @@ impl ClusterBackend for SubscriptionCountingBackend {
 }
 
 fn assert_duplicate_response(response: &Value, id: i64) {
-    assert_eq!(response["id"], id);
-    assert_eq!(response["error"]["code"], -32600);
-    assert_eq!(response["error"]["data"]["code"], "DUPLICATE_REQUEST_ID");
+    assert_eq!(response.assert_at("id"), id);
+    assert_eq!(response.assert_at("error").assert_at("code"), -32600);
+    assert_eq!(
+        response
+            .assert_at("error")
+            .assert_at("data")
+            .assert_at("code"),
+        "DUPLICATE_REQUEST_ID"
+    );
 }
 
 fn assert_get_success(response: &Value, id: i64) {
-    assert_eq!(response["id"], id);
+    assert_eq!(response.assert_at("id"), id);
     assert!(response.get("result").is_some(), "{response}");
 }
 
@@ -164,13 +170,19 @@ async fn fill_task_slots<H: RequestChannel>(harness: &mut H, max_connection_task
     harness.send_get(max_connection_tasks).await;
     tokio::time::timeout(Duration::from_secs(1), harness.recv_value())
         .await
-        .expect("the bounded admission rejection must not wait for blocked backend calls")
+        .assert_value()
 }
 
 fn assert_server_busy(response: &Value, id: i64) {
-    assert_eq!(response["id"], id);
-    assert_eq!(response["error"]["code"], -32000);
-    assert_eq!(response["error"]["data"]["code"], "SERVER_BUSY");
+    assert_eq!(response.assert_at("id"), id);
+    assert_eq!(response.assert_at("error").assert_at("code"), -32000);
+    assert_eq!(
+        response
+            .assert_at("error")
+            .assert_at("data")
+            .assert_at("code"),
+        "SERVER_BUSY"
+    );
 }
 
 /// Sends two `get` requests sharing request id `1` while `gate` blocks the first from completing,
@@ -351,3 +363,5 @@ pub async fn assert_duplicate_cancellation_is_malformed<C: DuplicateCancellation
         .assert_unknown_member_cancellation_is_accepted()
         .await;
 }
+use crate::assert_at::AssertAt;
+use crate::assert_value::AssertValue;

@@ -25,8 +25,8 @@ fn empty_update(key: &str) -> UpdateParams {
         labels: None,
         log_level: None,
         suspended: None,
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new(key).unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new(key).assert_value(),
     }
 }
 
@@ -45,7 +45,7 @@ async fn typed_empty_update_is_rejected_at_backend_and_store_boundaries() {
         empty_update("empty-backend"),
     )
     .await
-    .unwrap_err();
+    .assert_error();
     assert_eq!(backend_error.kind, BackendErrorKind::InvalidParams);
     assert_eq!(backend_error.code, SCHEMA_VIOLATION);
     assert_eq!(store.inspect().await, before);
@@ -54,11 +54,11 @@ async fn typed_empty_update_is_rejected_at_backend_and_store_boundaries() {
         store.as_ref(),
         UpdateProposal {
             params: empty_update("empty-store"),
-            fingerprint: admission_fingerprint("update", &json!({"ifGeneration":1})).unwrap(),
+            fingerprint: admission_fingerprint("update", &json!({"ifGeneration":1})).assert_value(),
         },
     )
     .await
-    .unwrap_err();
+    .assert_error();
     assert_eq!(
         store_error,
         StoreError::SchemaViolation(
@@ -72,8 +72,11 @@ async fn typed_empty_update_is_rejected_at_backend_and_store_boundaries() {
 async fn lifecycle_suspend_in_flight_resume_preserves_the_durable_frontier() {
     let (client, store) = running().await;
 
-    let permit = store.acquire_dispatch(TurnId::new("turn-1")).await.unwrap();
-    let suspended = client.update(suspend(1, "suspend")).await.unwrap();
+    let permit = store
+        .acquire_dispatch(TurnId::new("turn-1"))
+        .await
+        .assert_value();
+    let suspended = client.update(suspend(1, "suspend")).await.assert_value();
     assert_eq!(
         suspended.operational.dispatch_state,
         DispatchState::Suspended
@@ -92,35 +95,38 @@ async fn lifecycle_suspend_in_flight_resume_preserves_the_durable_frontier() {
             output: json!({"verified":true}),
         })
         .await
-        .unwrap();
+        .assert_value();
     let while_suspended = client
         .get(openengine_cluster_protocol::GetParams::default())
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(
         while_suspended
             .status
             .operational
             .as_ref()
-            .unwrap()
+            .assert_value()
             .dispatch_state,
         DispatchState::Suspended
     );
-    assert_eq!(while_suspended.status.operational.unwrap().in_flight, 0);
-    let completion_cursor = while_suspended.at_cursor.unwrap();
+    assert_eq!(
+        while_suspended.status.operational.assert_value().in_flight,
+        0
+    );
+    let completion_cursor = while_suspended.at_cursor.assert_value();
 
-    let resumed = client.update(resume(1, "resume")).await.unwrap();
+    let resumed = client.update(resume(1, "resume")).await.assert_value();
     assert_eq!(resumed.operational.dispatch_state, DispatchState::Active);
     assert_ne!(resumed.at_cursor, completion_cursor);
     store
         .acquire_dispatch(TurnId::new("successor"))
         .await
-        .unwrap();
+        .assert_value();
 
     let effects = store.inspect().await;
     assert_eq!(effects.lifecycle.verified_turns.len(), 1);
     assert_eq!(
-        effects.lifecycle.verified_turns[0].output,
+        effects.lifecycle.verified_turns.assert_at(0).output,
         json!({"verified":true})
     );
 }
@@ -134,17 +140,17 @@ async fn lifecycle_cas_and_method_qualified_idempotency_are_atomic() {
             labels: None,
             log_level: None,
             suspended: Some(true),
-            if_generation: Generation::new(2).unwrap(),
-            idempotency_key: IdempotencyKey::new("stale").unwrap(),
+            if_generation: Generation::new(2).assert_value(),
+            idempotency_key: IdempotencyKey::new("stale").assert_value(),
         })
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(stale), GENERATION_CONFLICT);
     let before = store.inspect().await;
 
     let original = suspend(1, "shared-key");
-    let receipt = client.update(original.clone()).await.unwrap();
-    let replay = client.update(original).await.unwrap();
+    let receipt = client.update(original.clone()).await.assert_value();
+    let replay = client.update(original).await.assert_value();
     assert!(replay.deduped);
     assert_eq!(replay.at_cursor, receipt.at_cursor);
 
@@ -153,20 +159,20 @@ async fn lifecycle_cas_and_method_qualified_idempotency_are_atomic() {
             labels: None,
             log_level: None,
             suspended: Some(false),
-            if_generation: Generation::new(1).unwrap(),
-            idempotency_key: IdempotencyKey::new("shared-key").unwrap(),
+            if_generation: Generation::new(1).assert_value(),
+            idempotency_key: IdempotencyKey::new("shared-key").assert_value(),
         })
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(conflict), IDEMPOTENCY_REUSE);
     let cross_method = client
         .stop(StopParams {
             mode: StopMode::Force,
-            if_generation: Generation::new(1).unwrap(),
-            idempotency_key: IdempotencyKey::new("shared-key").unwrap(),
+            if_generation: Generation::new(1).assert_value(),
+            idempotency_key: IdempotencyKey::new("shared-key").assert_value(),
         })
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(cross_method), IDEMPOTENCY_REUSE);
     assert_eq!(before.control, store.inspect().await.control);
 }
@@ -194,7 +200,7 @@ async fn assert_authoritative_reads_reject(
 ) {
     store.replace_lifecycle_snapshot_for_test(snapshot).await;
     assert_eq!(
-        rpc_code(client.initialize().await.unwrap_err()),
+        rpc_code(client.initialize().await.assert_error()),
         INTERNAL_ERROR_CODE,
         "initialize accepted {case}"
     );
@@ -203,7 +209,7 @@ async fn assert_authoritative_reads_reject(
             client
                 .get(openengine_cluster_protocol::GetParams::default())
                 .await
-                .unwrap_err()
+                .assert_error()
         ),
         INTERNAL_ERROR_CODE,
         "get accepted {case}"
@@ -233,9 +239,12 @@ async fn reject_force_request_with_active_status() {
 
 async fn reject_update_ignored_by_operational_status() {
     let (client, store) = running().await;
-    client.update(suspend(1, "suspend-fold")).await.unwrap();
+    client
+        .update(suspend(1, "suspend-fold"))
+        .await
+        .assert_value();
     let mut snapshot = store.inspect().await.lifecycle;
-    snapshot.operational.as_mut().unwrap().dispatch_state = DispatchState::Active;
+    snapshot.operational.as_mut().assert_value().dispatch_state = DispatchState::Active;
     assert_authoritative_reads_reject(
         &client,
         &store,
@@ -250,11 +259,11 @@ async fn reject_dispatch_after_drain() {
     store
         .acquire_dispatch(TurnId::new("existing"))
         .await
-        .unwrap();
+        .assert_value();
     client
         .stop(stop(StopMode::Drain, 1, "drain-fold"))
         .await
-        .unwrap();
+        .assert_value();
     let mut snapshot = store.inspect().await.lifecycle;
     let dispatch_cursor = Cursor::new("corrupt-dispatch-after-drain");
     snapshot.records.push(LifecycleRecord {
@@ -264,7 +273,7 @@ async fn reject_dispatch_after_drain() {
         },
     });
     snapshot.latest_cursor = Some(dispatch_cursor);
-    snapshot.operational.as_mut().unwrap().in_flight = 2;
+    snapshot.operational.as_mut().assert_value().in_flight = 2;
     assert_authoritative_reads_reject(&client, &store, snapshot, "dispatch after drain").await;
 }
 
@@ -273,9 +282,9 @@ async fn reject_finished_mode_mismatch() {
     client
         .stop(stop(StopMode::Force, 1, "force-fold"))
         .await
-        .unwrap();
+        .assert_value();
     let mut snapshot = store.inspect().await.lifecycle;
-    let last = snapshot.records.last_mut().unwrap();
+    let last = snapshot.records.last_mut().assert_value();
     last.event = LifecycleEvent::Finished {
         mode: StopMode::Drain,
     };
@@ -295,3 +304,5 @@ async fn authoritative_reads_reconstruct_every_lifecycle_transition() {
     reject_dispatch_after_drain().await;
     reject_finished_mode_mismatch().await;
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};

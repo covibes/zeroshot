@@ -1,10 +1,10 @@
 //! Production WebSocket transport for the typed Cluster Protocol client: demultiplexes unary
 //! request/response traffic and generic `watch`/`logs`/`agent_attach` subscription notifications
 //! sharing one WebSocket connection, correlating by request id and subscription id respectively.
-//! [`WebSocketFrameSink`] backs [`crate::multiplex::FrameSink`], and [`WebSocketTransport`] holds
-//! one [`crate::multiplex::MultiplexedTransport`] built from it -- the exact same demux state and
+//! A private WebSocket frame sink backs the shared transport core, and [`WebSocketTransport`]
+//! holds one private multiplexed transport built from it -- the exact same demux state and
 //! [`crate::JsonRpcTransport`]/[`crate::SubscriptionTransport`] wiring [`crate::NdjsonTransport`]
-//! holds via [`crate::NdjsonFrameSink`] -- so only the underlying frame shape (NDJSON line vs.
+//! holds -- so only the underlying frame shape (NDJSON line vs.
 //! `Message::Text`) differs between the two transports.
 
 use std::collections::HashMap;
@@ -232,9 +232,9 @@ where
 
 /// WebSocket transport that demultiplexes unary request/response traffic and generic `watch`
 /// subscription notifications sharing one connection. Holds one
-/// [`multiplex::MultiplexedTransport`], which owns the demux state (write sink, pending-request
-/// map, pump task, watch-id counter) and implements every [`JsonRpcTransport`]/
-/// [`SubscriptionTransport`] method against it.
+/// private multiplexed transport, which owns the demux state (write sink, pending-request map,
+/// pump task, watch-id counter) and implements every [`crate::JsonRpcTransport`]/
+/// [`crate::SubscriptionTransport`] method against it.
 pub struct WebSocketTransport<S> {
     inner: multiplex::MultiplexedTransport<WebSocketFrameSink<S>>,
 }
@@ -311,8 +311,10 @@ mod tls_trust_policy_tests {
     use super::*;
 
     fn generated_root() -> CertificateDer<'static> {
-        let CertifiedKey { cert, .. } =
-            generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
+        let generated = generate_simple_self_signed(vec!["localhost".to_owned()]);
+        assert!(generated.is_ok(), "test root generation must succeed");
+        let mut generated = generated.into_iter().collect::<Vec<_>>();
+        let CertifiedKey { cert, .. } = generated.swap_remove(0);
         cert.der().clone()
     }
 
@@ -321,14 +323,17 @@ mod tls_trust_policy_tests {
         native_errors: Vec<String>,
         additional_root_certificates: Vec<CertificateDer<'static>>,
     ) -> WebSocketDialError {
-        match build_tls_connector_from_native(
+        let result = build_tls_connector_from_native(
             native_certificates,
             native_errors,
             additional_root_certificates,
-        ) {
-            Ok(_) => panic!("invalid native trust state must fail closed"),
-            Err(error) => error,
-        }
+        );
+        assert!(
+            result.is_err(),
+            "invalid native trust state must fail closed"
+        );
+        let mut errors = result.err().into_iter().collect::<Vec<_>>();
+        errors.swap_remove(0)
     }
 
     #[test]

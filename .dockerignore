@@ -1,5 +1,6 @@
 .git
 .cache
+.opcore
 node_modules
 **/node_modules
 target

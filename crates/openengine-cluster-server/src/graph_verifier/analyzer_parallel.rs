@@ -50,9 +50,9 @@ impl<'a> Analyzer<'a> {
                         .flatten()
                 })
                 .collect::<Vec<_>>();
-            for left in 0..promoted_types.len() {
-                for right in (left + 1)..promoted_types.len() {
-                    if !compatible_types(promoted_types[left], promoted_types[right]) {
+            for (left, left_type) in promoted_types.iter().enumerate() {
+                for right_type in promoted_types.iter().skip(left + 1) {
+                    if !compatible_types(left_type, right_type) {
                         emit_diagnostic!(
                             self,
                             GraphDiagnosticCode::SchemaSafety,
@@ -75,20 +75,21 @@ impl<'a> Analyzer<'a> {
         if !matches!(par.join, Join::All {}) {
             return;
         }
-        for left in 0..branches.len() {
-            for right in (left + 1)..branches.len() {
-                for left_path in branches[left].possible_writes.keys() {
-                    for right_path in branches[right].possible_writes.keys() {
+        for (left, (left_branch, left_node)) in
+            branches.iter().zip(par.branches.as_slice()).enumerate()
+        {
+            for (right_branch, right_node) in
+                branches.iter().zip(par.branches.as_slice()).skip(left + 1)
+            {
+                for left_path in left_branch.possible_writes.keys() {
+                    for right_path in right_branch.possible_writes.keys() {
                         if paths_overlap(left_path, right_path) {
                             emit_diagnostic!(
                                 self,
                                 GraphDiagnosticCode::WriteConflict,
                                 "parallel all branches have overlapping writes",
                                 with_field(path, "branches"),
-                                vec![
-                                    par.branches.as_slice()[left].name().clone(),
-                                    par.branches.as_slice()[right].name().clone(),
-                                ],
+                                vec![left_node.name().clone(), right_node.name().clone(),],
                             );
                         }
                     }
@@ -122,7 +123,7 @@ impl<'a> Analyzer<'a> {
             );
         }
         if let Join::Quorum { count } = group.join {
-            if count.get() > group.branches.as_slice().len() as u64 {
+            if count.get() > u64::try_from(group.branches.as_slice().len()).unwrap_or(u64::MAX) {
                 emit_diagnostic!(
                     self,
                     GraphDiagnosticCode::InvalidGraphShape,

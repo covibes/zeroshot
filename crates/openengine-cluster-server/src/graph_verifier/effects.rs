@@ -9,12 +9,12 @@ pub(super) fn terminal_effects(name: &NodeName, incoming: &Flow) -> Effects {
 }
 
 pub(super) fn node_identity(node: &GraphNode) -> usize {
-    std::ptr::from_ref(node).cast::<()>() as usize
+    std::ptr::from_ref(node).cast::<()>().addr()
 }
 
 pub(super) fn parallel_required_completions(join: &Join, branch_count: usize) -> u64 {
     match join {
-        Join::All {} => branch_count as u64,
+        Join::All {} => u64::try_from(branch_count).unwrap_or(u64::MAX),
         Join::Any {} | Join::First { .. } => 1,
         Join::Quorum { count } => count.get(),
     }
@@ -59,7 +59,8 @@ pub(super) fn merge_parallel_scenarios(
         merged.exit_failed = scenarios
             .iter()
             .flat_map(|scenario| scenario.iter())
-            .flat_map(|index| branches[*index].exit_failed.clone())
+            .filter_map(|index| branches.get(*index))
+            .flat_map(|branch| branch.exit_failed.clone())
             .collect();
         merged.falls_through = true;
     }
@@ -82,9 +83,9 @@ pub(super) fn parallel_definition_effects(
         }
         let guaranteed = scenarios.iter().all(|scenario| {
             parallel_fact_is_definite(scenario, required, |index| {
-                branches[index]
-                    .parallel_definition_effects
-                    .contains(&candidate)
+                branches
+                    .get(index)
+                    .is_some_and(|branch| branch.parallel_definition_effects.contains(&candidate))
             })
         });
         if guaranteed {
@@ -108,7 +109,9 @@ pub(super) fn parallel_definite_nodes(
         .filter(|name| {
             scenarios.iter().all(|scenario| {
                 parallel_fact_is_definite(scenario, required, |index| {
-                    branches[index].definite_nodes.contains(name)
+                    branches
+                        .get(index)
+                        .is_some_and(|branch| branch.definite_nodes.contains(name))
                 })
             })
         })
@@ -129,13 +132,19 @@ pub(super) fn parallel_definite_writes(
         .filter_map(|path| {
             let guaranteed = scenarios.iter().all(|scenario| {
                 parallel_fact_is_definite(scenario, required, |index| {
-                    branches[index].definite_writes.contains_key(&path)
+                    branches
+                        .get(index)
+                        .is_some_and(|branch| branch.definite_writes.contains_key(&path))
                 })
             });
             let providers = scenarios
                 .iter()
                 .flat_map(|scenario| scenario.iter())
-                .filter_map(|index| branches[*index].definite_writes.get(&path))
+                .filter_map(|index| {
+                    branches
+                        .get(*index)
+                        .and_then(|branch| branch.definite_writes.get(&path))
+                })
                 .collect::<Vec<_>>();
             guaranteed
                 .then(|| intersect_write_fact_set(&providers))
@@ -163,20 +172,24 @@ pub(super) fn parallel_outcome_writes(
     for (name, path) in candidates {
         let guaranteed = scenarios.iter().all(|scenario| {
             parallel_fact_is_definite(scenario, required, |index| {
-                branches[index]
-                    .outcome_writes
-                    .get(&name)
-                    .is_some_and(|writes| writes.contains_key(&path))
+                branches.get(index).is_some_and(|branch| {
+                    branch
+                        .outcome_writes
+                        .get(&name)
+                        .is_some_and(|writes| writes.contains_key(&path))
+                })
             })
         });
         let providers = scenarios
             .iter()
             .flat_map(|scenario| scenario.iter())
             .filter_map(|index| {
-                branches[*index]
-                    .outcome_writes
-                    .get(&name)
-                    .and_then(|writes| writes.get(&path))
+                branches.get(*index).and_then(|branch| {
+                    branch
+                        .outcome_writes
+                        .get(&name)
+                        .and_then(|writes| writes.get(&path))
+                })
             })
             .collect::<Vec<_>>();
         if guaranteed {
@@ -193,7 +206,8 @@ pub(super) fn parallel_fact_is_definite(
     required: u64,
     provides: impl Fn(usize) -> bool,
 ) -> bool {
-    (completing.iter().filter(|index| !provides(**index)).count() as u64) < required
+    u64::try_from(completing.iter().filter(|index| !provides(**index)).count()).unwrap_or(u64::MAX)
+        < required
 }
 
 pub(super) fn intersect_write_fact_set(writes: &[&WriteFact]) -> Option<WriteFact> {

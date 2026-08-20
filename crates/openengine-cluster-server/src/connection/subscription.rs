@@ -36,6 +36,14 @@ impl EventSource for WatchEventStream {
     }
 }
 
+impl<E: Send> EventSource for crate::native_v2::RunSubscriptionStream<E> {
+    type Item = crate::native_v2::RunSubscriptionItem<E>;
+
+    async fn next(&mut self) -> Option<Self::Item> {
+        crate::native_v2::RunSubscriptionStream::next(self).await
+    }
+}
+
 /// Grouped owned per-connection channels for [`run_established_subscription`], keeping that
 /// function's argument count reasonable.
 pub(super) struct SubscriptionChannels {

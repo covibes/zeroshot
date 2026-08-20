@@ -32,10 +32,10 @@ async fn plan_is_pure_for_approve_and_reject() {
             graph: graph.clone(),
         })
         .await
-        .unwrap();
+        .assert_value();
     assert!(approved.ok);
     assert!(approved.bounds.is_some());
-    let rejected = client.plan(PlanParams { graph }).await.unwrap();
+    let rejected = client.plan(PlanParams { graph }).await.assert_value();
     assert!(!rejected.ok);
     assert_eq!(rejected.diagnostics, vec![diagnostic]);
     assert!(rejected.bounds.is_none());
@@ -57,9 +57,12 @@ async fn dry_run_reports_sorted_diff_without_writes() {
             idempotency_key: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(result.generation, None);
-    assert_eq!(result.diff.unwrap().added[0].as_str(), "zeta");
+    assert_eq!(
+        result.diff.assert_value().added.assert_at(0).as_str(),
+        "zeta"
+    );
     assert!(store.inspect().await.is_empty());
 }
 
@@ -80,11 +83,11 @@ async fn dry_run_rejects_input_and_keys_before_verification() {
             input: None,
             dry_run: true,
             if_generation: None,
-            idempotency_key: Some(IdempotencyKey::new("forbidden").unwrap()),
+            idempotency_key: Some(IdempotencyKey::new("forbidden").assert_value()),
         },
     ] {
         assert_eq!(
-            rpc_code(client.apply(params).await.unwrap_err()),
+            rpc_code(client.apply(params).await.assert_error()),
             SCHEMA_VIOLATION
         );
     }
@@ -106,7 +109,7 @@ async fn dry_run_change_and_noop_leave_committed_effects_byte_stable() {
     client
         .apply(committed(original.clone(), json!(null), 0, "create"))
         .await
-        .unwrap();
+        .assert_value();
     let effects = store.inspect().await;
 
     let noop = client
@@ -114,25 +117,25 @@ async fn dry_run_change_and_noop_leave_committed_effects_byte_stable() {
             graph: original,
             input: None,
             dry_run: true,
-            if_generation: Some(Generation::new(1).unwrap()),
+            if_generation: Some(Generation::new(1).assert_value()),
             idempotency_key: None,
         })
         .await
-        .unwrap();
-    assert!(noop.diff.unwrap().is_empty());
+        .assert_value();
+    assert!(noop.diff.assert_value().is_empty());
     let changed = client
         .apply(ApplyParams {
             graph: changed,
             input: None,
             dry_run: true,
-            if_generation: Some(Generation::new(1).unwrap()),
+            if_generation: Some(Generation::new(1).assert_value()),
             idempotency_key: None,
         })
         .await
-        .unwrap();
-    let diff = changed.diff.unwrap();
-    assert_eq!(diff.added[0].as_str(), "changed");
-    assert_eq!(diff.removed[0].as_str(), "original");
+        .assert_value();
+    let diff = changed.diff.assert_value();
+    assert_eq!(diff.added.assert_at(0).as_str(), "changed");
+    assert_eq!(diff.removed.assert_at(0).as_str(), "original");
     assert_eq!(store.inspect().await, effects);
 }
 
@@ -151,25 +154,25 @@ async fn committed_lifecycle_creates_changes_and_deduplicates() {
     let create = client
         .apply(committed(first.clone(), json!(null), 0, "create"))
         .await
-        .unwrap();
-    assert_eq!(create.generation, Some(Generation::new(1).unwrap()));
-    assert_eq!(create.run_id.as_ref().unwrap().as_str(), "run-1");
+        .assert_value();
+    assert_eq!(create.generation, Some(Generation::new(1).assert_value()));
+    assert_eq!(create.run_id.as_ref().assert_value().as_str(), "run-1");
 
     let changed = client
         .apply(committed(second, json!(null), 1, "change"))
         .await
-        .unwrap();
-    assert_eq!(changed.generation, Some(Generation::new(2).unwrap()));
-    assert_eq!(changed.run_id.as_ref().unwrap().as_str(), "run-2");
+        .assert_value();
+    assert_eq!(changed.generation, Some(Generation::new(2).assert_value()));
+    assert_eq!(changed.run_id.as_ref().assert_value().as_str(), "run-2");
 
     let changed_back = client
         .apply(committed(first.clone(), json!(null), 2, "back"))
         .await
-        .unwrap();
+        .assert_value();
     let replay = client
         .apply(committed(first, json!(null), 2, "back"))
         .await
-        .unwrap();
+        .assert_value();
     assert!(replay.deduped);
     assert_eq!(replay.generation, changed_back.generation);
     assert_eq!(store.inspect().await.seed_ledger.len(), 3);
@@ -187,24 +190,24 @@ async fn committed_lifecycle_unchanged_apply_preserves_run_and_rejects_input() {
     let created = client
         .apply(committed(graph.clone(), json!(null), 0, "create"))
         .await
-        .unwrap();
+        .assert_value();
     let unchanged = client
         .apply(ApplyParams {
             graph: graph.clone(),
             input: None,
             dry_run: false,
-            if_generation: Some(Generation::new(1).unwrap()),
-            idempotency_key: Some(IdempotencyKey::new("noop").unwrap()),
+            if_generation: Some(Generation::new(1).assert_value()),
+            idempotency_key: Some(IdempotencyKey::new("noop").assert_value()),
         })
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(unchanged.generation, created.generation);
     assert_eq!(unchanged.run_id, created.run_id);
     let before_invalid = store.inspect().await;
     let error = client
         .apply(committed(graph, json!(null), 1, "invalid-resubmit"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(error), SCHEMA_VIOLATION);
     assert_eq!(store.inspect().await, before_invalid);
 }
@@ -231,7 +234,7 @@ async fn input_and_cas_failures_preserve_the_authoritative_snapshot() {
     let invalid = client
         .apply(committed(graph.clone(), json!({"count":1.5}), 0, "bad"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(invalid), SCHEMA_VIOLATION);
     assert!(store.inspect().await.is_empty());
 
@@ -240,27 +243,27 @@ async fn input_and_cas_failures_preserve_the_authoritative_snapshot() {
             graph: graph.clone(),
             input: None,
             dry_run: false,
-            if_generation: Some(Generation::new(0).unwrap()),
-            idempotency_key: Some(IdempotencyKey::new("missing").unwrap()),
+            if_generation: Some(Generation::new(0).assert_value()),
+            idempotency_key: Some(IdempotencyKey::new("missing").assert_value()),
         })
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(missing), SCHEMA_VIOLATION);
     assert!(store.inspect().await.is_empty());
 
     client
         .apply(committed(graph, json!({"count":1}), 0, "create"))
         .await
-        .unwrap();
+        .assert_value();
     let before_conflict = store.inspect().await;
     let conflict = client
         .apply(committed(changed, json!(null), 0, "stale"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(conflict), GENERATION_CONFLICT);
     assert_eq!(store.inspect().await, before_conflict);
-    let snapshot = client.get(GetParams::default()).await.unwrap();
-    assert_eq!(snapshot.status.observed_generation.unwrap().get(), 1);
+    let snapshot = client.get(GetParams::default()).await.assert_value();
+    assert_eq!(snapshot.status.observed_generation.assert_value().get(), 1);
     assert_eq!(snapshot.at_cursor, before_conflict.control.cursor);
 }
 
@@ -270,7 +273,7 @@ async fn idempotency_and_cancellation_replay_preserves_atomic_append_order() {
     let compiled = compiled_from_graph_fixture(&graph);
     let (client, verifier, store) = client(vec![ScriptedOutcome::approve(compiled, vec![])]);
     let original = committed(graph.clone(), json!(1), 0, "stable-key");
-    let receipt = client.apply(original.clone()).await.unwrap();
+    let receipt = client.apply(original.clone()).await.assert_value();
     let effects = store.inspect().await;
     let append_kinds: Vec<_> = effects
         .append_order
@@ -297,7 +300,7 @@ async fn idempotency_and_cancellation_replay_preserves_atomic_append_order() {
     let conflict = client
         .apply(committed(graph.clone(), json!(2), 0, "stable-key"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(conflict), IDEMPOTENCY_REUSE);
     assert_eq!(
         verifier.call_count(),
@@ -306,7 +309,7 @@ async fn idempotency_and_cancellation_replay_preserves_atomic_append_order() {
     );
     assert_eq!(store.inspect().await, effects);
 
-    let replay = client.apply(original).await.unwrap();
+    let replay = client.apply(original).await.assert_value();
     assert!(replay.deduped);
     assert_eq!(replay.generation, receipt.generation);
     assert_eq!(replay.run_id, receipt.run_id);
@@ -325,7 +328,7 @@ async fn idempotency_null_input_and_omitted_input_are_conflicting_requests() {
             "presence-sensitive",
         ))
         .await
-        .unwrap();
+        .assert_value();
     let committed_effects = store.inspect().await;
 
     let error = client
@@ -333,11 +336,11 @@ async fn idempotency_null_input_and_omitted_input_are_conflicting_requests() {
             graph,
             input: None,
             dry_run: false,
-            if_generation: Some(Generation::new(0).unwrap()),
-            idempotency_key: Some(IdempotencyKey::new("presence-sensitive").unwrap()),
+            if_generation: Some(Generation::new(0).assert_value()),
+            idempotency_key: Some(IdempotencyKey::new("presence-sensitive").assert_value()),
         })
         .await
-        .unwrap_err();
+        .assert_error();
 
     assert_eq!(rpc_code(error), IDEMPOTENCY_REUSE);
     assert_eq!(
@@ -357,13 +360,16 @@ async fn internal_verifier_failure_is_redacted_from_the_wire() {
     let error = client
         .apply(committed(graph, json!(null), 0, "internal-failure"))
         .await
-        .unwrap_err();
+        .assert_error();
     let rendered = format!("{error:?}");
     match error {
         openengine_cluster_client::ClientError::Rpc(error) => {
-            assert_eq!(error.data.unwrap().code, INTERNAL_ERROR_CODE);
+            assert_eq!(error.data.assert_value().code, INTERNAL_ERROR_CODE);
         }
-        other => panic!("expected RPC error, got {other}"),
+        other => assert!(
+            matches!(other, openengine_cluster_client::ClientError::Rpc(_)),
+            "expected RPC error"
+        ),
     }
     assert!(
         !rendered.contains(SENTINEL),
@@ -402,7 +408,10 @@ async fn idempotency_and_cancellation_before_create_has_zero_effects() {
     barrier.wait_until_entered().await;
     cancellation.cancel();
     barrier.release();
-    assert_eq!(rpc_code(task.await.unwrap().unwrap_err()), CANCELLED);
+    assert_eq!(
+        rpc_code(task.await.assert_value().assert_error()),
+        CANCELLED
+    );
     assert!(cancelled_store.inspect().await.is_empty());
 }
 
@@ -414,7 +423,7 @@ async fn idempotency_and_cancellation_restores_existing_run_and_replays_after_co
     client
         .apply(committed(graph.clone(), json!(1), 0, "stable-key"))
         .await
-        .unwrap();
+        .assert_value();
     let effects = store.inspect().await;
     let changed = graph_fixture("changed", json!({"kind":"null"}));
     let barrier = openengine_cluster_testkit::admission::VerifierBarrier::default();
@@ -442,7 +451,10 @@ async fn idempotency_and_cancellation_restores_existing_run_and_replays_after_co
     barrier.wait_until_entered().await;
     cancellation.cancel();
     barrier.release();
-    assert_eq!(rpc_code(update.await.unwrap().unwrap_err()), CANCELLED);
+    assert_eq!(
+        rpc_code(update.await.assert_value().assert_error()),
+        CANCELLED
+    );
     assert_eq!(store.inspect().await, effects);
 
     let replay_backend = AdmissionCoordinator::from_shared(
@@ -461,9 +473,11 @@ async fn idempotency_and_cancellation_restores_existing_run_and_replays_after_co
     let recovered = replay_client
         .apply(committed(graph, json!(1), 0, "stable-key"))
         .await
-        .unwrap();
+        .assert_value();
     assert!(
         recovered.deduped,
         "post-commit cancellation must replay receipt"
     );
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};

@@ -67,10 +67,6 @@ test('Pi release identity is one exact official package install', () => {
     'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.1'
   );
 
-  const hostedPackage = JSON.parse(
-    fs.readFileSync(path.join(__dirname, '..', '..', 'docker', 'zeroshot-oecp', 'package.json'))
-  );
-  assert.equal(hostedPackage.dependencies[PI_PACKAGE_NAME], PI_SUPPORTED_VERSION);
   const workflow = fs.readFileSync(
     path.join(__dirname, '..', '..', '.github', 'workflows', 'live-provider-smoke.yml'),
     'utf8'

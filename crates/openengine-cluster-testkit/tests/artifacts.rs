@@ -5,12 +5,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use openengine_cluster_protocol::PROTOCOL_VERSION;
 use openengine_cluster_server::method_registry::METHOD_REGISTRY;
 use openengine_cluster_testkit::artifacts::{
-    ArtifactError, check_artifacts, generate_artifacts, write_artifacts,
+    Artifact, ArtifactError, check_artifacts, generate_artifacts, write_artifacts,
 };
 
 #[path = "schema_support/mod.rs"]
 mod schema_support;
 use schema_support::find_schema;
+
+fn generated_json(artifacts: &[Artifact], suffix: &str) -> serde_json::Value {
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.relative_path.ends_with(suffix))
+        .assert_value_with(&format!("missing generated artifact {suffix}"));
+    serde_json::from_slice(&artifact.bytes).assert_value()
+}
 
 #[tokio::test]
 async fn generated_artifacts_are_complete_and_committed_without_drift() {
@@ -103,11 +111,11 @@ async fn generated_artifacts_are_complete_and_committed_without_drift() {
 
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .assert_value()
         .parent()
-        .unwrap()
+        .assert_value()
         .to_path_buf();
-    check_artifacts(&workspace).await.unwrap();
+    check_artifacts(&workspace).await.assert_value();
 }
 
 #[tokio::test]
@@ -116,13 +124,14 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
     let openrpc = artifacts
         .iter()
         .find(|artifact| artifact.relative_path.ends_with("/openrpc.json"))
-        .unwrap();
-    let openrpc: serde_json::Value = serde_json::from_slice(&openrpc.bytes).unwrap();
-    let methods: Vec<_> = openrpc["methods"]
+        .assert_value();
+    let openrpc: serde_json::Value = serde_json::from_slice(&openrpc.bytes).assert_value();
+    let methods: Vec<_> = openrpc
+        .assert_key("methods")
         .as_array()
-        .unwrap()
+        .assert_value()
         .iter()
-        .map(|method| method["name"].as_str().unwrap())
+        .map(|method| method.assert_key("name").as_str().assert_value())
         .collect();
     let registry_methods = METHOD_REGISTRY
         .iter()
@@ -140,52 +149,60 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
         "LegacyShipRequest",
         "LegacyShipResult",
     ] {
-        assert!(openrpc["components"]["schemas"].get(component).is_some());
+        assert!(
+            openrpc
+                .assert_key("components")
+                .assert_key("schemas")
+                .get(component)
+                .is_some()
+        );
     }
 }
 
 #[tokio::test]
 async fn openrpc_apply_controls_match_the_authoritative_apply_schema() {
     let artifacts = generate_artifacts().await;
-    let parse_artifact = |suffix: &str| {
-        let artifact = artifacts
-            .iter()
-            .find(|artifact| artifact.relative_path.ends_with(suffix))
-            .unwrap_or_else(|| panic!("missing generated artifact {suffix}"));
-        serde_json::from_slice::<serde_json::Value>(&artifact.bytes).unwrap()
-    };
-    let openrpc = parse_artifact("/openrpc.json");
-    let schema = parse_artifact("/schema.json");
-    let apply = openrpc["methods"]
+    let openrpc = generated_json(&artifacts, "/openrpc.json");
+    let schema = generated_json(&artifacts, "/schema.json");
+    let apply = openrpc
+        .assert_key("methods")
         .as_array()
-        .unwrap()
+        .assert_value()
         .iter()
-        .find(|method| method["name"] == "apply")
-        .unwrap();
+        .find(|method| method.assert_key("name") == "apply")
+        .assert_value();
 
     for property in ["dryRun", "ifGeneration", "idempotencyKey"] {
-        let advertised = apply["params"]
+        let advertised = apply
+            .assert_key("params")
             .as_array()
-            .unwrap()
+            .assert_value()
             .iter()
-            .find(|parameter| parameter["name"] == property)
-            .unwrap_or_else(|| panic!("OpenRPC apply is missing {property}"));
+            .find(|parameter| parameter.assert_key("name") == property)
+            .assert_value_with(&format!("OpenRPC apply is missing {property}"));
         assert_eq!(
-            advertised["schema"], schema["$defs"]["ApplyParams"]["properties"][property],
+            advertised.assert_key("schema"),
+            schema
+                .assert_key("$defs")
+                .assert_key("ApplyParams")
+                .assert_key("properties")
+                .assert_key(property),
             "OpenRPC drifted from ApplyParams for {property}"
         );
     }
 
-    let idempotency_schema = apply["params"]
+    let idempotency_schema = apply
+        .assert_key("params")
         .as_array()
-        .unwrap()
+        .assert_value()
         .iter()
-        .find(|parameter| parameter["name"] == "idempotencyKey")
-        .unwrap()["schema"]
+        .find(|parameter| parameter.assert_key("name") == "idempotencyKey")
+        .assert_value()
+        .assert_key("schema")
         .clone();
     assert!(
         !jsonschema::validator_for(&idempotency_schema)
-            .unwrap()
+            .assert_value()
             .is_valid(&serde_json::json!("bad\nkey")),
         "OpenRPC must reject idempotency-key control characters"
     );
@@ -194,48 +211,51 @@ async fn openrpc_apply_controls_match_the_authoritative_apply_schema() {
 #[tokio::test]
 async fn openrpc_exposes_closed_lifecycle_controls() {
     let artifacts = generate_artifacts().await;
-    let parse_artifact = |suffix: &str| {
-        let artifact = artifacts
-            .iter()
-            .find(|artifact| artifact.relative_path.ends_with(suffix))
-            .unwrap_or_else(|| panic!("missing generated artifact {suffix}"));
-        serde_json::from_slice::<serde_json::Value>(&artifact.bytes).unwrap()
-    };
-    let openrpc = parse_artifact("/openrpc.json");
-    let schema = parse_artifact("/schema.json");
+    let openrpc = generated_json(&artifacts, "/openrpc.json");
+    let schema = generated_json(&artifacts, "/schema.json");
     for (method_name, required) in [
         ("update", vec!["ifGeneration", "idempotencyKey"]),
         ("stop", vec!["mode", "ifGeneration", "idempotencyKey"]),
     ] {
-        let method = openrpc["methods"]
+        let method = openrpc
+            .assert_key("methods")
             .as_array()
-            .unwrap()
+            .assert_value()
             .iter()
-            .find(|method| method["name"] == method_name)
-            .unwrap();
+            .find(|method| method.assert_key("name") == method_name)
+            .assert_value();
         for name in required {
             assert_eq!(
-                method["params"]
+                method
+                    .assert_key("params")
                     .as_array()
-                    .unwrap()
+                    .assert_value()
                     .iter()
-                    .find(|parameter| parameter["name"] == name)
-                    .unwrap()["required"],
+                    .find(|parameter| parameter.assert_key("name") == name)
+                    .assert_value()
+                    .assert_key("required"),
                 true
             );
         }
     }
-    let mut update_schema = schema["$defs"]["UpdateParams"].clone();
-    update_schema["$defs"] = schema["$defs"].clone();
-    let update_validator = jsonschema::validator_for(&update_schema).unwrap();
-    let update_method = openrpc["methods"]
+    let mut update_schema = schema
+        .assert_key("$defs")
+        .assert_key("UpdateParams")
+        .clone();
+    update_schema
+        .as_object_mut()
+        .assert_value()
+        .insert("$defs".to_owned(), schema.assert_key("$defs").clone());
+    let update_validator = jsonschema::validator_for(&update_schema).assert_value();
+    let update_method = openrpc
+        .assert_key("methods")
         .as_array()
-        .unwrap()
+        .assert_value()
         .iter()
-        .find(|method| method["name"] == "update")
-        .unwrap();
+        .find(|method| method.assert_key("name") == "update")
+        .assert_value();
     let advertised_update_validator =
-        jsonschema::validator_for(&update_method["x-params-schema"]).unwrap();
+        jsonschema::validator_for(update_method.assert_key("x-params-schema")).assert_value();
     let empty_operational_update = serde_json::json!({
         "ifGeneration":1,"idempotencyKey":"empty"
     });
@@ -256,7 +276,7 @@ async fn openrpc_exposes_closed_lifecycle_controls() {
 async fn schema_is_derived_from_canonical_envelopes_with_required_success_ids() {
     let artifacts = generate_artifacts().await;
     let schema = find_schema(&artifacts);
-    let definitions = schema["$defs"].as_object().unwrap();
+    let definitions = schema.assert_key("$defs").as_object().assert_value();
 
     assert!(
         definitions
@@ -285,16 +305,28 @@ async fn schema_is_derived_from_canonical_envelopes_with_required_success_ids() 
         .map(|(_, definition)| definition)
     {
         assert!(
-            definition["required"]
+            definition
+                .assert_key("required")
                 .as_array()
-                .unwrap()
+                .assert_value()
                 .contains(&serde_json::json!("id"))
         );
-        assert_eq!(definition["properties"]["id"]["$ref"], "#/$defs/RequestId");
+        assert_eq!(
+            definition
+                .assert_key("properties")
+                .assert_key("id")
+                .assert_key("$ref"),
+            "#/$defs/RequestId"
+        );
     }
 
     assert_eq!(
-        definitions["InitializeParams"]["properties"]["protocolVersion"]["const"],
+        definitions
+            .get("InitializeParams")
+            .assert_value()
+            .assert_key("properties")
+            .assert_key("protocolVersion")
+            .assert_key("const"),
         PROTOCOL_VERSION
     );
 }
@@ -303,25 +335,27 @@ async fn schema_is_derived_from_canonical_envelopes_with_required_success_ids() 
 async fn artifact_check_fails_on_byte_drift_and_missing_files() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .assert_value()
         .as_nanos();
     let workspace = std::env::temp_dir().join(format!(
         "openengine-cluster-artifact-test-{}-{unique}",
         std::process::id()
     ));
-    write_artifacts(&workspace).await.unwrap();
+    write_artifacts(&workspace).await.assert_value();
 
     let schema = workspace.join("protocol/openengine-cluster/v1/schema.json");
-    fs::write(&schema, b"drift\n").unwrap();
+    fs::write(&schema, b"drift\n").assert_value();
     assert!(matches!(
         check_artifacts(&workspace).await,
         Err(ArtifactError::Drift(path)) if path == schema
     ));
 
-    fs::remove_file(&schema).unwrap();
+    fs::remove_file(&schema).assert_value();
     assert!(matches!(
         check_artifacts(&workspace).await,
         Err(ArtifactError::Missing(path)) if path == schema
     ));
-    fs::remove_dir_all(workspace).unwrap();
+    fs::remove_dir_all(workspace).assert_value();
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};

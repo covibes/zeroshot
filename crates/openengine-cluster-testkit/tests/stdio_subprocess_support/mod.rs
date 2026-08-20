@@ -25,18 +25,18 @@ pub fn spawn_child() -> Child {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .unwrap()
+        .assert_value()
 }
 
 /// Spawns the subprocess and starts draining its stderr in the background.
 pub fn spawn() -> (StdioSubprocess, ChildStdin, ChildStdout) {
     let mut child = spawn_child();
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    let stdin = child.stdin.take().assert_value();
+    let stdout = child.stdout.take().assert_value();
+    let mut stderr = child.stderr.take().assert_value();
     let stderr_task = tokio::spawn(async move {
         let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).await.unwrap();
+        stderr.read_to_end(&mut bytes).await.assert_value();
         bytes
     });
     (StdioSubprocess { child, stderr_task }, stdin, stdout)
@@ -47,8 +47,8 @@ impl StdioSubprocess {
     /// have already dropped whatever held `stdin`/`stdout` (e.g. the transport wrapping them) so
     /// the child observes EOF and exits.
     pub async fn join(mut self) {
-        assert!(self.child.wait().await.unwrap().success());
-        let stderr_bytes = self.stderr_task.await.unwrap();
+        assert!(self.child.wait().await.assert_value().success());
+        let stderr_bytes = self.stderr_task.await.assert_value();
         assert!(
             stderr_bytes.is_empty(),
             "unexpected stderr output: {}",
@@ -56,3 +56,5 @@ impl StdioSubprocess {
         );
     }
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

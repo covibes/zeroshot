@@ -13,6 +13,20 @@ const repositoryRoot = path.resolve(__dirname, '..');
 const targetManifestPath = path.join(repositoryRoot, 'distribution', 'zeroshot-rust-targets.json');
 const targets = Object.freeze(JSON.parse(fs.readFileSync(targetManifestPath, 'utf8')));
 const VERSION_ERROR = 'RUST_VERSION_MISMATCH';
+const RUST_RELEASE_TAG_PREFIX = 'zeroshot-rust-v';
+const COMMANDS = Object.freeze([
+  'package',
+  'manifest',
+  'verify',
+  'dry-run',
+  'stage-version',
+  'check-version',
+  'check-repository',
+  'print-version',
+  'smoke',
+  'smoke-archive',
+  'publish-assets',
+]);
 
 function isVersionCharacter(character) {
   return (
@@ -24,7 +38,12 @@ function isVersionCharacter(character) {
 }
 
 function normalizeVersion(tag) {
-  const version = typeof tag === 'string' && tag.startsWith('v') ? tag.slice(1) : tag;
+  const version =
+    typeof tag === 'string' && tag.startsWith(RUST_RELEASE_TAG_PREFIX)
+      ? tag.slice(RUST_RELEASE_TAG_PREFIX.length)
+      : typeof tag === 'string' && tag.startsWith('v')
+        ? tag.slice(1)
+        : tag;
   const prereleaseStart = typeof version === 'string' ? version.indexOf('-') : -1;
   const core = prereleaseStart === -1 ? version : version.slice(0, prereleaseStart);
   const prerelease = prereleaseStart === -1 ? '' : version.slice(prereleaseStart + 1);
@@ -36,9 +55,15 @@ function normalizeVersion(tag) {
       .split('.')
       .every((part) => part && [...part].every((character) => isVersionCharacter(character)));
   if (!validCore || !validPrerelease) {
-    throw new Error(`invalid release tag ${JSON.stringify(tag)}; expected vX.Y.Z`);
+    throw new Error(
+      `invalid Rust release version ${JSON.stringify(tag)}; expected X.Y.Z or ${RUST_RELEASE_TAG_PREFIX}X.Y.Z`
+    );
   }
   return version;
+}
+
+function rustReleaseTag(version) {
+  return `${RUST_RELEASE_TAG_PREFIX}${normalizeVersion(version)}`;
 }
 
 function archiveName(version, target) {
@@ -157,12 +182,27 @@ function createManifest({ version, directory }) {
   });
   const manifest = `${entries.join('\n')}\n`;
   fs.writeFileSync(path.join(directory, 'SHA256SUMS'), manifest);
-  const parsed = parseChecksumManifest(manifest);
-  for (const { target } of targets) {
-    const filename = archiveName(version, target);
-    verifyChecksum(filename, fs.readFileSync(path.join(directory, filename)), parsed);
-  }
+  verifyDistribution({ version, directory });
   return manifest;
+}
+
+function verifyDistribution({ version, directory }) {
+  const expected = targets.map(({ target }) => archiveName(version, target));
+  const manifest = parseChecksumManifest(
+    fs.readFileSync(path.join(directory, 'SHA256SUMS'), 'utf8')
+  );
+  if (manifest.size !== expected.length || expected.some((filename) => !manifest.has(filename))) {
+    throw new Error(
+      `DISTRIBUTION_INCOMPLETE: SHA256SUMS must contain exactly ${expected.length} declared archives`
+    );
+  }
+  for (const declaration of targets) {
+    const filename = archiveName(version, declaration.target);
+    const archive = fs.readFileSync(path.join(directory, filename));
+    verifyChecksum(filename, archive, manifest);
+    extractExecutable(archive, declaration.executable);
+  }
+  return true;
 }
 
 function runGh(args) {
@@ -438,36 +478,34 @@ const RUST_DISTRIBUTION_INVOCATION =
 
 const SCRIPT_INSTALL_CONTRACTS = Object.freeze([
   {
-    jobName: 'dry-run',
-    installName: 'Install pinned dependencies',
-    command: 'npm ci',
-    checkoutRef: '${{ github.sha }}',
-  },
-  {
-    jobName: 'release',
-    installName: 'Install pinned dependencies',
-    command: 'npm ci',
-    checkoutRef: '${{ github.event.workflow_run.head_sha }}',
-  },
-  {
     jobName: 'rust-binaries',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
-    checkoutRef:
-      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
+    checkoutRef: '${{ needs.plan.outputs.commit }}',
   },
   {
     jobName: 'rust-manifest',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
-    checkoutRef:
-      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
+    checkoutRef: '${{ needs.plan.outputs.commit }}',
+  },
+  {
+    jobName: 'rust-image-input',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+    checkoutRef: '${{ needs.plan.outputs.commit }}',
   },
   {
     jobName: 'rust-publish',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
-    checkoutRef: '${{ env.RELEASE_TAG }}',
+    checkoutRef: '${{ needs.plan.outputs.commit }}',
+  },
+  {
+    jobName: 'rust-shim-input',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+    checkoutRef: '${{ needs.plan.outputs.commit }}',
   },
 ]);
 
@@ -530,11 +568,7 @@ function checkScriptInstalls(jobs) {
 function checkBuildJob(jobs) {
   const job = jobs['rust-binaries'];
   if (!job) failIntegrity('release workflow has no rust-binaries job');
-  exactJson(
-    'rust-binaries dependencies',
-    ['dry-run', 'release-plan', 'rust-recovery-plan'],
-    [...(job.needs || [])].sort()
-  );
+  exactJson('rust-binaries dependencies', ['plan'], [...(job.needs || [])].sort());
   const expectedMatrix = targets.map(({ target, runner, executable, cCompiler }) => ({
     target,
     runner,
@@ -567,19 +601,19 @@ function checkBuildJob(jobs) {
     failIntegrity('Windows bundled-SQLite MSVC setup is missing');
   }
 
-  const stage = findStep(job, 'Stage planned Rust package version');
+  const stage = findStep(job, 'Stage explicit Rust package version');
   if (
     stage.if !== undefined ||
     stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"'
   ) {
-    failIntegrity('planned Rust version staging is missing before locked target builds');
+    failIntegrity('explicit Rust version staging is missing before locked target builds');
   }
-  const coupling = findStep(job, 'Verify Rust and release tag versions are coupled');
+  const coupling = findStep(job, 'Verify staged Rust package version');
   if (
     coupling.if !== undefined ||
     coupling.run?.trim() !== 'node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"'
   ) {
-    failIntegrity('staged Rust version coupling verification is missing');
+    failIntegrity('staged Rust version verification is missing');
   }
 
   const build = findStep(job, 'Build standalone Rust release binary');
@@ -604,7 +638,7 @@ function checkBuildJob(jobs) {
   const archiveSmoke = findStep(job, 'Run executable extracted from target archive');
   const exactArchiveSmoke = `node scripts/rust-distribution.js smoke-archive \\
   --target "\${{ matrix.target }}" \\
-  --archive "rust-release/zeroshot-rust-\${RELEASE_TAG}-\${{ matrix.target }}.tar.gz"`;
+  --archive "rust-release/zeroshot-rust-v\${{ needs.plan.outputs.version }}-\${{ matrix.target }}.tar.gz"`;
   if (archiveSmoke.if !== undefined || archiveSmoke.run?.trim() !== exactArchiveSmoke) {
     failIntegrity('archive smoke step must execute the extracted target binary exactly');
   }
@@ -612,7 +646,7 @@ function checkBuildJob(jobs) {
   if (
     upload.if !== undefined ||
     upload.uses !== 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' ||
-    upload.with?.name !== 'zeroshot-rust-${{ matrix.target }}' ||
+    upload.with?.name !== 'zeroshot-rust-archive-${{ matrix.target }}' ||
     upload.with?.path !== 'rust-release/*.tar.gz' ||
     upload.with?.['if-no-files-found'] !== 'error'
   ) {
@@ -623,11 +657,7 @@ function checkBuildJob(jobs) {
 function checkManifestJob(jobs) {
   const job = jobs['rust-manifest'];
   if (!job) failIntegrity('release workflow has no rust-manifest job');
-  exactJson(
-    'rust-manifest dependencies',
-    ['dry-run', 'release-plan', 'rust-binaries', 'rust-recovery-plan'],
-    [...(job.needs || [])].sort()
-  );
+  exactJson('rust-manifest dependencies', ['plan', 'rust-binaries'], [...(job.needs || [])].sort());
   const manifest = findStep(job, 'Build and verify complete checksum manifest');
   if (
     manifest.run?.trim() !==
@@ -635,76 +665,199 @@ function checkManifestJob(jobs) {
   ) {
     failIntegrity('rust-manifest does not execute the deterministic manifest verifier');
   }
-  const upload = findStep(job, 'Upload complete dry-run distribution');
+  const upload = findStep(job, 'Upload complete Rust distribution');
   if (
     upload.if !== undefined ||
     upload.uses !== 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' ||
-    upload.with?.name !== 'zeroshot-rust-${{ env.RELEASE_TAG }}' ||
+    upload.with?.name !== 'zeroshot-rust-distribution-v${{ needs.plan.outputs.version }}' ||
     upload.with?.path?.trim() !== 'rust-release/*.tar.gz\nrust-release/SHA256SUMS'
   ) {
     failIntegrity('complete archive and SHA256SUMS upload is missing');
   }
 }
 
-function checkPublicationJobs(document, jobs) {
-  const release = jobs.release;
+function checkManualInputs(document, jobs) {
+  const dispatch = document.on?.workflow_dispatch;
   exactJson(
-    'release dependencies',
-    ['install-matrix', 'release-plan', 'rust-manifest'],
-    [...(release?.needs || [])].sort()
+    'Rust release actions',
+    ['dry-run', 'release', 'publish-npm-shim'],
+    dispatch?.inputs?.action?.options
   );
-  if (!release.if?.includes("vars.RELEASE_AUTOMATION_ENABLED == 'true'")) {
-    failIntegrity('release publication is not guarded by RELEASE_AUTOMATION_ENABLED');
+  if (!dispatch.inputs.version?.required || !dispatch.inputs.release_commit?.required) {
+    failIntegrity('manual Rust release requires explicit version and commit inputs');
   }
-  const semantic = findStep(release, 'Run semantic-release');
-  if (!semantic.run?.split(/\r?\n/).some((line) => line.trim() === 'npx semantic-release')) {
-    failIntegrity('release job does not execute semantic-release');
-  }
-  for (const [jobName, job] of Object.entries(jobs)) {
-    if (jobName === 'release') continue;
-    if (
-      job.steps?.some((step) =>
-        step.run?.split(/\r?\n/).some((line) => line.trim() === 'npx semantic-release')
-      )
-    ) {
-      failIntegrity(`semantic-release runs before artifacts in ${jobName}`);
+  const verification = findStep(jobs.plan, 'Verify exact main commit and independent tag').run;
+  for (const required of [
+    'git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main',
+    'release_tag="zeroshot-rust-v$RELEASE_VERSION"',
+    '[[ "$tag_commit" == "$RELEASE_COMMIT" ]]',
+    'has no successful CI / required check',
+    'new Rust version $RELEASE_VERSION must be newer than $latest_version',
+  ]) {
+    if (!verification?.includes(required)) {
+      failIntegrity(`Rust release plan is missing exact-source guard: ${required}`);
     }
   }
+}
 
-  if (
-    !document.on?.workflow_dispatch?.inputs?.action?.options?.includes('recover-rust-distribution')
-  ) {
-    failIntegrity('workflow_dispatch has no recover-rust-distribution action');
+function checkCanonicalImageScript(script) {
+  for (const required of [
+    'version_ref="$RUST_IMAGE:$RELEASE_VERSION"',
+    'commit_ref="$RUST_IMAGE:$RELEASE_COMMIT"',
+    'immutable Rust image tags resolve to different images',
+    'docker image tag "$canonical" "$version_ref"',
+    'docker image tag "$canonical" "$commit_ref"',
+    'docker image tag "$canonical" "$RUST_IMAGE:latest"',
+  ]) {
+    if (!script?.includes(required)) {
+      failIntegrity(`GHCR publication is missing canonical image guard: ${required}`);
+    }
   }
-  const recovery = jobs['rust-recovery-plan'];
-  const immutable = findStep(recovery, 'Verify immutable matching release tag');
-  const recoveryLines = immutable.run?.split(/\r?\n/).map((line) => line.trim()) || [];
   if (
-    !recoveryLines.includes('tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"') ||
-    !recoveryLines.includes('if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then')
+    !script?.includes('org.opencontainers.image.revision') ||
+    !script.includes('if [[ "$PUBLISH_LATEST" == "true" ]]')
   ) {
-    failIntegrity('Rust recovery does not execute immutable tag and main ancestry verification');
+    failIntegrity('GHCR publication does not source-verify tags and guard latest');
   }
+}
+
+function checkAnonymousImagePull(job) {
+  const step = findStep(job, 'Verify anonymous image installation');
+  if (
+    !step.env?.DOCKER_CONFIG?.includes('zeroshot-rust-anonymous-docker') ||
+    !step.run?.includes('docker pull "$RUST_IMAGE:$RELEASE_VERSION"')
+  ) {
+    failIntegrity('published target image is not verified through anonymous installation');
+  }
+}
+
+function checkImageJobs(jobs) {
+  const input = jobs['rust-image-input'];
+  exactJson('rust-image-input dependencies', ['plan'], [...(input?.needs || [])].sort());
+  const build = findStep(input, 'Build linux/amd64 target image');
+  const expectedBuild = `docker build --platform linux/amd64 \\
+  --build-arg "VCS_REF=$RELEASE_COMMIT" \\
+  --build-arg "ZEROSHOT_RUST_VERSION=$RELEASE_VERSION" \\
+  --file docker/zeroshot-rust-target/Dockerfile \\
+  --tag "$RUST_IMAGE:$RELEASE_VERSION" .`;
+  if (build.run?.trim() !== expectedBuild) {
+    failIntegrity('target image does not build the public Rust target Dockerfile');
+  }
+  findStep(input, 'Save exact image publication input');
+  findStep(input, 'Upload exact image publication input');
+  if (input.permissions?.packages === 'write') {
+    failIntegrity('image dry-run input job must not receive publication authority');
+  }
+
+  const publish = jobs['rust-image-publish'];
+  exactJson(
+    'rust-image-publish dependencies',
+    ['plan', 'rust-image-input', 'rust-publish'],
+    [...(publish?.needs || [])].sort()
+  );
+  if (
+    publish.permissions?.packages !== 'write' ||
+    !publish.if?.includes("inputs.action == 'release'")
+  ) {
+    failIntegrity('GHCR publication is not isolated to the release action');
+  }
+  checkCanonicalImageScript(findStep(publish, 'Publish source-verified image tags').run);
+  checkAnonymousImagePull(publish);
+}
+
+function checkPublicationJobs(jobs) {
   const publish = jobs['rust-publish'];
   exactJson(
     'rust-publish dependencies',
-    ['release', 'rust-manifest', 'rust-recovery-plan'],
+    ['plan', 'rust-image-input', 'rust-manifest'],
     [...(publish?.needs || [])].sort()
   );
-  if (!publish.if?.includes("inputs.action == 'recover-rust-distribution'")) {
-    failIntegrity('post-tag Rust publication is not recoverable');
+  if (!publish.if?.includes("inputs.action == 'release'")) {
+    failIntegrity('GitHub publication is not isolated to the release action');
+  }
+  const create = findStep(publish, 'Create or verify independent GitHub Release');
+  if (
+    (create.run?.match(/--latest=false/g) || []).length !== 2 ||
+    create.run.includes('--latest=true')
+  ) {
+    failIntegrity('Rust GitHub Release must not replace the Node release as Latest');
   }
   const assets = findStep(publish, 'Verify existing assets and upload only missing names');
   if (
-    assets.if !== undefined ||
     assets.run?.trim() !==
-      'node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release'
+    'node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release'
   ) {
     failIntegrity('GitHub Release assets are not verified and uploaded without overwrite');
   }
-  const npmPublish = findStep(publish, 'Idempotently publish standalone Rust shim package').run;
-  if (!npmPublish?.includes('npm view "$package" version') || !npmPublish.includes('npm publish')) {
-    failIntegrity('shim publication is not idempotently recoverable');
+
+  const shimInput = jobs['rust-shim-input'];
+  if (
+    !shimInput.if?.includes("inputs.action == 'dry-run'") ||
+    !shimInput.if.includes("inputs.action == 'publish-npm-shim'")
+  ) {
+    failIntegrity('npm shim input is not exercised by dry-run and explicit shim publication');
+  }
+  findStep(shimInput, 'Verify exact shim distribution inputs');
+  findStep(shimInput, 'Pack exact npm shim publication input');
+  const shimInstall = findStep(
+    shimInput,
+    'Install exact shim tarball against verified release inputs'
+  ).run;
+  if (
+    !shimInstall?.includes('npm install --ignore-scripts --prefix "$install_root"') ||
+    !shimInstall.includes('$install_root/node_modules/.bin/zeroshot-rust')
+  ) {
+    failIntegrity('npm shim input is not installed and invoked from the exact packed tarball');
+  }
+  const shimDryRun = findStep(shimInput, 'Dry-run npm shim publication');
+  if (shimDryRun.if !== "inputs.action == 'dry-run'") {
+    failIntegrity('npm shim dry-run must not gate recoverable publication');
+  }
+  findStep(shimInput, 'Upload exact npm shim publication input');
+
+  const shimPublish = jobs['rust-shim-publish'];
+  if (
+    !shimPublish.if?.includes("inputs.action == 'publish-npm-shim'") ||
+    shimPublish.permissions?.['id-token'] !== 'write'
+  ) {
+    failIntegrity('npm shim publication is not a separate OIDC-authorized action');
+  }
+  const npmPublish = findStep(shimPublish, 'Idempotently publish standalone Rust shim package').run;
+  if (
+    !npmPublish?.includes('npm view "$package" version') ||
+    !npmPublish.includes('npm view "$package" dist.integrity') ||
+    !npmPublish.includes('npm publish')
+  ) {
+    failIntegrity('npm shim publication is not idempotently recoverable');
+  }
+}
+
+function checkNodeReleaseIndependence(document) {
+  const workflow = JSON.stringify(document);
+  for (const forbidden of [
+    'rust-distribution.js',
+    'recover-rust-distribution',
+    'rust-binaries',
+    'rust-manifest',
+    'rust-publish',
+  ]) {
+    if (workflow.includes(forbidden))
+      failIntegrity(`Node release retains Rust coupling: ${forbidden}`);
+  }
+  const jobs = document.jobs || {};
+  const release = jobs.release;
+  exactJson(
+    'Node release dependencies',
+    ['install-matrix', 'release-plan'],
+    [...(release?.needs || [])].sort()
+  );
+  findStep(release, 'Run semantic-release');
+  const relevance = findStep(jobs['node-relevance'], 'Classify unreleased Node history');
+  if (
+    !relevance.run?.includes('git rev-list --reverse') ||
+    !relevance.run.includes('scripts/node-release-commits.js')
+  ) {
+    failIntegrity('Node release does not classify all history since the latest Node tag');
   }
 }
 
@@ -752,7 +905,11 @@ function checkScriptDependencies(packageManifest, packageLock) {
 }
 
 function checkRepository(
-  workflow = fs.readFileSync(
+  rustWorkflow = fs.readFileSync(
+    path.join(repositoryRoot, '.github', 'workflows', 'release-rust.yml'),
+    'utf8'
+  ),
+  nodeWorkflow = fs.readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
     'utf8'
   ),
@@ -763,16 +920,21 @@ function checkRepository(
   packageLock = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8'))
 ) {
   let document;
+  let nodeDocument;
   try {
-    document = jsYaml.load(workflow);
+    document = jsYaml.load(rustWorkflow);
+    nodeDocument = jsYaml.load(nodeWorkflow);
   } catch (error) {
     failIntegrity(`release workflow is invalid YAML: ${error.message}`);
   }
-  if (!document?.jobs) failIntegrity('release workflow has no jobs');
+  if (!document?.jobs || !nodeDocument?.jobs) failIntegrity('release workflow has no jobs');
   checkScriptInstalls(document.jobs);
   checkBuildJob(document.jobs);
   checkManifestJob(document.jobs);
-  checkPublicationJobs(document, document.jobs);
+  checkManualInputs(document, document.jobs);
+  checkImageJobs(document.jobs);
+  checkPublicationJobs(document.jobs);
+  checkNodeReleaseIndependence(nodeDocument);
   checkShimTargets(shimTargets);
   checkScriptDependencies(packageManifest, packageLock);
   return true;
@@ -799,6 +961,11 @@ function run() {
   if (command === 'manifest') {
     createManifest({ version: argument('version'), directory: argument('dir') });
     process.stdout.write(`verified ${targets.length} archives and SHA256SUMS\n`);
+    return;
+  }
+  if (command === 'verify') {
+    verifyDistribution({ version: argument('version'), directory: argument('dir') });
+    process.stdout.write(`verified ${targets.length} existing archives and SHA256SUMS\n`);
     return;
   }
   if (command === 'dry-run') {
@@ -868,28 +1035,26 @@ function run() {
     );
     return;
   }
-  throw new Error(
-    'usage: rust-distribution.js <package|manifest|dry-run|stage-version|check-version|check-repository|print-version|smoke|smoke-archive|publish-assets>'
-  );
+  throw new Error(`usage: rust-distribution.js <${COMMANDS.join('|')}>`);
 }
 
-const SMOKE_GREETING = Buffer.from('zeroshot release smoke\n');
-
-function smokeExecutable(binaryPath, failureCode) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-rust-executable-smoke-'));
-  try {
-    fs.writeFileSync(path.join(directory, 'greeting.txt'), SMOKE_GREETING);
-    const result = childProcess.spawnSync(binaryPath, ['--native-validate-greeting'], {
-      cwd: directory,
-      input: SMOKE_GREETING,
-      stdio: ['pipe', 'inherit', 'inherit'],
-    });
-    if (result.error) throw result.error;
-    if (result.signal || result.status !== 0) {
-      throw new Error(`${failureCode}: status=${result.status} signal=${result.signal || 'none'}`);
-    }
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
+function smokeExecutable(
+  binaryPath,
+  failureCode,
+  expectedVersion = cargoVersion(
+    fs.readFileSync(path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'), 'utf8')
+  )
+) {
+  const result = childProcess.spawnSync(binaryPath, ['--version'], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (result.signal || result.status !== 0) {
+    throw new Error(`${failureCode}: status=${result.status} signal=${result.signal || 'none'}`);
+  }
+  const expected = `zeroshot-rust ${expectedVersion}\n`;
+  if (result.stdout !== expected) {
+    throw new Error(
+      `${failureCode}: expected ${JSON.stringify(expected.trim())}, received ${JSON.stringify(result.stdout.trim())}`
+    );
   }
 }
 
@@ -915,10 +1080,12 @@ module.exports = {
   normalizeVersion,
   packageTarget,
   parseChecksumManifest,
+  rustReleaseTag,
   sha256,
   smokeExecutable,
   targetForHost,
   stageVersion,
   targets,
   verifyChecksum,
+  verifyDistribution,
 };

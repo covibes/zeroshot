@@ -32,8 +32,8 @@ function registerShimInstallTests() {
       });
       assert.deepStrictEqual(fs.readFileSync(destination), binary);
       assert.deepStrictEqual(requested, [
-        `${shim.RELEASE_BASE_URL}/v1.2.3/SHA256SUMS`,
-        `${shim.RELEASE_BASE_URL}/v1.2.3/${filename}`,
+        `${shim.RELEASE_BASE_URL}/${shim.RELEASE_TAG_PREFIX}1.2.3/SHA256SUMS`,
+        `${shim.RELEASE_BASE_URL}/${shim.RELEASE_TAG_PREFIX}1.2.3/${filename}`,
       ]);
     } finally {
       fs.rmSync(packageRoot, { recursive: true, force: true });
@@ -70,28 +70,11 @@ function registerShimInstallTests() {
 function registerNativeMetadataTest() {
   it('keeps native metadata outside the Rust-only product and the Node package', function () {
     const rustRoot = path.join(projectRoot, 'zeroshot-rust');
-    const privateHostedAdapterFiles = new Set([
-      'hosted-node/capsule-entrypoint.js',
-      'hosted-node/config-check.js',
-      'hosted-node/declarative-cluster.js',
-      'hosted-node/engine-adapter.js',
-      'hosted-node/git-askpass.js',
-      'hosted-node/hosted-config.js',
-      'hosted-node/issue-hydration.js',
-      'hosted-node/runtime-capability.js',
-      'hosted-node/worker-launcher.js',
-      'hosted-node/worker.js',
-      'hosted-node/workspace-bootstrap.js',
-      'hosted-node/workspace-delivery-github.js',
-      'hosted-node/workspace-delivery-retry.js',
-      'hosted-node/workspace-ship.js',
-      'hosted-node/workspace-tools.js',
-    ]);
     const rustFiles = relativeFiles(rustRoot);
     for (const file of rustFiles) {
       assert(
-        file === 'Cargo.toml' || file.endsWith('.rs') || privateHostedAdapterFiles.has(file),
-        `unexpected product file outside the private hosted adapter: ${file}`
+        file === 'Cargo.toml' || file.endsWith('.rs'),
+        `unexpected non-Rust native product file: ${file}`
       );
     }
     const nativeRustSource = rustFiles
@@ -118,19 +101,10 @@ function registerNativeMetadataTest() {
       'task-lib/',
       'cluster-templates/',
       'cluster-hooks/',
-      'docker/',
-      '!docker/zeroshot-oecp/',
+      'docker/zeroshot-cluster/',
       'scripts/',
       '!scripts/build-cli-runtime.js',
-      '!scripts/hosted-oecp-ci-relevance.js',
-      '!scripts/hosted-oecp-image.js',
-      '!scripts/hosted-oecp-image-commands.js',
-      '!scripts/hosted-oecp-image-inspection.js',
-      '!scripts/hosted-oecp-image-smoke.js',
-      '!scripts/hosted-oecp-smoke-capability.js',
-      '!scripts/hosted-oecp-smoke-client.js',
-      '!scripts/hosted-oecp-smoke-codex.mjs',
-      '!scripts/hosted-oecp-smoke-fixture.js',
+      '!scripts/rust-distribution.js',
       'protocol/openengine-cluster/v1/worker.schema.json',
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'README.md',
@@ -139,6 +113,7 @@ function registerNativeMetadataTest() {
       'npm-shrinkwrap.json',
     ]);
     assert(!rootPackage.files.some((entry) => entry.startsWith('zeroshot-rust')));
+    assert(!rootPackage.files.includes('docker/'));
     assert.strictEqual(
       JSON.parse(
         fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'package.json'), 'utf8')

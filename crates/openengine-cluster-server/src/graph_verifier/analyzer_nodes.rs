@@ -182,31 +182,7 @@ impl<'a> Analyzer<'a> {
         let control = self.validate_choice(group, context.node.incoming, &context.path);
         self.choice_reachability
             .insert(group.name.clone(), control.reachability());
-        let mut alternatives = Vec::new();
-        for (index, branch) in group.branches.as_slice().iter().enumerate() {
-            if !control.branch_reachable[index] {
-                continue;
-            }
-            let mut branch_flow = context.node.incoming.clone();
-            control.branches[index].apply(&mut branch_flow);
-            let mut effects = self.validate_node(
-                &branch.node,
-                NodeValidationContext {
-                    incoming: &branch_flow,
-                    state: &group.state,
-                    ..context.node
-                },
-            );
-            self.restrict_completion(
-                &mut effects,
-                control.branch_completion[index].clone(),
-                &context.path,
-            );
-            effects
-                .unavailable_nodes
-                .extend(branch_flow.unavailable.clone());
-            alternatives.push(effects);
-        }
+        let mut alternatives = self.validate_choice_branches(group, context, &control);
         match &group.otherwise {
             Some(otherwise) if control.otherwise_reachable => {
                 let mut otherwise_flow = context.node.incoming.clone();
@@ -254,6 +230,43 @@ impl<'a> Analyzer<'a> {
         effects
     }
 
+    fn validate_choice_branches(
+        &mut self,
+        group: &ChoiceNode,
+        context: &LocatedNodeValidationContext<'_>,
+        control: &ChoiceControl,
+    ) -> Vec<Effects> {
+        let mut alternatives = Vec::new();
+        for (((branch, reachable), refinement), completion) in group
+            .branches
+            .as_slice()
+            .iter()
+            .zip(&control.branch_reachable)
+            .zip(&control.branches)
+            .zip(&control.branch_completion)
+        {
+            if !*reachable {
+                continue;
+            }
+            let mut branch_flow = context.node.incoming.clone();
+            refinement.apply(&mut branch_flow);
+            let mut effects = self.validate_node(
+                &branch.node,
+                NodeValidationContext {
+                    incoming: &branch_flow,
+                    state: &group.state,
+                    ..context.node
+                },
+            );
+            self.restrict_completion(&mut effects, completion.clone(), &context.path);
+            effects
+                .unavailable_nodes
+                .extend(branch_flow.unavailable.clone());
+            alternatives.push(effects);
+        }
+        alternatives
+    }
+
     pub(super) fn validate_loop(
         &mut self,
         group: &LoopNode,
@@ -296,18 +309,21 @@ impl<'a> Analyzer<'a> {
         context: &LocatedNodeValidationContext<'_>,
         body: &Effects,
     ) {
+        let Some(until) = &group.until else {
+            return;
+        };
         let mut available = context.node.incoming.available.clone();
         available.extend(body.definite_nodes.clone());
         let until_path = with_field(&context.path, "until");
         let valid = self.validate_guard(
-            &group.until,
+            until,
             &available,
             GuardValidationContext {
                 path: &until_path,
                 code: GraphDiagnosticCode::LoopExitSatisfiability,
             },
         );
-        for selector in guard_selectors(&group.until) {
+        for selector in guard_selectors(until) {
             let guaranteed = body.definite_nodes.contains(&selector.name)
                 && self
                     .nodes
@@ -326,7 +342,7 @@ impl<'a> Analyzer<'a> {
                 );
             }
         }
-        if valid && !self.guard_has_satisfying_assignment(&group.until, &until_path) {
+        if valid && !self.guard_has_satisfying_assignment(until, &until_path) {
             emit_diagnostic!(
                 self,
                 GraphDiagnosticCode::LoopExitSatisfiability,

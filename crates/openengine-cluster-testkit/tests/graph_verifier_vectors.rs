@@ -2,19 +2,7 @@ use openengine_cluster_protocol::GraphSpec;
 use openengine_cluster_testkit::artifacts::generate_artifacts;
 use openengine_cluster_testkit::graph_verifier_artifacts::{result_value, verify_fixture_graph};
 
-#[tokio::test]
-async fn committed_verifier_vectors_match_exact_repeatable_results() {
-    let artifacts = generate_artifacts().await;
-    let vectors = artifacts
-        .iter()
-        .filter(|artifact| artifact.relative_path.contains("/fixtures/verifier/"))
-        .collect::<Vec<_>>();
-    assert!(!vectors.is_empty());
-
-    let paths = vectors
-        .iter()
-        .map(|vector| vector.relative_path.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+fn assert_required_paths(paths: &std::collections::BTreeSet<&str>) {
     for required in [
         "/positive/binding-channels.json",
         "/positive/guard-in.json",
@@ -66,21 +54,39 @@ async fn committed_verifier_vectors_match_exact_repeatable_results() {
             "missing verifier conformance class {required}"
         );
     }
+}
+
+#[tokio::test]
+async fn committed_verifier_vectors_match_exact_repeatable_results() {
+    let artifacts = generate_artifacts().await;
+    let vectors = artifacts
+        .iter()
+        .filter(|artifact| artifact.relative_path.contains("/fixtures/verifier/"))
+        .collect::<Vec<_>>();
+    assert!(!vectors.is_empty());
+
+    let paths = vectors
+        .iter()
+        .map(|vector| vector.relative_path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_required_paths(&paths);
 
     for vector in vectors {
-        let envelope: serde_json::Value = serde_json::from_slice(&vector.bytes).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&vector.bytes).assert_value();
         let expected_status = if vector.relative_path.contains("/positive/") {
             "verified"
         } else {
             "rejected"
         };
         assert_eq!(
-            envelope["expected"]["status"], expected_status,
+            envelope.assert_key("expected").assert_key("status"),
+            expected_status,
             "{} is in the wrong conformance partition",
             vector.relative_path
         );
         assert_required_diagnostic(&vector.relative_path, &envelope);
-        let graph: GraphSpec = serde_json::from_value(envelope["graph"].clone()).unwrap();
+        let graph: GraphSpec =
+            serde_json::from_value(envelope.assert_key("graph").clone()).assert_value();
         let first = result_value(verify_fixture_graph(&graph).await);
         let second = result_value(verify_fixture_graph(&graph).await);
         assert_eq!(
@@ -89,7 +95,8 @@ async fn committed_verifier_vectors_match_exact_repeatable_results() {
             vector.relative_path
         );
         assert_eq!(
-            first, envelope["expected"],
+            &first,
+            envelope.assert_key("expected"),
             "{} drifted from committed semantics",
             vector.relative_path
         );
@@ -132,11 +139,17 @@ fn assert_required_diagnostic(path: &str, envelope: &serde_json::Value) {
         return;
     };
     assert!(
-        envelope["expected"]["diagnostics"]
+        envelope
+            .assert_key("expected")
+            .assert_key("diagnostics")
             .as_array()
-            .unwrap()
+            .assert_value()
             .iter()
-            .any(|diagnostic| diagnostic["code"] == required),
+            .any(|diagnostic| diagnostic.assert_key("code") == required),
         "{path} does not prove {required}"
     );
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;
+
+use openengine_cluster_testkit::assertions::JsonAt;

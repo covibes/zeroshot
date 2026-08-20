@@ -4,12 +4,33 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    GraphDiagnosticCode, GraphProfile, GraphSpec, TerminationWitness, WorkerDescriptor, WorkerRef,
+    GraphDiagnostic, GraphDiagnosticCode, GraphProfile, GraphSpec, TerminationWitness,
+    WorkerDescriptor, WorkerRef,
 };
 use openengine_cluster_server::admission::{GraphVerifier, VerificationError};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::{json, Value};
+
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+use assert_error::AssertError;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;
+#[path = "support/assert_at_mut.rs"]
+mod assert_at_mut;
+use assert_at_mut::AssertAtMut;
+#[path = "graph_verifier/test_support.rs"]
+mod test_support;
+use test_support::{
+    assert_graph_accepted, assert_graph_rejected, assert_graph_rejected_with,
+    assert_undefined_read_without_schema_error, graph_with_valid_tail_nodes, set_root_children,
+    work_node,
+};
 
 #[derive(Clone)]
 struct MemoryRegistry {
@@ -53,6 +74,14 @@ fn record() -> Value {
     })
 }
 
+fn rejection_diagnostics(error: VerificationError) -> Vec<GraphDiagnostic> {
+    match error {
+        VerificationError::Rejected { diagnostics } => Some(diagnostics),
+        _ => None,
+    }
+    .assert_value()
+}
+
 fn descriptor(worker: &str, verifier: bool) -> WorkerDescriptor {
     serde_json::from_value(json!({
         "worker": worker,
@@ -77,33 +106,40 @@ fn descriptor(worker: &str, verifier: bool) -> WorkerDescriptor {
         },
         "credentialRequirements": []
     }))
-    .unwrap()
+    .assert_value()
 }
 
 fn decision_descriptor() -> WorkerDescriptor {
-    let mut value = serde_json::to_value(descriptor("worker.decision@1", true)).unwrap();
-    value["contract"]["verifier"]["signals"] = json!({"decision": ["accepted", "rejected"]});
-    serde_json::from_value(value).unwrap()
+    let mut value = serde_json::to_value(descriptor("worker.decision@1", true)).assert_value();
+    *value
+        .assert_at_mut("contract")
+        .assert_at_mut("verifier")
+        .assert_at_mut("signals") = json!({"decision": ["accepted", "rejected"]});
+    serde_json::from_value(value).assert_value()
+}
+
+fn memory_registry(descriptors: [(WorkerRef, WorkerDescriptor); 3]) -> MemoryRegistry {
+    MemoryRegistry {
+        descriptors: Arc::new(BTreeMap::from(descriptors)),
+        resolutions: Arc::new(AtomicUsize::new(0)),
+    }
 }
 
 fn registry() -> MemoryRegistry {
-    MemoryRegistry {
-        descriptors: Arc::new(BTreeMap::from([
-            (
-                WorkerRef::new("worker.main@1").unwrap(),
-                descriptor("worker.main@1", false),
-            ),
-            (
-                WorkerRef::new("worker.verify@1").unwrap(),
-                descriptor("worker.verify@1", true),
-            ),
-            (
-                WorkerRef::new("worker.decision@1").unwrap(),
-                decision_descriptor(),
-            ),
-        ])),
-        resolutions: Arc::new(AtomicUsize::new(0)),
-    }
+    memory_registry([
+        (
+            WorkerRef::new("worker.main@1").assert_value(),
+            descriptor("worker.main@1", false),
+        ),
+        (
+            WorkerRef::new("worker.verify@1").assert_value(),
+            descriptor("worker.verify@1", true),
+        ),
+        (
+            WorkerRef::new("worker.decision@1").assert_value(),
+            decision_descriptor(),
+        ),
+    ])
 }
 
 fn worker_object_output() -> Value {
@@ -139,29 +175,26 @@ fn worker_number_output() -> Value {
 }
 
 fn descriptor_with_output(worker: &str, output: Value) -> WorkerDescriptor {
-    let mut value = serde_json::to_value(descriptor(worker, false)).unwrap();
-    value["contract"]["output"] = output;
-    serde_json::from_value(value).unwrap()
+    let mut value = serde_json::to_value(descriptor(worker, false)).assert_value();
+    *value.assert_at_mut("contract").assert_at_mut("output") = output;
+    serde_json::from_value(value).assert_value()
 }
 
 fn registry_with_worker_outputs(object_output: Value, number_output: Value) -> MemoryRegistry {
-    MemoryRegistry {
-        descriptors: Arc::new(BTreeMap::from([
-            (
-                WorkerRef::new("worker.main@1").unwrap(),
-                descriptor("worker.main@1", false),
-            ),
-            (
-                WorkerRef::new("worker.object@1").unwrap(),
-                descriptor_with_output("worker.object@1", object_output),
-            ),
-            (
-                WorkerRef::new("worker.number@1").unwrap(),
-                descriptor_with_output("worker.number@1", number_output),
-            ),
-        ])),
-        resolutions: Arc::new(AtomicUsize::new(0)),
-    }
+    memory_registry([
+        (
+            WorkerRef::new("worker.main@1").assert_value(),
+            descriptor("worker.main@1", false),
+        ),
+        (
+            WorkerRef::new("worker.object@1").assert_value(),
+            descriptor_with_output("worker.object@1", object_output),
+        ),
+        (
+            WorkerRef::new("worker.number@1").assert_value(),
+            descriptor_with_output("worker.number@1", number_output),
+        ),
+    ])
 }
 
 fn valid_graph() -> Value {
@@ -209,10 +242,10 @@ fn valid_graph() -> Value {
 
 #[tokio::test]
 async fn verifies_full_graph_and_returns_byte_stable_authoritative_ir() {
-    let graph: GraphSpec = serde_json::from_value(valid_graph()).unwrap();
+    let graph: GraphSpec = serde_json::from_value(valid_graph()).assert_value();
     let verifier = ProductionGraphVerifier::new(registry());
-    let first = verifier.verify(&graph).await.unwrap();
-    let second = verifier.verify(&graph).await.unwrap();
+    let first = verifier.verify(&graph).await.assert_value();
+    let second = verifier.verify(&graph).await.assert_value();
 
     assert_eq!(first, second);
     assert_eq!(first.compiled_ir.profile, graph.profile);
@@ -226,31 +259,32 @@ async fn verifies_full_graph_and_returns_byte_stable_authoritative_ir() {
         TerminationWitness::Acyclic { .. }
     ));
     assert_eq!(
-        first.compiled_ir.canonical_bytes().unwrap(),
-        second.compiled_ir.canonical_bytes().unwrap()
+        first.compiled_ir.canonical_bytes().assert_value(),
+        second.compiled_ir.canonical_bytes().assert_value()
     );
 }
 
 #[tokio::test]
 async fn structural_rejection_precedes_registry_resolution_and_is_stably_sorted() {
     let mut value = valid_graph();
-    value["root"]["children"][2] = json!({
+    *value
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(2) = json!({
         "kind":"step", "name":"work", "worker":"missing.worker@1",
         "input":{"kind":"null"}, "output":{"kind":"null"},
         "inputBindings":[], "writeBindings":[], "timeoutMs":1, "attempts":1
     });
-    let graph: GraphSpec = serde_json::from_value(value).unwrap();
+    let graph: GraphSpec = serde_json::from_value(value).assert_value();
     let registry = registry();
     let resolutions = Arc::clone(&registry.resolutions);
     let verifier = ProductionGraphVerifier::new(registry);
 
-    let first = verifier.verify(&graph).await.unwrap_err();
-    let second = verifier.verify(&graph).await.unwrap_err();
+    let first = verifier.verify(&graph).await.assert_error();
+    let second = verifier.verify(&graph).await.assert_error();
     assert_eq!(first, second);
     assert_eq!(resolutions.load(Ordering::Relaxed), 0);
-    let VerificationError::Rejected { diagnostics } = first else {
-        panic!("structural invalidity must be rejected")
-    };
+    let diagnostics = rejection_diagnostics(first);
     assert!(
         diagnostics
             .iter()
@@ -271,13 +305,13 @@ async fn terminal_only_full_graph_is_bounded_without_registry_resolution() {
             "bindings": []
         }
     }))
-    .unwrap();
+    .assert_value();
     let registry = registry();
     let resolutions = Arc::clone(&registry.resolutions);
     let verified = ProductionGraphVerifier::new(registry)
         .verify(&graph)
         .await
-        .unwrap();
+        .assert_value();
 
     assert_eq!(resolutions.load(Ordering::Relaxed), 0);
     assert_eq!(verified.compiled_ir.bounds.max_node_executions.get(), 1);
@@ -288,8 +322,8 @@ async fn terminal_only_full_graph_is_bounded_without_registry_resolution() {
 #[tokio::test]
 async fn single_worker_profile_and_missing_worker_are_rejections() {
     let mut single = valid_graph();
-    single["profile"] = json!("openengine.graph.single-worker/v1");
-    let single: GraphSpec = serde_json::from_value(single).unwrap();
+    *single.assert_at_mut("profile") = json!("openengine.graph.single-worker/v1");
+    let single: GraphSpec = serde_json::from_value(single).assert_value();
     assert_eq!(single.profile, GraphProfile::SingleWorker);
     assert!(matches!(
         ProductionGraphVerifier::new(registry())
@@ -299,44 +333,56 @@ async fn single_worker_profile_and_missing_worker_are_rejections() {
     ));
 
     let mut missing = valid_graph();
-    missing["root"]["children"][0]["worker"] = json!("worker.missing@2");
-    let missing: GraphSpec = serde_json::from_value(missing).unwrap();
+    *missing
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("worker") = json!("worker.missing@2");
+    let missing: GraphSpec = serde_json::from_value(missing).assert_value();
     let error = ProductionGraphVerifier::new(registry())
         .verify(&missing)
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(matches!(error, VerificationError::Rejected { .. }));
 
-    let graph: GraphSpec = serde_json::from_value(valid_graph()).unwrap();
+    let graph: GraphSpec = serde_json::from_value(valid_graph()).assert_value();
     let version_error = ProductionGraphVerifier::new(VersionUnavailableRegistry)
         .verify(&graph)
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(matches!(version_error, VerificationError::Rejected { .. }));
 }
 
 #[test]
 fn timeout_wire_range_has_no_product_ceiling() {
-    let graph: GraphSpec = serde_json::from_value(valid_graph()).unwrap();
-    let Value::Number(timeout) =
-        serde_json::to_value(graph).unwrap()["root"]["children"][0]["timeoutMs"].clone()
-    else {
-        panic!("timeout must serialize as an integer")
-    };
+    let graph: GraphSpec = serde_json::from_value(valid_graph()).assert_value();
+    let timeout = match serde_json::to_value(graph)
+        .assert_value()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .assert_at("timeoutMs")
+        .clone()
+    {
+        Value::Number(timeout) => Some(timeout),
+        _ => None,
+    }
+    .assert_value();
     assert_eq!(timeout.as_u64(), Some(172_800_000));
 
     for invalid in [0_u64, openengine_cluster_protocol::MAX_SAFE_GENERATION + 1] {
         let mut value = valid_graph();
-        value["root"]["children"][0]["timeoutMs"] = json!(invalid);
+        *value
+            .assert_at_mut("root")
+            .assert_at_mut("children")
+            .assert_at_mut(0)
+            .assert_at_mut("timeoutMs") = json!(invalid);
         assert!(serde_json::from_value::<GraphSpec>(value).is_err());
     }
 }
 
 fn rejection_codes(error: VerificationError) -> Vec<GraphDiagnosticCode> {
-    let VerificationError::Rejected { diagnostics } = error else {
-        panic!("invalid graph must be rejected")
-    };
-    diagnostics
+    rejection_diagnostics(error)
         .into_iter()
         .map(|diagnostic| diagnostic.code)
         .collect()
@@ -364,7 +410,7 @@ fn graph_with_state_children(state: Value, children: Value) -> GraphSpec {
             "children":children,"promotedStatePaths":[]
         }
     }))
-    .unwrap()
+    .assert_value()
 }
 
 fn graph_with_root_child(child: Value) -> GraphSpec {
@@ -372,7 +418,7 @@ fn graph_with_root_child(child: Value) -> GraphSpec {
         "profile":"openengine.graph.full/v1","initialInput":record(),
         "policy":{"policy":"policy.strict@1","default":"deny"},"root":child
     }))
-    .unwrap()
+    .assert_value()
 }
 
 fn map_control_graph(max_items: u64, branches: Value, otherwise: Value) -> GraphSpec {

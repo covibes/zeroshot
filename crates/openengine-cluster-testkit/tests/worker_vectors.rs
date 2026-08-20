@@ -26,7 +26,7 @@ impl WorkerRegistry for MemoryRegistry {
             });
         };
         Ok(serde_json::from_value(document.clone())
-            .expect("generated registry descriptor must deserialize"))
+            .assert_value_with("generated registry descriptor must deserialize"))
     }
 }
 
@@ -34,15 +34,15 @@ fn fixture_value(suffix: &str) -> Value {
     let artifact = worker_fixture_artifacts()
         .into_iter()
         .find(|artifact| artifact.relative_path.ends_with(suffix))
-        .unwrap_or_else(|| panic!("missing generated worker fixture {suffix}"));
-    serde_json::from_slice(&artifact.bytes).unwrap()
+        .assert_value_with(&format!("missing generated worker fixture {suffix}"));
+    serde_json::from_slice(&artifact.bytes).assert_value()
 }
 
 fn component_schema(root: &Value, name: &str) -> Value {
     json!({
-        "$schema": root["$schema"],
+        "$schema": root.assert_key("$schema"),
         "$ref": format!("#/$defs/{name}"),
-        "$defs": root["$defs"]
+        "$defs": root.assert_key("$defs")
     })
 }
 
@@ -50,7 +50,10 @@ fn mock_descriptor(protocol: &str) -> WorkerDescriptor {
     let binding = match protocol {
         "acp" => WorkerProtocolBinding::acp_v1(),
         "a2a" => WorkerProtocolBinding::a2a_1_0(),
-        _ => unreachable!(),
+        other => {
+            assert!(matches!(other, "acp" | "a2a"), "unknown protocol {other}");
+            WorkerProtocolBinding::acp_v1()
+        }
     };
     serde_json::from_value(json!({
         "worker": format!("mock.{protocol}@1"),
@@ -70,7 +73,7 @@ fn mock_descriptor(protocol: &str) -> WorkerDescriptor {
         },
         "credentialRequirements": []
     }))
-    .unwrap()
+    .assert_value()
 }
 
 fn forbidden_durable_key(value: &Value) -> Option<&str> {
@@ -102,7 +105,7 @@ fn forbidden_durable_key(value: &Value) -> Option<&str> {
 #[test]
 fn positive_vectors_round_trip_through_their_committed_contracts() {
     let schema = worker_schema();
-    let descriptor_validator = jsonschema::validator_for(&schema).unwrap();
+    let descriptor_validator = jsonschema::validator_for(&schema).assert_value();
     for suffix in [
         "/positive/acp-v1.json",
         "/positive/a2a-1.0.json",
@@ -110,8 +113,8 @@ fn positive_vectors_round_trip_through_their_committed_contracts() {
         "/positive/builtin-v1.json",
     ] {
         let value = fixture_value(suffix);
-        let parsed: WorkerDescriptor = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        let parsed: WorkerDescriptor = serde_json::from_value(value.clone()).assert_value();
+        assert_eq!(serde_json::to_value(parsed).assert_value(), value);
         assert!(
             descriptor_validator.is_valid(&value),
             "schema rejected {suffix}"
@@ -124,21 +127,21 @@ fn positive_vectors_round_trip_through_their_committed_contracts() {
     }
 
     let outcome_schema = component_schema(&schema, "WorkerOutcome");
-    let outcome_validator = jsonschema::validator_for(&outcome_schema).unwrap();
+    let outcome_validator = jsonschema::validator_for(&outcome_schema).assert_value();
     let policy = fixture_value("/positive/policy-refusal.json");
-    let parsed: WorkerOutcome = serde_json::from_value(policy.clone()).unwrap();
+    let parsed: WorkerOutcome = serde_json::from_value(policy.clone()).assert_value();
     assert_eq!(parsed, WorkerOutcome::policy_refusal());
-    assert_eq!(serde_json::to_value(parsed).unwrap(), policy);
+    assert_eq!(serde_json::to_value(parsed).assert_value(), policy);
     assert!(outcome_validator.is_valid(&policy));
     assert_eq!(forbidden_durable_key(&policy), None);
 
     let receipt = fixture_value("/positive/artifact-receipt.json");
-    let parsed: ArtifactRef = serde_json::from_value(receipt.clone()).unwrap();
-    assert_eq!(serde_json::to_value(parsed).unwrap(), receipt);
-    let receipt_schema = serde_json::to_value(schemars::schema_for!(ArtifactRef)).unwrap();
+    let parsed: ArtifactRef = serde_json::from_value(receipt.clone()).assert_value();
+    assert_eq!(serde_json::to_value(parsed).assert_value(), receipt);
+    let receipt_schema = serde_json::to_value(schemars::schema_for!(ArtifactRef)).assert_value();
     assert!(
         jsonschema::validator_for(&receipt_schema)
-            .unwrap()
+            .assert_value()
             .is_valid(&receipt)
     );
     assert_eq!(forbidden_durable_key(&receipt), None);
@@ -158,15 +161,16 @@ fn positive_vectors_round_trip_through_their_committed_contracts() {
         ),
     ] {
         let value = fixture_value(suffix);
-        assert_eq!(value["profile"], expected_profile);
-        assert_eq!(value["version"], expected_version);
-        let committed: WorkerOutcome = serde_json::from_value(value["normalized"].clone()).unwrap();
+        assert_eq!(value.assert_key("profile"), expected_profile);
+        assert_eq!(value.assert_key("version"), expected_version);
+        let committed: WorkerOutcome =
+            serde_json::from_value(value.assert_key("normalized").clone()).assert_value();
         assert_eq!(committed, normalized, "normalization drift in {suffix}");
         assert_eq!(
-            serde_json::to_value(committed).unwrap(),
-            value["normalized"]
+            &serde_json::to_value(committed).assert_value(),
+            value.assert_key("normalized")
         );
-        assert!(outcome_validator.is_valid(&value["normalized"]));
+        assert!(outcome_validator.is_valid(value.assert_key("normalized")));
         assert_eq!(
             forbidden_durable_key(&value),
             None,
@@ -219,7 +223,7 @@ fn duplicate(values: &[Value]) -> bool {
     values
         .iter()
         .enumerate()
-        .any(|(index, value)| values[..index].contains(value))
+        .any(|(index, value)| values.assert_slice_to(index).contains(value))
 }
 
 fn forbidden_descriptor_field(object: &Map<String, Value>) -> bool {
@@ -258,22 +262,24 @@ fn classify_schema_descriptor_rejection(document: &Value) -> Option<&'static str
 }
 
 fn classify_binding_rejection(document: &Value) -> Option<&'static str> {
-    let binding = &document["binding"];
-    let expected_binding = match binding["protocol"].as_str()? {
+    let binding = &document.assert_key("binding");
+    let expected_binding = match binding.assert_key("protocol").as_str()? {
         "acp" => ("1", "openengine.worker.acp/v1"),
         "a2a" => ("1.0", "openengine.worker.a2a/1.0"),
         "legacy_zeroshot" => ("1", "legacy.zeroshot.ship/v1"),
         "builtin" => (BUILTIN_VERSION, BUILTIN_PROFILE),
         _ => return Some("UNSUPPORTED_WORKER_BINDING"),
     };
-    if binding["version"] != expected_binding.0 || binding["profile"] != expected_binding.1 {
+    if binding.assert_key("version") != expected_binding.0
+        || binding.assert_key("profile") != expected_binding.1
+    {
         return Some("UNSUPPORTED_WORKER_BINDING");
     }
     None
 }
 
 fn classify_graph_profile_rejection(document: &Value) -> Option<&'static str> {
-    let graph_profiles = document["graphProfiles"].as_array()?;
+    let graph_profiles = document.assert_key("graphProfiles").as_array()?;
     if graph_profiles.is_empty() {
         return Some("EMPTY_GRAPH_PROFILES");
     }
@@ -285,7 +291,10 @@ fn classify_graph_profile_rejection(document: &Value) -> Option<&'static str> {
 
 fn classify_error_set_rejection(document: &Value) -> Option<&'static str> {
     const ALLOWED: &[&str] = &["timeout", "crash", "malformed", "refusal"];
-    let errors = document["contract"]["errors"].as_array()?;
+    let errors = document
+        .assert_key("contract")
+        .assert_key("errors")
+        .as_array()?;
     if errors
         .iter()
         .any(|error| !error.as_str().is_some_and(|code| ALLOWED.contains(&code)))
@@ -299,7 +308,9 @@ fn classify_error_set_rejection(document: &Value) -> Option<&'static str> {
 }
 
 fn classify_artifact_profile_rejection(document: &Value) -> Option<&'static str> {
-    if document["artifactProfile"]["allowedTypeIds"]
+    if document
+        .assert_key("artifactProfile")
+        .assert_key("allowedTypeIds")
         .as_array()
         .is_some_and(Vec::is_empty)
     {
@@ -309,7 +320,8 @@ fn classify_artifact_profile_rejection(document: &Value) -> Option<&'static str>
 }
 
 fn classify_credential_rejection(document: &Value) -> Option<&'static str> {
-    if document["credentialRequirements"]
+    if document
+        .assert_key("credentialRequirements")
         .as_array()
         .is_some_and(|values| duplicate(values))
     {
@@ -319,21 +331,26 @@ fn classify_credential_rejection(document: &Value) -> Option<&'static str> {
 }
 
 fn classify_legacy_rejection(document: &Value) -> Option<&'static str> {
-    let binding = &document["binding"];
-    let legacy_identity = document["worker"] == LEGACY_ZEROSHOT_WORKER;
-    let legacy_protocol = binding["protocol"] == "legacy_zeroshot";
+    let binding = &document.assert_key("binding");
+    let legacy_identity = document.assert_key("worker") == LEGACY_ZEROSHOT_WORKER;
+    let legacy_protocol = binding.assert_key("protocol") == "legacy_zeroshot";
     if legacy_identity || legacy_protocol {
-        let expected_input = serde_json::to_value(legacy_ship_request_payload_type()).unwrap();
-        let expected_output = serde_json::to_value(legacy_ship_result_payload_type()).unwrap();
-        let expected_errors = serde_json::to_value(RUNTIME_WORKER_ERRORS).unwrap();
+        let expected_input =
+            serde_json::to_value(legacy_ship_request_payload_type().assert_value()).assert_value();
+        let expected_output =
+            serde_json::to_value(legacy_ship_result_payload_type().assert_value()).assert_value();
+        let expected_errors = serde_json::to_value(RUNTIME_WORKER_ERRORS).assert_value();
         let valid = [
             legacy_identity,
             legacy_protocol,
-            document["graphProfiles"] == json!(["openengine.graph.single-worker/v1"]),
-            document["contract"]["input"] == expected_input,
-            document["contract"]["output"] == expected_output,
-            document["contract"]["verifier"].is_null(),
-            document["contract"]["errors"] == expected_errors,
+            document.assert_key("graphProfiles") == &json!(["openengine.graph.single-worker/v1"]),
+            document.assert_key("contract").assert_key("input") == &expected_input,
+            document.assert_key("contract").assert_key("output") == &expected_output,
+            document
+                .assert_key("contract")
+                .assert_key("verifier")
+                .is_null(),
+            document.assert_key("contract").assert_key("errors") == &expected_errors,
         ]
         .into_iter()
         .all(std::convert::identity);
@@ -345,8 +362,9 @@ fn classify_legacy_rejection(document: &Value) -> Option<&'static str> {
 }
 
 fn classify_builtin_rejection(document: &Value) -> Option<&'static str> {
-    let is_builtin = document["binding"]["protocol"] == "builtin";
-    let has_credentials = document["credentialRequirements"]
+    let is_builtin = document.assert_key("binding").assert_key("protocol") == "builtin";
+    let has_credentials = document
+        .assert_key("credentialRequirements")
         .as_array()
         .is_some_and(|values| !values.is_empty());
     (is_builtin && has_credentials).then_some("INVALID_BUILTIN_BINDING")
@@ -355,9 +373,9 @@ fn classify_builtin_rejection(document: &Value) -> Option<&'static str> {
 #[test]
 fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
     let schema = worker_schema();
-    let descriptor_validator = jsonschema::validator_for(&schema).unwrap();
+    let descriptor_validator = jsonschema::validator_for(&schema).assert_value();
     let outcome_schema = component_schema(&schema, "WorkerOutcome");
-    let outcome_validator = jsonschema::validator_for(&outcome_schema).unwrap();
+    let outcome_validator = jsonschema::validator_for(&outcome_schema).assert_value();
     let mut descriptor_count = 0;
     let mut outcome_count = 0;
 
@@ -365,18 +383,18 @@ fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
         .into_iter()
         .filter(|artifact| artifact.relative_path.contains("/negative/"))
     {
-        let fixture: Value = serde_json::from_slice(&artifact.bytes).unwrap();
-        let expected = fixture["expectedCode"].as_str().unwrap();
+        let fixture: Value = serde_json::from_slice(&artifact.bytes).assert_value();
+        let expected = fixture.assert_key("expectedCode").as_str().assert_value();
         assert!(
             expected
                 .bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
         );
-        let document = &fixture["document"];
-        match fixture["fixtureKind"].as_str().unwrap() {
+        match fixture.assert_key("fixtureKind").as_str().assert_value() {
             "descriptor" => {
+                let document = fixture.assert_key("document");
                 let rust_error = serde_json::from_value::<WorkerDescriptor>(document.clone())
-                    .unwrap_err()
+                    .assert_error()
                     .to_string();
                 assert!(!descriptor_validator.is_valid(document));
                 assert_eq!(
@@ -394,8 +412,9 @@ fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
                 descriptor_count += 1;
             }
             "outcome" => {
+                let document = fixture.assert_key("document");
                 let rust_error = serde_json::from_value::<WorkerOutcome>(document.clone())
-                    .unwrap_err()
+                    .assert_error()
                     .to_string();
                 assert!(rust_error.contains("code and failure reason are inconsistent"));
                 assert_eq!(expected, "INVALID_FAILURE_PAIR");
@@ -403,14 +422,14 @@ fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
                 outcome_count += 1;
             }
             "compatibility" => {}
-            kind => panic!("unknown worker fixture kind {kind}"),
+            kind => None::<()>.assert_value_with(&format!("unknown worker fixture kind {kind}")),
         }
     }
     assert_eq!(descriptor_count, 22);
     assert_eq!(outcome_count, 3);
 }
 
-const fn compatibility_code(code: WorkerCompatibilityCode) -> &'static str {
+fn compatibility_code(code: WorkerCompatibilityCode) -> &'static str {
     const CODES: [&str; 10] = [
         "REGISTRY",
         "DESCRIPTOR_CONTRACT",
@@ -423,7 +442,7 @@ const fn compatibility_code(code: WorkerCompatibilityCode) -> &'static str {
         "SIGNAL_LABELS",
         "DIAGNOSTIC",
     ];
-    CODES[code as usize]
+    CODES.get(code as usize).copied().unwrap_or("DIAGNOSTIC")
 }
 
 #[tokio::test]
@@ -433,26 +452,34 @@ async fn compatibility_vectors_execute_every_committed_variance_failure() {
         .into_iter()
         .filter(|artifact| artifact.relative_path.contains("/negative/compatibility-"))
     {
-        let fixture: Value = serde_json::from_slice(&artifact.bytes).unwrap();
-        assert_eq!(fixture["fixtureKind"], "compatibility");
-        let graph: GraphSpec = serde_json::from_value(fixture["graph"].clone()).unwrap();
-        assert_eq!(serde_json::to_value(&graph).unwrap(), fixture["graph"]);
+        let fixture: Value = serde_json::from_slice(&artifact.bytes).assert_value();
+        assert_eq!(fixture.assert_key("fixtureKind"), "compatibility");
+        let graph: GraphSpec =
+            serde_json::from_value(fixture.assert_key("graph").clone()).assert_value();
+        assert_eq!(
+            &serde_json::to_value(&graph).assert_value(),
+            fixture.assert_key("graph")
+        );
         let mut registry = BTreeMap::new();
-        for entry in fixture["registry"].as_array().unwrap() {
+        for entry in fixture.assert_key("registry").as_array().assert_value() {
             let descriptor: WorkerDescriptor =
-                serde_json::from_value(entry["descriptor"].clone()).unwrap();
+                serde_json::from_value(entry.assert_key("descriptor").clone()).assert_value();
             assert_eq!(
-                serde_json::to_value(&descriptor).unwrap(),
-                entry["descriptor"]
+                &serde_json::to_value(&descriptor).assert_value(),
+                entry.assert_key("descriptor")
             );
             registry.insert(
-                entry["requestedWorker"].as_str().unwrap().to_owned(),
-                entry["descriptor"].clone(),
+                entry
+                    .assert_key("requestedWorker")
+                    .as_str()
+                    .assert_value()
+                    .to_owned(),
+                entry.assert_key("descriptor").clone(),
             );
         }
         let diagnostics = check_graph_workers(&graph, &MemoryRegistry(registry))
             .await
-            .unwrap_err();
+            .assert_error();
         assert_eq!(
             diagnostics.len(),
             1,
@@ -460,8 +487,8 @@ async fn compatibility_vectors_execute_every_committed_variance_failure() {
             artifact.relative_path
         );
         assert_eq!(
-            compatibility_code(diagnostics[0].code),
-            fixture["expectedCode"],
+            compatibility_code(diagnostics.assert_at(0).code),
+            fixture.assert_key("expectedCode"),
             "wrong compatibility code in {}",
             artifact.relative_path
         );
@@ -469,3 +496,5 @@ async fn compatibility_vectors_execute_every_committed_variance_failure() {
     }
     assert_eq!(count, 6);
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertSlice, AssertValue, JsonAt};

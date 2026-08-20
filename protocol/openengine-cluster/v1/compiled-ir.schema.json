@@ -125,6 +125,16 @@
               },
               "type": "array"
             },
+            "instructions": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NodeInstructions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "kind": {
               "const": "step",
               "type": "string"
@@ -187,6 +197,16 @@
                 "$ref": "#/$defs/InputBinding"
               },
               "type": "array"
+            },
+            "instructions": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NodeInstructions"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "kind": {
               "const": "verifier",
@@ -436,7 +456,14 @@
               "$ref": "#/$defs/PayloadType"
             },
             "until": {
-              "$ref": "#/$defs/Guard"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Guard"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -444,7 +471,6 @@
             "name",
             "state",
             "body",
-            "until",
             "maxIterations",
             "promotedStatePaths"
           ],
@@ -816,6 +842,12 @@
           "type": "object"
         }
       ]
+    },
+    "NodeInstructions": {
+      "maxLength": 16384,
+      "minLength": 1,
+      "pattern": "^[^\\u0000]*[^\\s\\u0000][^\\u0000]*$",
+      "type": "string"
     },
     "NodeOutputChannel": {
       "enum": [

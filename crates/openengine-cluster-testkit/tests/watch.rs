@@ -28,15 +28,18 @@ async fn watch_parks_while_empty_and_attaches_on_the_next_committed_run() {
     let (client, dispatcher, _backend, _verifier, _store) =
         setup(vec![ScriptedOutcome::approve(compiled, vec![])]);
 
-    let (parked, mut stream, _handle) = dispatcher.watch(WatchParams::default()).await.unwrap();
+    let (parked, mut stream, _handle) = dispatcher
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     assert_eq!(parked.run_id, None);
     assert_eq!(parked.at_cursor, None);
 
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
 
     let record = expect_record(stream.next().await);
     assert_eq!(record.run_id, run_id);
@@ -61,17 +64,20 @@ async fn parked_overflow_reconnect_stays_on_the_attached_run() {
     ]);
     let watch_client = WatchClient::new(dispatcher);
 
-    let (parked, mut stream, _handle) = watch_client.watch(WatchParams::default()).await.unwrap();
+    let (parked, mut stream, _handle) = watch_client
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     assert_eq!(parked.run_id, None);
 
     let first = admission_client
         .apply(committed(graph_a, Value::Null, 0, "create-parked-a"))
         .await
-        .unwrap();
-    let first_run = first.run_id.unwrap();
+        .assert_value();
+    let first_run = first.run_id.assert_value();
     let node = NodeAddress {
-        node: NodeName::new("worker-a").unwrap(),
-        attempt: PositiveInteger::new(1).unwrap(),
+        node: NodeName::new("worker-a").assert_value(),
+        attempt: PositiveInteger::new(1).assert_value(),
     };
     for _ in 0..DEFAULT_SUBSCRIPTION_QUEUE_CAPACITY {
         store
@@ -87,15 +93,15 @@ async fn parked_overflow_reconnect_stays_on_the_attached_run() {
         .apply(committed(
             graph_b,
             Value::Null,
-            first.generation.unwrap().get(),
+            first.generation.assert_value().get(),
             "create-parked-b",
         ))
         .await
-        .unwrap();
+        .assert_value();
     assert_ne!(second.run_id.as_ref(), Some(&first_run));
 
     loop {
-        match stream.next().await.unwrap() {
+        match stream.next().await.assert_value() {
             EventOrClosed::Event(record) => assert_eq!(record.run_id, first_run),
             EventOrClosed::Closed {
                 reason,
@@ -108,11 +114,13 @@ async fn parked_overflow_reconnect_stays_on_the_attached_run() {
         }
     }
 
-    let (reconnected, mut stream, _handle) = watch_client.reconnect(stream).await.unwrap();
+    let (reconnected, mut stream, _handle) = watch_client.reconnect(stream).await.assert_value();
     assert_eq!(reconnected.run_id, Some(first_run.clone()));
-    let Some(EventOrClosed::Event(record)) = stream.next().await else {
-        panic!("expected the attached run's overflowed event on reconnect");
-    };
+    let record = match stream.next().await {
+        Some(EventOrClosed::Event(record)) => Some(record),
+        _ => None,
+    }
+    .assert_value_with("expected the attached run's overflowed event on reconnect");
     assert_eq!(record.run_id, first_run);
 }
 
@@ -123,7 +131,7 @@ async fn get_then_watch_from_cursor_has_no_gap_under_a_concurrent_commit() {
     let (client, dispatcher, _backend, _verifier, _store) =
         setup(vec![ScriptedOutcome::approve(compiled, vec![])]);
 
-    let snapshot = client.get(GetParams::default()).await.unwrap();
+    let snapshot = client.get(GetParams::default()).await.assert_value();
     assert_eq!(snapshot.at_cursor, None);
 
     let apply = client.apply(committed(graph, Value::Null, 0, "create"));
@@ -132,9 +140,9 @@ async fn get_then_watch_from_cursor_has_no_gap_under_a_concurrent_commit() {
         from_cursor: snapshot.at_cursor,
     });
     let (apply_result, watch_result) = tokio::join!(apply, watch);
-    let apply_result = apply_result.unwrap();
-    let run_id = apply_result.run_id.unwrap();
-    let (_result, mut stream, _handle) = watch_result.unwrap();
+    let apply_result = apply_result.assert_value();
+    let run_id = apply_result.run_id.assert_value();
+    let (_result, mut stream, _handle) = watch_result.assert_value();
 
     let record = expect_record(stream.next().await);
     assert_eq!(record.run_id, run_id);
@@ -155,18 +163,18 @@ async fn superseded_runs_stay_watchable_until_explicit_tombstone_and_unknown_run
     let first = client
         .apply(committed(graph_a, Value::Null, 0, "create-a"))
         .await
-        .unwrap();
-    let first_run = first.run_id.unwrap();
+        .assert_value();
+    let first_run = first.run_id.assert_value();
     let second = client
         .apply(committed(
             graph_b,
             Value::Null,
-            first.generation.unwrap().get(),
+            first.generation.assert_value().get(),
             "create-b",
         ))
         .await
-        .unwrap();
-    let second_run = second.run_id.unwrap();
+        .assert_value();
+    let second_run = second.run_id.assert_value();
     assert_ne!(first_run, second_run);
 
     let (result, mut stream, _handle) = dispatcher
@@ -175,32 +183,28 @@ async fn superseded_runs_stay_watchable_until_explicit_tombstone_and_unknown_run
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(result.run_id, Some(first_run.clone()));
     let record = expect_record(stream.next().await);
     assert_eq!(record.run_id, first_run);
 
-    let Err(error) = dispatcher
+    let error = dispatcher
         .watch(WatchParams {
             run_id: Some(RunId::new("run-does-not-exist")),
             from_cursor: None,
         })
         .await
-    else {
-        panic!("expected an unknown-run error");
-    };
+        .assert_error();
     assert_eq!(error.code, NOT_FOUND);
 
     store.tombstone_run(first_run.clone()).await;
-    let Err(error) = dispatcher
+    let error = dispatcher
         .watch(WatchParams {
             run_id: Some(first_run),
             from_cursor: None,
         })
         .await
-    else {
-        panic!("expected a gone error");
-    };
+        .assert_error();
     assert_eq!(error.code, GONE);
 }
 
@@ -213,8 +217,8 @@ async fn duplicate_physical_delivery_is_legal_and_carries_the_same_run_and_curso
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
 
     let (_result, mut stream, _handle) = dispatcher
         .watch(WatchParams {
@@ -222,7 +226,7 @@ async fn duplicate_physical_delivery_is_legal_and_carries_the_same_run_and_curso
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     let first = expect_record(stream.next().await);
 
     assert!(store.redeliver_last_event_for_test(&run_id).await);
@@ -241,9 +245,9 @@ async fn concurrent_subscribers_to_one_run_observe_identical_order() {
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
-    let generation = apply_result.generation.unwrap().get();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
+    let generation = apply_result.generation.assert_value().get();
 
     let (result_a, mut stream_a, _handle_a) = dispatcher
         .watch(WatchParams {
@@ -251,20 +255,23 @@ async fn concurrent_subscribers_to_one_run_observe_identical_order() {
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     let (result_b, mut stream_b, _handle_b) = dispatcher
         .watch(WatchParams {
             run_id: Some(run_id.clone()),
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
 
     client
         .update(suspend(generation, "suspend-1"))
         .await
-        .unwrap();
-    client.update(resume(generation, "resume-1")).await.unwrap();
+        .assert_value();
+    client
+        .update(resume(generation, "resume-1"))
+        .await
+        .assert_value();
     client
         .stop(stop(
             openengine_cluster_protocol::StopMode::Drain,
@@ -272,7 +279,7 @@ async fn concurrent_subscribers_to_one_run_observe_identical_order() {
             "stop-1",
         ))
         .await
-        .unwrap();
+        .assert_value();
 
     let mut order_a = Vec::new();
     while order_a.len() < 4 {
@@ -295,9 +302,9 @@ async fn overflow_closes_with_slow_consumer_and_reconnect_recovers_without_a_gap
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
-    let generation = apply_result.generation.unwrap().get();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
+    let generation = apply_result.generation.assert_value().get();
 
     let context = ConnectionContext::default();
     let (_result, mut stream, _handle) = backend
@@ -310,29 +317,30 @@ async fn overflow_closes_with_slow_consumer_and_reconnect_recovers_without_a_gap
             1,
         )
         .await
-        .unwrap();
+        .assert_value();
     let admission_record = expect_record(stream.next().await);
 
     client
         .update(suspend(generation, "suspend-overflow-1"))
         .await
-        .unwrap();
+        .assert_value();
     client
         .update(resume(generation, "resume-overflow-1"))
         .await
-        .unwrap();
+        .assert_value();
 
     let delivered = expect_record(stream.next().await);
     assert_ne!(delivered.cursor, admission_record.cursor);
 
     let closed = stream.next().await;
-    let Some(WatchStreamItem::Closed {
-        reason,
-        last_delivered_cursor,
-    }) = closed
-    else {
-        panic!("expected a slow-consumer close, got {closed:?}");
-    };
+    let (reason, last_delivered_cursor) = match closed {
+        Some(WatchStreamItem::Closed {
+            reason,
+            last_delivered_cursor,
+        }) => Some((reason, last_delivered_cursor)),
+        _ => None,
+    }
+    .assert_value_with("expected a slow-consumer close");
     assert_eq!(
         reason,
         openengine_cluster_protocol::SubscriptionCloseReason::SlowConsumer
@@ -349,7 +357,7 @@ async fn overflow_closes_with_slow_consumer_and_reconnect_recovers_without_a_gap
             8,
         )
         .await
-        .unwrap();
+        .assert_value();
     let recovered = expect_record(reconnect_stream.next().await);
     assert_ne!(recovered.cursor, delivered.cursor);
 }
@@ -363,12 +371,12 @@ async fn synthetic_node_begin_and_end_events_are_delivered_in_order() {
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
 
     let node = NodeAddress {
-        node: NodeName::new("worker").unwrap(),
-        attempt: PositiveInteger::new(1).unwrap(),
+        node: NodeName::new("worker").assert_value(),
+        attempt: PositiveInteger::new(1).assert_value(),
     };
     let begin_cursor = store
         .emit_node_event(
@@ -399,7 +407,7 @@ async fn synthetic_node_begin_and_end_events_are_delivered_in_order() {
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     let admission = expect_record(stream.next().await);
     assert!(matches!(admission.event, WatchEvent::Phase { .. }));
     let begin = expect_record(stream.next().await);
@@ -409,3 +417,5 @@ async fn synthetic_node_begin_and_end_events_are_delivered_in_order() {
     assert_eq!(end.cursor, end_cursor);
     assert!(matches!(end.event, WatchEvent::NodeEnd { .. }));
 }
+
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};

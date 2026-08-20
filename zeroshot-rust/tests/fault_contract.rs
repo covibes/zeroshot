@@ -113,14 +113,14 @@ fn every_closed_evidence_triple_is_deterministic() {
                 let second = factory().create(evidence);
                 assert_eq!(first, second, "{module:?}/{context:?}/{class:?}");
                 assert_eq!(first.sources().len(), 1);
-                assert_eq!(first.sources()[0].module(), module);
-                assert_eq!(first.sources()[0].context(), context);
-                assert_eq!(first.sources()[0].evidence_class(), class);
+                assert_eq!(first.sources().assert_at(0).module(), module);
+                assert_eq!(first.sources().assert_at(0).context(), context);
+                assert_eq!(first.sources().assert_at(0).evidence_class(), class);
                 assert!(first.summary().len() <= MAX_FAULT_SUMMARY_BYTES);
-                assert!(first.encode_json().unwrap().len() <= MAX_ENGINE_FAULT_BYTES);
-                let projected = ProductError::from_engine_fault(&first).unwrap();
-                let command = projected.render_text().unwrap();
-                let control = serde_json::to_string(&projected.daemon_control()).unwrap();
+                assert!(first.encode_json().assert_value().len() <= MAX_ENGINE_FAULT_BYTES);
+                let projected = ProductError::from_engine_fault(&first).assert_value();
+                let command = projected.render_text().assert_value();
+                let control = serde_json::to_string(&projected.daemon_control()).assert_value();
                 assert!(!command.contains("\nsources:"));
                 assert!(!control.contains("\"sources\""));
             }
@@ -137,12 +137,12 @@ fn canonical_fault_encodings_are_exhaustive_and_byte_compatible() {
             class,
         ));
         assert_eq!(
-            fault.encode_json().unwrap(),
+            fault.encode_json().assert_value(),
             golden.as_bytes(),
             "encoded fixture drifted for {class:?}"
         );
         assert_eq!(
-            EngineFault::decode_json(golden.as_bytes()).unwrap(),
+            EngineFault::decode_json(golden.as_bytes()).assert_value(),
             fault,
             "golden fixture failed canonical decode for {class:?}"
         );
@@ -165,16 +165,16 @@ fn session_loss_is_identically_non_retryable_for_every_source_context() {
             assert_eq!(fault.user_action(), UserAction::ContactSupport);
             assert_eq!(fault.severity(), FaultSeverity::Error);
             assert_eq!(fault.summary(), SUMMARY);
-            let encoded = fault.encode_json().unwrap();
+            let encoded = fault.encode_json().assert_value();
             assert_eq!(
-                EngineFault::decode_json(&encoded).unwrap(),
+                EngineFault::decode_json(&encoded).assert_value(),
                 fault,
                 "{module:?}/{context:?}"
             );
-            let mut legacy_retry: Value = serde_json::from_slice(&encoded).unwrap();
-            legacy_retry["retryDisposition"] = json!("retry_after_backoff");
+            let mut legacy_retry: Value = serde_json::from_slice(&encoded).assert_value();
+            *legacy_retry.get_mut("retryDisposition").assert_value() = json!("retry_after_backoff");
             assert_eq!(
-                EngineFault::decode_json(&serde_json::to_vec(&legacy_retry).unwrap()),
+                EngineFault::decode_json(&serde_json::to_vec(&legacy_retry).assert_value()),
                 Err(FaultError::InvalidFaultSemantics),
                 "legacy retry semantics decoded for {module:?}/{context:?}"
             );
@@ -192,7 +192,9 @@ fn raw_content_cannot_change_fault_semantics_or_safe_text() {
             FaultContext::Execution,
             EvidenceClass::ProcessExited,
         )
-        .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, first_raw).unwrap()),
+        .with_diagnostic(
+            RawDiagnostic::new(RedactionMarker::ProviderText, first_raw).assert_value(),
+        ),
     );
     let second = factory().create(
         ModuleEvidence::new(
@@ -200,11 +202,13 @@ fn raw_content_cannot_change_fault_semantics_or_safe_text() {
             FaultContext::Execution,
             EvidenceClass::ProcessExited,
         )
-        .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, second_raw).unwrap()),
+        .with_diagnostic(
+            RawDiagnostic::new(RedactionMarker::ProviderText, second_raw).assert_value(),
+        ),
     );
 
     assert_eq!(first, second);
-    let encoded = String::from_utf8(first.encode_json().unwrap()).unwrap();
+    let encoded = String::from_utf8(first.encode_json().assert_value()).assert_value();
     assert!(!encoded.contains(first_raw));
     assert!(!encoded.contains(second_raw));
     assert!(!first.summary().contains("top-secret"));
@@ -243,7 +247,7 @@ fn every_sensitive_category_is_replaced_wholesale() {
     ];
 
     for (marker, secret) in fixtures {
-        let diagnostic = RawDiagnostic::new(marker, secret).unwrap();
+        let diagnostic = RawDiagnostic::new(marker, secret).assert_value();
         let debug = format!("{diagnostic:?}");
         assert!(!debug.contains(secret));
         assert!(debug.contains("<redacted>"));
@@ -256,7 +260,7 @@ fn every_sensitive_category_is_replaced_wholesale() {
             )
             .with_diagnostic(diagnostic),
         );
-        let encoded = String::from_utf8(fault.encode_json().unwrap()).unwrap();
+        let encoded = String::from_utf8(fault.encode_json().assert_value()).assert_value();
         assert!(!encoded.contains(secret));
         assert!(!encoded.contains("redacted"));
     }
@@ -270,7 +274,7 @@ fn bounds_accept_exact_limits_and_reject_limit_plus_one() {
         Box::leak("s".repeat(MAX_FAULT_SUMMARY_BYTES + 1).into_boxed_str());
     assert_eq!(
         BoundedFaultSummary::from_engine_owned(exact_summary)
-            .unwrap()
+            .assert_value()
             .as_str()
             .len(),
         MAX_FAULT_SUMMARY_BYTES
@@ -284,7 +288,7 @@ fn bounds_accept_exact_limits_and_reject_limit_plus_one() {
     let oversized_diagnostic = "d".repeat(MAX_EPHEMERAL_DIAGNOSTIC_BYTES + 1);
     assert_eq!(
         RawDiagnostic::new(RedactionMarker::UnknownText, &exact_diagnostic)
-            .unwrap()
+            .assert_value()
             .ephemeral()
             .original_bytes() as usize,
         MAX_EPHEMERAL_DIAGNOSTIC_BYTES
@@ -295,29 +299,29 @@ fn bounds_accept_exact_limits_and_reject_limit_plus_one() {
     );
 
     let original = fault();
-    let mut value = serde_json::to_value(&original).unwrap();
+    let mut value = serde_json::to_value(&original).assert_value();
     let frame = serde_json::to_value(SafeSourceFrame::new(
         FaultModule::Provider,
         FaultContext::Execution,
         EvidenceClass::Timeout,
     ))
-    .unwrap();
-    value["sources"] = Value::Array(vec![frame.clone(); MAX_FAULT_SOURCES]);
-    let exact_sources = serde_json::to_vec(&value).unwrap();
+    .assert_value();
+    *value.get_mut("sources").assert_value() = Value::Array(vec![frame.clone(); MAX_FAULT_SOURCES]);
+    let exact_sources = serde_json::to_vec(&value).assert_value();
     assert_eq!(
         EngineFault::decode_json(&exact_sources)
-            .unwrap()
+            .assert_value()
             .sources()
             .len(),
         MAX_FAULT_SOURCES
     );
-    value["sources"] = Value::Array(vec![frame; MAX_FAULT_SOURCES + 1]);
+    *value.get_mut("sources").assert_value() = Value::Array(vec![frame; MAX_FAULT_SOURCES + 1]);
     assert_eq!(
-        EngineFault::decode_json(&serde_json::to_vec(&value).unwrap()),
+        EngineFault::decode_json(&serde_json::to_vec(&value).assert_value()),
         Err(FaultError::TooManySources)
     );
 
-    let encoded = original.encode_json().unwrap();
+    let encoded = original.encode_json().assert_value();
     let mut exact_encoding = encoded;
     exact_encoding.resize(MAX_ENGINE_FAULT_BYTES, b' ');
     assert!(EngineFault::decode_json(&exact_encoding).is_ok());
@@ -330,39 +334,48 @@ fn bounds_accept_exact_limits_and_reject_limit_plus_one() {
 
 #[test]
 fn decoding_revalidates_summary_sources_payload_and_unknown_fields() {
-    let encoded = fault().encode_json().unwrap();
-    assert_eq!(EngineFault::decode_json(&encoded).unwrap(), fault());
+    let encoded = fault().encode_json().assert_value();
+    assert_eq!(EngineFault::decode_json(&encoded).assert_value(), fault());
 
-    let mut value: Value = serde_json::from_slice(&encoded).unwrap();
-    value["summary"] = Value::String("provider-authored summary".to_owned());
+    let mut value: Value = serde_json::from_slice(&encoded).assert_value();
+    *value.get_mut("summary").assert_value() =
+        Value::String("provider-authored summary".to_owned());
     assert_eq!(
-        EngineFault::decode_json(&serde_json::to_vec(&value).unwrap()),
+        EngineFault::decode_json(&serde_json::to_vec(&value).assert_value()),
         Err(FaultError::InvalidSafeSummary)
     );
 
-    let mut value: Value = serde_json::from_slice(&encoded).unwrap();
-    value["metadata"] = json!({"credential": "must-not-enter"});
+    let mut value: Value = serde_json::from_slice(&encoded).assert_value();
+    value.as_object_mut().assert_value().insert(
+        "metadata".to_owned(),
+        json!({"credential": "must-not-enter"}),
+    );
     assert_eq!(
-        EngineFault::decode_json(&serde_json::to_vec(&value).unwrap()),
+        EngineFault::decode_json(&serde_json::to_vec(&value).assert_value()),
         Err(FaultError::InvalidEncoding)
     );
 
-    let mut value: Value = serde_json::from_slice(&encoded).unwrap();
-    value["sources"][0]["credential"] = json!("secret-value");
+    let mut value: Value = serde_json::from_slice(&encoded).assert_value();
+    value
+        .pointer_mut("/sources/0")
+        .assert_value()
+        .as_object_mut()
+        .assert_value()
+        .insert("credential".to_owned(), json!("secret-value"));
     assert_eq!(
-        EngineFault::decode_json(&serde_json::to_vec(&value).unwrap()),
+        EngineFault::decode_json(&serde_json::to_vec(&value).assert_value()),
         Err(FaultError::InvalidEncoding)
     );
 }
 
 #[test]
 fn decoding_rejects_empty_sources_and_forged_semantics() {
-    let encoded = fault().encode_json().unwrap();
+    let encoded = fault().encode_json().assert_value();
 
-    let mut empty_sources: Value = serde_json::from_slice(&encoded).unwrap();
-    empty_sources["sources"] = Value::Array(Vec::new());
+    let mut empty_sources: Value = serde_json::from_slice(&encoded).assert_value();
+    *empty_sources.get_mut("sources").assert_value() = Value::Array(Vec::new());
     assert_eq!(
-        EngineFault::decode_json(&serde_json::to_vec(&empty_sources).unwrap()),
+        EngineFault::decode_json(&serde_json::to_vec(&empty_sources).assert_value()),
         Err(FaultError::MissingPrimarySource)
     );
 
@@ -374,10 +387,13 @@ fn decoding_rejects_empty_sources_and_forged_semantics() {
         ("severity", json!("critical")),
     ];
     for (field, forged_value) in forged_fields {
-        let mut forged: Value = serde_json::from_slice(&encoded).unwrap();
-        forged[field] = forged_value;
+        let mut forged: Value = serde_json::from_slice(&encoded).assert_value();
+        forged
+            .as_object_mut()
+            .assert_value()
+            .insert(field.to_owned(), forged_value);
         assert_eq!(
-            EngineFault::decode_json(&serde_json::to_vec(&forged).unwrap()),
+            EngineFault::decode_json(&serde_json::to_vec(&forged).assert_value()),
             Err(FaultError::InvalidFaultSemantics),
             "decoder accepted forged {field}"
         );
@@ -421,16 +437,29 @@ async fn internal_projection_is_opaque_and_has_no_details() {
     let response = Dispatcher::new(FaultBackend, ConnectionContext::default())
         .dispatch(&json!({"jsonrpc": "2.0", "id": 7, "method": "get", "params": {}}).to_string())
         .await;
-    let response_json: Value = serde_json::from_str(&response).unwrap();
-    assert_eq!(response_json["error"]["code"], INTERNAL_ERROR);
-    assert_eq!(response_json["error"]["message"], "Internal error");
-    assert_eq!(response_json["error"]["data"]["code"], INTERNAL_ERROR_CODE);
+    let response_json: Value = serde_json::from_str(&response).assert_value();
+    assert_eq!(
+        response_json.pointer("/error/code").assert_value(),
+        INTERNAL_ERROR
+    );
+    assert_eq!(
+        response_json.pointer("/error/message").assert_value(),
+        "Internal error"
+    );
+    assert_eq!(
+        response_json.pointer("/error/data/code").assert_value(),
+        INTERNAL_ERROR_CODE
+    );
     assert!(
-        !response_json["error"]["data"]
+        !response_json
+            .pointer("/error/data")
+            .assert_value()
             .as_object()
-            .unwrap()
+            .assert_value()
             .contains_key("details")
     );
     assert!(!response.contains(fault.summary()));
     assert!(!response.contains("provider"));
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertValue};

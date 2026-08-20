@@ -1,11 +1,24 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ClusterStatus, Cursor, DispatchState, Generation, GetParams, GetResult, InitializeParams,
-    InitializeResult, OperationalStatus, Phase, RetryParams, RetryResult, RunId,
-    ServerCapabilities, NO_RETRYABLE_FRONTIER,
+    Cursor, DispatchState, Generation, GetParams, GetResult, InitializeParams, InitializeResult,
+    OperationalStatus, Phase, RetryParams, RetryResult, RunId, NO_RETRYABLE_FRONTIER,
 };
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 use serde_json::json;
+
+#[path = "support/assert_at.rs"]
+mod assert_at;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+#[path = "support/assert_value.rs"]
+mod assert_value;
+#[path = "support/unexpected_get.rs"]
+mod unexpected_get;
+
+use assert_at::AssertAt;
+use assert_error::AssertError;
+use assert_value::AssertValue;
+use unexpected_get::DefaultBackend;
 
 struct RoutingBackend;
 
@@ -13,21 +26,18 @@ struct RoutingBackend;
 impl ClusterBackend for RoutingBackend {
     async fn initialize(
         &self,
-        _context: &ConnectionContext,
-        _params: InitializeParams,
+        context: &ConnectionContext,
+        params: InitializeParams,
     ) -> Result<InitializeResult, BackendError> {
-        Ok(InitializeResult::new(
-            ServerCapabilities::default(),
-            ClusterStatus::empty(),
-        ))
+        ClusterBackend::initialize(&DefaultBackend, context, params).await
     }
 
     async fn get(
         &self,
-        _context: &ConnectionContext,
-        _params: GetParams,
+        context: &ConnectionContext,
+        params: GetParams,
     ) -> Result<GetResult, BackendError> {
-        unreachable!()
+        ClusterBackend::get(&DefaultBackend, context, params).await
     }
 
     async fn retry(
@@ -43,7 +53,7 @@ impl ClusterBackend for RoutingBackend {
             ));
         }
         Ok(RetryResult {
-            generation: Generation::new(1).unwrap(),
+            generation: Generation::new(1).assert_value(),
             run_id: RunId::new("run-1"),
             phase: Phase::Running,
             retried_turn_id: "turn-1".to_owned(),
@@ -73,9 +83,15 @@ async fn retry_dispatches_to_cluster_backend_and_maps_no_retryable_frontier() {
             )
             .await,
     )
-    .unwrap();
-    assert_eq!(success["result"]["retriedTurnId"], "turn-1");
-    assert_eq!(success["result"]["retryTurnId"], "turn-2");
+    .assert_value();
+    assert_eq!(
+        success.assert_at("result").assert_at("retriedTurnId"),
+        "turn-1"
+    );
+    assert_eq!(
+        success.assert_at("result").assert_at("retryTurnId"),
+        "turn-2"
+    );
 
     let denied: serde_json::Value = serde_json::from_str(
         &dispatcher
@@ -88,9 +104,22 @@ async fn retry_dispatches_to_cluster_backend_and_maps_no_retryable_frontier() {
             )
             .await,
     )
-    .unwrap();
-    assert_eq!(denied["error"]["data"]["code"], NO_RETRYABLE_FRONTIER);
-    assert_eq!(denied["error"]["data"]["details"]["reason"], "exhausted");
+    .assert_value();
+    assert_eq!(
+        denied
+            .assert_at("error")
+            .assert_at("data")
+            .assert_at("code"),
+        NO_RETRYABLE_FRONTIER
+    );
+    assert_eq!(
+        denied
+            .assert_at("error")
+            .assert_at("data")
+            .assert_at("details")
+            .assert_at("reason"),
+        "exhausted"
+    );
 
     for params in [
         json!({"idempotencyKey":"empty"}),
@@ -105,9 +134,9 @@ async fn retry_dispatches_to_cluster_backend_and_maps_no_retryable_frontier() {
                 )
                 .await,
         )
-        .unwrap();
+        .assert_value();
         assert!(
-            response["error"].is_object(),
+            response.assert_at("error").is_object(),
             "expected rejection for {response}"
         );
     }
@@ -115,39 +144,16 @@ async fn retry_dispatches_to_cluster_backend_and_maps_no_retryable_frontier() {
 
 #[tokio::test]
 async fn default_backend_rejects_retry_with_invalid_phase() {
-    struct DefaultBackend;
-
-    #[async_trait]
-    impl ClusterBackend for DefaultBackend {
-        async fn initialize(
-            &self,
-            _context: &ConnectionContext,
-            _params: InitializeParams,
-        ) -> Result<InitializeResult, BackendError> {
-            Ok(InitializeResult::new(
-                ServerCapabilities::default(),
-                ClusterStatus::empty(),
-            ))
-        }
-
-        async fn get(
-            &self,
-            _context: &ConnectionContext,
-            _params: GetParams,
-        ) -> Result<GetResult, BackendError> {
-            unreachable!()
-        }
-    }
-
     let error = ClusterBackend::retry(
         &DefaultBackend,
         &ConnectionContext::default(),
         RetryParams {
-            if_generation: Generation::new(1).unwrap(),
-            idempotency_key: openengine_cluster_protocol::IdempotencyKey::new("default").unwrap(),
+            if_generation: Generation::new(1).assert_value(),
+            idempotency_key: openengine_cluster_protocol::IdempotencyKey::new("default")
+                .assert_value(),
         },
     )
     .await
-    .unwrap_err();
+    .assert_error();
     assert_eq!(error.code, openengine_cluster_protocol::INVALID_PHASE);
 }

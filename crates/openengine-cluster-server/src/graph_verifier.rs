@@ -493,5 +493,6 @@ use contexts::*;
 use diagnostics::*;
 use effects::*;
 use effects_tree::*;
+pub use effects_tree::child_nodes as graph_node_children;
 use effects_writes::*;
 use payload::*;

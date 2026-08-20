@@ -18,6 +18,7 @@ mod tests {
     use openengine_cluster_testkit::conformance::{
         conformance_catalog, BackendRegistration, RegisteredOptionalCapabilities,
     };
+    use openengine_cluster_testkit::assertions::AssertValue;
     use openengine_cluster_testkit::{run_backend_conformance, BackendFactory};
 
     #[derive(Default)]
@@ -55,7 +56,7 @@ mod tests {
             self.counts.calls.fetch_add(1, Ordering::SeqCst);
             Ok(InitializeResult::new(
                 ServerCapabilities {
-                    graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
+                    graph_profiles: GraphProfileSet::new(vec![]).assert_value(),
                     logs: false,
                     agent_attach: false,
                 },
@@ -151,7 +152,7 @@ mod tests {
             profiles: vec![],
             counts: Arc::clone(&counts),
         };
-        let report = run_backend_conformance(&factory).await.unwrap();
+        let report = run_backend_conformance(&factory).await.assert_value();
 
         assert_eq!(report.cases().len(), conformance_catalog().len());
         assert_eq!(report.passed(), 16);

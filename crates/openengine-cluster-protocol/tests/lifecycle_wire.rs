@@ -1,3 +1,7 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+use assert_value::AssertValue;
 use std::collections::BTreeMap;
 
 use openengine_cluster_protocol::{
@@ -15,10 +19,10 @@ fn update_wire_is_closed_non_empty_and_presence_sensitive() {
         "ifGeneration":7,
         "idempotencyKey":"update-1"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(update.log_level, Some(LogLevel::Debug));
     assert_eq!(
-        serde_json::to_value(update).unwrap(),
+        serde_json::to_value(update).assert_value(),
         json!({
             "labels":{"a":"first","z":"last"},
             "logLevel":"debug",
@@ -48,8 +52,8 @@ fn labels_are_bounded_and_stop_is_closed() {
     let too_many = (0..=MAX_LABELS)
         .map(|index| {
             (
-                Label::new(format!("key-{index}")).unwrap(),
-                Label::new("value").unwrap(),
+                Label::new(format!("key-{index}")).assert_value(),
+                Label::new("value").assert_value(),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -58,7 +62,7 @@ fn labels_are_bounded_and_stop_is_closed() {
     let stop: StopParams = serde_json::from_value(json!({
         "mode":"force","ifGeneration":1,"idempotencyKey":"stop-1"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(stop.mode, StopMode::Force);
     assert!(
         serde_json::from_value::<StopParams>(json!({
@@ -74,8 +78,8 @@ fn lifecycle_constructors_remain_typed() {
         labels: None,
         log_level: None,
         suspended: Some(false),
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new("resume").unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new("resume").assert_value(),
     };
     assert!(update.validate().is_ok());
     assert_eq!(update.suspended, Some(false));
@@ -85,8 +89,8 @@ fn lifecycle_constructors_remain_typed() {
         labels: None,
         log_level: None,
         suspended: None,
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new("empty").unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new("empty").assert_value(),
     };
     assert_eq!(
         empty.validate(),
@@ -96,8 +100,8 @@ fn lifecycle_constructors_remain_typed() {
 
 #[test]
 fn update_schema_matches_non_null_runtime_controls() {
-    let schema = serde_json::to_value(schemars::schema_for!(UpdateParams)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(UpdateParams)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
     assert!(validator.is_valid(&json!({
         "suspended":true,"ifGeneration":1,"idempotencyKey":"valid"
     })));

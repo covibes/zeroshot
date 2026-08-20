@@ -3,13 +3,13 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use schemars::{JsonSchema, Schema, SchemaGenerator};
+use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::admission::deserialize_present_value;
-use crate::value::{identifier_keyed_map_schema, BoundedString256};
+use crate::value::{deserialize_validated_wire, identifier_keyed_map_schema, BoundedString256};
 use crate::{Cursor, Generation, IdempotencyKey, Phase, RunId};
 
 pub const MAX_LABELS: usize = 64;
@@ -92,7 +92,7 @@ pub enum StopMode {
     Force,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnFailureKind {
     Failed,
@@ -181,16 +181,16 @@ impl<'de> Deserialize<'de> for UpdateParams {
     where
         D: Deserializer<'de>,
     {
-        let value = UpdateParamsSchema::deserialize(deserializer)?;
-        let params = Self {
-            labels: value.labels,
-            log_level: value.log_level,
-            suspended: value.suspended,
-            if_generation: value.if_generation,
-            idempotency_key: value.idempotency_key,
-        };
-        params.validate().map_err(de::Error::custom)?;
-        Ok(params)
+        deserialize_validated_wire(deserializer, |wire: UpdateParamsSchema| {
+            let result = Self {
+                labels: wire.labels,
+                log_level: wire.log_level,
+                suspended: wire.suspended,
+                if_generation: wire.if_generation,
+                idempotency_key: wire.idempotency_key,
+            };
+            result.validate().map(|()| result)
+        })
     }
 }
 
@@ -201,20 +201,21 @@ impl JsonSchema for UpdateParams {
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         let mut schema = UpdateParamsSchema::json_schema(generator);
-        let properties = schema
+        let Some(properties) = schema
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
-            .expect("derived update schema has properties");
-        properties.insert(
-            "labels".into(),
-            serde_json::to_value(generator.subschema_for::<Labels>())
-                .expect("labels schema serializes"),
-        );
-        properties.insert(
-            "logLevel".into(),
-            serde_json::to_value(generator.subschema_for::<LogLevel>())
-                .expect("log-level schema serializes"),
-        );
+        else {
+            return json_schema!(false);
+        };
+        let Ok(labels_schema) = serde_json::to_value(generator.subschema_for::<Labels>()) else {
+            return json_schema!(false);
+        };
+        let Ok(log_level_schema) = serde_json::to_value(generator.subschema_for::<LogLevel>())
+        else {
+            return json_schema!(false);
+        };
+        properties.insert("labels".into(), labels_schema);
+        properties.insert("logLevel".into(), log_level_schema);
         properties.insert("suspended".into(), serde_json::json!({ "type": "boolean" }));
         schema.insert(
             "anyOf".into(),

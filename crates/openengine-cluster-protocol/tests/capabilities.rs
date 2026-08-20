@@ -1,9 +1,17 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/assert_error.rs"]
+mod assert_error;
+
+use assert_error::require_error;
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{GraphProfile, GraphProfilesError, ServerCapabilities};
 use serde_json::json;
 
 fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
     ServerCapabilities {
-        graph_profiles: openengine_cluster_protocol::GraphProfileSet::new(profiles).unwrap(),
+        graph_profiles: openengine_cluster_protocol::GraphProfileSet::new(profiles).assert_value(),
         logs: false,
         agent_attach: false,
     }
@@ -12,19 +20,19 @@ fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
 #[test]
 fn empty_capabilities_round_trip() {
     let value = capabilities_of(vec![]);
-    let json = serde_json::to_value(&value).unwrap();
+    let json = serde_json::to_value(&value).assert_value();
     assert_eq!(
         json,
         json!({ "graphProfiles": [], "logs": false, "agentAttach": false })
     );
-    let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();
+    let parsed: ServerCapabilities = serde_json::from_value(json).assert_value();
     assert_eq!(parsed, value);
 }
 
 #[test]
 fn single_worker_capabilities_round_trip() {
     let value = capabilities_of(vec![GraphProfile::SingleWorker]);
-    let json = serde_json::to_value(&value).unwrap();
+    let json = serde_json::to_value(&value).assert_value();
     assert_eq!(
         json,
         json!({
@@ -33,14 +41,14 @@ fn single_worker_capabilities_round_trip() {
             "agentAttach": false
         })
     );
-    let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();
+    let parsed: ServerCapabilities = serde_json::from_value(json).assert_value();
     assert_eq!(parsed, value);
 }
 
 #[test]
 fn full_v1_capabilities_round_trip() {
     let value = capabilities_of(vec![GraphProfile::Full, GraphProfile::SingleWorker]);
-    let json = serde_json::to_value(&value).unwrap();
+    let json = serde_json::to_value(&value).assert_value();
     assert_eq!(
         json,
         json!({
@@ -52,27 +60,25 @@ fn full_v1_capabilities_round_trip() {
             "agentAttach": false
         })
     );
-    let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();
+    let parsed: ServerCapabilities = serde_json::from_value(json).assert_value();
     assert_eq!(parsed, value);
 }
 
 #[test]
 fn duplicate_profiles_are_rejected() {
-    let error = openengine_cluster_protocol::GraphProfileSet::new(vec![
+    let error = require_error(openengine_cluster_protocol::GraphProfileSet::new(vec![
         GraphProfile::SingleWorker,
         GraphProfile::SingleWorker,
-    ])
-    .unwrap_err();
+    ]));
     assert_eq!(error, GraphProfilesError::Duplicate);
 }
 
 #[test]
 fn reversed_declaration_order_is_rejected() {
-    let error = openengine_cluster_protocol::GraphProfileSet::new(vec![
+    let error = require_error(openengine_cluster_protocol::GraphProfileSet::new(vec![
         GraphProfile::SingleWorker,
         GraphProfile::Full,
-    ])
-    .unwrap_err();
+    ]));
     assert_eq!(error, GraphProfilesError::Unordered);
 }
 
@@ -84,8 +90,8 @@ fn unknown_profile_string_fails_deserialization() {
 
 #[test]
 fn json_schema_matches_canonical_profile_order() {
-    let schema = serde_json::to_value(schemars::schema_for!(ServerCapabilities)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(ServerCapabilities)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
 
     for graph_profiles in [
         json!([]),
@@ -115,7 +121,7 @@ fn json_schema_matches_canonical_profile_order() {
 
 #[test]
 fn missing_field_defaults_to_empty() {
-    let value: ServerCapabilities = serde_json::from_value(json!({})).unwrap();
+    let value: ServerCapabilities = serde_json::from_value(json!({})).assert_value();
     assert_eq!(value, capabilities_of(vec![]));
 }
 

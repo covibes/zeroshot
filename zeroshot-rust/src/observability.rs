@@ -141,7 +141,7 @@ impl InMemoryObservationSink {
     pub fn snapshot(&self) -> ObservationSnapshot {
         self.state
             .lock()
-            .expect("observation recorder mutex must not be poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -151,11 +151,8 @@ impl ObservationSink for InMemoryObservationSink {
         let mut state = self
             .state
             .lock()
-            .expect("observation recorder mutex must not be poisoned");
-        state.operations_total = state
-            .operations_total
-            .checked_add(1)
-            .expect("operations_total must not overflow");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.operations_total = state.operations_total.saturating_add(1);
         state.operation_duration_ms.push(observation.duration_ms);
         state.operations.push(observation);
     }
@@ -164,16 +161,10 @@ impl ObservationSink for InMemoryObservationSink {
         let mut state = self
             .state
             .lock()
-            .expect("observation recorder mutex must not be poisoned");
-        state.faults_total = state
-            .faults_total
-            .checked_add(1)
-            .expect("faults_total must not overflow");
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.faults_total = state.faults_total.saturating_add(1);
         if observation.diagnostic_redacted {
-            state.diagnostics_redacted_total = state
-                .diagnostics_redacted_total
-                .checked_add(1)
-                .expect("diagnostics_redacted_total must not overflow");
+            state.diagnostics_redacted_total = state.diagnostics_redacted_total.saturating_add(1);
         }
         state.fault_size_bytes.push(observation.fault_size_bytes);
         state.faults.push(observation);

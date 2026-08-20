@@ -93,7 +93,7 @@ pub(super) fn basic_graph() -> Value {
 
 pub(super) fn binding_channels_graph() -> Value {
     let mut verifier = verifier_node("verify");
-    verifier["writeBindings"] = json!([
+    *verifier.assert_key_mut("writeBindings") = json!([
         {"value":{"node":"verify","channel":"out","path":["result"]},"target":["result"]},
         {"value":{"node":"verify","channel":"signal","path":["verdict"]},"target":["verdict"]},
         {"value":{"node":"verify","channel":"diagnostic","path":["code"]},"target":["diagnostic"]}
@@ -176,7 +176,7 @@ pub(super) fn map_indexed_promotion_fixture(
         "writeBindings":[],"timeoutMs":1,"attempts":1
     });
     if writes_result {
-        body["writeBindings"] = json!([{
+        *body.assert_key_mut("writeBindings") = json!([{
             "value":{"node":"mapWork","channel":"out","path":["result"]},
             "target":["results"]
         }]);

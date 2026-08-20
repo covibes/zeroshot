@@ -3,7 +3,7 @@ use openengine_cluster_testkit::capability_vectors::assert_advertised_profiles;
 
 fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
     ServerCapabilities {
-        graph_profiles: GraphProfileSet::new(profiles).unwrap(),
+        graph_profiles: GraphProfileSet::new(profiles).assert_value(),
         logs: false,
         agent_attach: false,
     }
@@ -38,3 +38,5 @@ fn mismatch_panics() {
         &[GraphProfile::Full],
     );
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

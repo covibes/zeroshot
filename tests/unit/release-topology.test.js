@@ -21,6 +21,17 @@ function assertCiTrunkTriggers(ci) {
   );
 }
 
+function assertReleaseCommitBinding(workflow) {
+  assert(
+    /github\.event\.workflow_run\.head_sha/.test(workflow),
+    'release jobs must bind to the exact CI-tested main commit'
+  );
+  assert(
+    /workflow_run\.head_sha \|\| github\.sha/.test(workflow),
+    'manual dry runs must bind to the exact dispatched commit'
+  );
+}
+
 describe('release topology', function () {
   it('uses main as the single development and release trunk', function () {
     const ci = readText('.github/workflows/ci.yml');
@@ -43,14 +54,7 @@ describe('release topology', function () {
 
     assertCiTrunkTriggers(ci);
 
-    assert(
-      /github\.event\.workflow_run\.head_sha/.test(releaseWorkflow),
-      'release jobs must bind to the exact CI-tested main commit'
-    );
-    assert(
-      /workflow_run\.head_sha \|\| github\.sha/.test(releaseWorkflow),
-      'manual dry runs must bind to the exact dispatched commit'
-    );
+    assertReleaseCommitBinding(releaseWorkflow);
     assert(
       /node scripts\/release-dry-run\.js/.test(releaseWorkflow),
       'manual dry runs must analyze the dispatched candidate as a release branch'
@@ -119,5 +123,16 @@ describe('release topology', function () {
 
     assert(!/dev\s*(?:→|->)\s*main/.test(publishing), 'publishing must not document promotions');
     assert(!/Dev required checks/.test(agents), 'agent policy must not assign release work to dev');
+  });
+});
+
+describe('Node release ownership', function () {
+  it('filters Rust-only history from semantic releases', function () {
+    const packageJson = JSON.parse(readText('package.json'));
+    const releaseWorkflow = readText('.github/workflows/release.yml');
+    assert(packageJson.release.plugins.includes('./scripts/node-release-analyzer.js'));
+    assert(/Classify unreleased Node history/.test(releaseWorkflow));
+    assert(/git rev-list --reverse/.test(releaseWorkflow));
+    assert(/node scripts\/node-release-commits\.js/.test(releaseWorkflow));
   });
 });

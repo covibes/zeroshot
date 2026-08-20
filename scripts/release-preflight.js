@@ -7,7 +7,7 @@ const { REQUIRED_OMP_SDK_SOURCES, validateOmpSdkReleaseAssets } = require('./omp
 
 const RELEASE_ORDER = ['patch', 'minor', 'major'];
 const REQUIRED_PLUGINS = [
-  '@semantic-release/commit-analyzer',
+  './scripts/node-release-analyzer.js',
   './scripts/semantic-release-notes.js',
   '@semantic-release/npm',
   '@semantic-release/github',
@@ -110,12 +110,12 @@ function validateReleaseConfig(packageJson) {
   }
 
   const analyzerPlugin = releaseConfig.plugins.find(
-    (plugin) => normalizePlugin(plugin) === '@semantic-release/commit-analyzer'
+    (plugin) => normalizePlugin(plugin) === './scripts/node-release-analyzer.js'
   );
   const analyzerOptions = Array.isArray(analyzerPlugin) ? analyzerPlugin[1] || {} : {};
   if (Array.isArray(analyzerOptions.releaseRules) && analyzerOptions.releaseRules.length > 0) {
     throw new Error(
-      '@semantic-release/commit-analyzer must use the standard conventional release rules'
+      './scripts/node-release-analyzer.js must use the standard conventional release rules'
     );
   }
 

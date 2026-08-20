@@ -14,7 +14,7 @@ pub fn cancellation_pair() -> (watch::Sender<bool>, DriverCancellation) {
 pub fn unique_temp_path(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .assert_value()
         .as_nanos();
     std::env::temp_dir().join(format!("{name}-{nanos}"))
 }
@@ -80,3 +80,5 @@ pub fn process_exists(pid: i32) -> bool {
     }
     queried != 0 && exit_code == STILL_ACTIVE as u32
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue};

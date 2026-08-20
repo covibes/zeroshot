@@ -11,9 +11,11 @@ use crate::observability::{
 
 mod redaction;
 mod taxonomy;
+mod validation;
 
 pub use redaction::{EphemeralDiagnostic, RawDiagnostic, RedactionMarker};
 use taxonomy::{consequence_for_context, semantics_for_evidence, EvidenceSemantics};
+use validation::validate_fault;
 
 pub const MAX_FAULT_SUMMARY_BYTES: usize = 512;
 pub const MAX_FAULT_SOURCES: usize = 8;
@@ -399,7 +401,28 @@ const FAULT_ERROR_MESSAGES: [&str; 9] = [
 
 impl fmt::Display for FaultError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(FAULT_ERROR_MESSAGES[*self as usize])
+        let [
+            summary,
+            diagnostic,
+            sources,
+            primary,
+            encoded,
+            safe_summary,
+            semantics,
+            invalid,
+            failed,
+        ] = FAULT_ERROR_MESSAGES;
+        formatter.write_str(match self {
+            Self::SummaryTooLong => summary,
+            Self::DiagnosticTooLong => diagnostic,
+            Self::TooManySources => sources,
+            Self::MissingPrimarySource => primary,
+            Self::EncodedFaultTooLong => encoded,
+            Self::InvalidSafeSummary => safe_summary,
+            Self::InvalidFaultSemantics => semantics,
+            Self::InvalidEncoding => invalid,
+            Self::EncodingFailed => failed,
+        })
     }
 }
 
@@ -417,15 +440,21 @@ impl<'a> FaultFactory<'a> {
 
     #[must_use]
     pub fn create(&self, evidence: ModuleEvidence) -> EngineFault {
-        let fault = EngineFault::from_sources(vec![SafeSourceFrame::new(
-            evidence.module,
-            evidence.context,
-            evidence.class,
-        )])
-        .expect("factory mapping must always produce a canonical engine fault");
-        let encoded = fault
+        let semantics = semantics_for_evidence(evidence.class);
+        let fault = EngineFault::from_semantics(
+            semantics,
+            consequence_for_context(evidence.context),
+            vec![SafeSourceFrame::new(
+                evidence.module,
+                evidence.context,
+                evidence.class,
+            )],
+        );
+        let fault_size_bytes = fault
             .encode_json()
-            .expect("factory mapping must always produce a bounded engine fault");
+            .ok()
+            .and_then(|encoded| u16::try_from(encoded.len()).ok())
+            .unwrap_or_default();
         self.observations.record_fault(FaultObservation {
             module: evidence.module.into(),
             operation: evidence.context.into(),
@@ -433,8 +462,7 @@ impl<'a> FaultFactory<'a> {
             fault_code: fault.code,
             consequence: fault.consequence,
             severity: fault.severity,
-            fault_size_bytes: u16::try_from(encoded.len())
-                .expect("bounded engine fault byte count must fit in u16"),
+            fault_size_bytes,
             diagnostic_redacted: evidence.diagnostic.is_some(),
         });
         fault
@@ -467,21 +495,4 @@ impl From<FaultContext> for ObservationOperation {
             FaultContext::Observation => Self::Observation,
         }
     }
-}
-
-fn validate_fault(fault: &EngineFault) -> Result<(), FaultError> {
-    if fault.summary.len() > MAX_FAULT_SUMMARY_BYTES {
-        return Err(FaultError::SummaryTooLong);
-    }
-    if fault.sources.len() > MAX_FAULT_SOURCES {
-        return Err(FaultError::TooManySources);
-    }
-    let canonical = EngineFault::from_sources(fault.sources.clone())?;
-    if fault.summary != canonical.summary {
-        return Err(FaultError::InvalidSafeSummary);
-    }
-    if !fault.has_same_semantics(&canonical) {
-        return Err(FaultError::InvalidFaultSemantics);
-    }
-    Ok(())
 }

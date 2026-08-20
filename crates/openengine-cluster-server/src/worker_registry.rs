@@ -244,7 +244,7 @@ fn collect_workers<'a>(
             node: worker,
         });
     }
-    for child in child_nodes(node) {
+    for child in crate::graph_verifier::graph_node_children(node) {
         collect_workers(child, parent, workers);
     }
     parent.pop();
@@ -267,27 +267,5 @@ fn worker_node(node: &GraphNode) -> Option<WorkerNode<'_>> {
             },
         }),
         _ => None,
-    }
-}
-
-fn child_nodes(node: &GraphNode) -> Vec<&GraphNode> {
-    match node {
-        GraphNode::Seq(node) => node.children.as_slice().iter().collect(),
-        GraphNode::Choice(node) => {
-            let mut children: Vec<_> = node
-                .branches
-                .as_slice()
-                .iter()
-                .map(|branch| &branch.node)
-                .collect();
-            if let Some(otherwise) = &node.otherwise {
-                children.push(otherwise);
-            }
-            children
-        }
-        GraphNode::Par(node) => node.branches.as_slice().iter().collect(),
-        GraphNode::Loop(node) => vec![&node.body],
-        GraphNode::Map(node) => vec![&node.body],
-        _ => Vec::new(),
     }
 }

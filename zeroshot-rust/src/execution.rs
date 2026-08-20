@@ -1,17 +1,17 @@
 pub mod driver;
-pub mod local;
 pub mod process;
-pub mod types;
 
-use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-pub use types::*;
+pub use openengine_cluster_protocol::SessionScope;
 
-#[async_trait]
-pub trait ExecutionRuntime: Send + Sync {
-    async fn dispatch(&self, command: ExecutionCommand) -> DispatchObservation;
-
-    async fn inspect(&self, control: ExecutionControl) -> ExecutionObservation;
-
-    async fn cancel(&self, control: ExecutionControl) -> CancelObservation;
+/// Workspace permission granted to a provider subprocess.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceAccessMode {
+    ReadOnly,
+    #[default]
+    Exclusive,
 }

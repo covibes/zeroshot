@@ -75,11 +75,21 @@ where
 /// descriptive message if it hangs, panicked, or returned an error. Shared by this crate's own
 /// and `openengine-cluster-client`'s NDJSON tests for asserting deterministic shutdown.
 pub async fn await_ndjson_shutdown(server: JoinHandle<io::Result<()>>) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), server)
-        .await
-        .expect("serve_ndjson task did not terminate within the timeout")
-        .expect("serve_ndjson task panicked")
-        .expect("serve_ndjson task returned an error");
+    await_server_shutdown("serve_ndjson", server).await;
+}
+
+async fn await_server_shutdown(label: &str, server: JoinHandle<io::Result<()>>) {
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    assert!(
+        completed.is_ok(),
+        "{label} task did not terminate within the timeout"
+    );
+    if let Ok(joined) = completed {
+        assert!(joined.is_ok(), "{label} task panicked");
+        if let Ok(result) = joined {
+            assert!(result.is_ok(), "{label} task returned an error");
+        }
+    }
 }
 
 /// Wires `backend` to a fresh [`serve_websocket`] task over an in-memory duplex pipe pair,
@@ -99,13 +109,12 @@ where
     let server = tokio::spawn(async move {
         let ws = tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
             .await
-            .expect("server handshake must succeed");
+            .map_err(io::Error::other)?;
         serve_websocket(binding, ws).await
     });
-    let (client, _response) =
-        tokio_tungstenite::client_async("ws://localhost/websocket", client_io)
-            .await
-            .expect("client handshake must succeed");
+    let client = tokio_tungstenite::client_async("ws://localhost/websocket", client_io).await;
+    assert!(client.is_ok(), "client handshake must succeed");
+    let (client, _response) = client.unwrap_or_else(|_| std::process::abort());
     (client, server)
 }
 
@@ -114,11 +123,7 @@ where
 /// `openengine-cluster-client`'s/`openengine-cluster-testkit`'s WebSocket tests for asserting
 /// deterministic shutdown, mirroring [`await_ndjson_shutdown`].
 pub async fn await_websocket_shutdown(server: JoinHandle<io::Result<()>>) {
-    tokio::time::timeout(std::time::Duration::from_secs(2), server)
-        .await
-        .expect("serve_websocket task did not terminate within the timeout")
-        .expect("serve_websocket task panicked")
-        .expect("serve_websocket task returned an error");
+    await_server_shutdown("serve_websocket", server).await;
 }
 
 #[derive(Default)]

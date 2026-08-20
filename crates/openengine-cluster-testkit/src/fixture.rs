@@ -3,6 +3,8 @@
 //! `ClusterBackend::watch` with an explicit queue capacity — rather than only a wrapped
 //! `ClusterClient`.
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use openengine_cluster_client::{ClusterClient, InProcessTransport};
@@ -12,8 +14,68 @@ use openengine_cluster_protocol::{
 };
 use openengine_cluster_server::admission::AdmissionCoordinator;
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
+pub(crate) use crate::assertions::{AssertAt, AssertValue};
+use serde_json::Value;
 
 use crate::admission::{InMemoryAdmissionStore, ScriptedOutcome, ScriptedVerifier};
+
+pub(crate) trait JsonAt {
+    fn assert_key(&self, key: &str) -> &Value;
+    fn assert_key_mut(&mut self, key: &str) -> &mut Value;
+}
+
+impl JsonAt for Value {
+    fn assert_key(&self, key: &str) -> &Value {
+        self.get(key)
+            .assert_value_with("expected JSON object field")
+    }
+
+    fn assert_key_mut(&mut self, key: &str) -> &mut Value {
+        self.get_mut(key)
+            .assert_value_with("expected mutable JSON object field")
+    }
+}
+
+/// Process-unique temporary directory removed on drop.
+pub struct TemporaryDirectory(PathBuf);
+
+impl TemporaryDirectory {
+    pub fn new(prefix: &str) -> io::Result<Self> {
+        let mut random = [0_u8; 8];
+        getrandom::fill(&mut random).map_err(io::Error::other)?;
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!("{prefix}-{}-{suffix}", std::process::id()));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+
+    #[must_use]
+    pub fn for_test(prefix: &str) -> Self {
+        let result = Self::new(prefix);
+        assert!(result.is_ok(), "temporary test directory must be created");
+        let mut directories = result.into_iter().collect::<Vec<_>>();
+        directories.swap_remove(0)
+    }
+
+    #[must_use]
+    pub fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 pub type FixtureBackend = AdmissionCoordinator<ScriptedVerifier, InMemoryAdmissionStore>;
 pub type FixtureClient = ClusterClient<InProcessTransport<FixtureBackend>>;
@@ -47,7 +109,8 @@ pub fn dispatcher_fixture(
 #[must_use]
 pub fn sample_backend_fault(event_id: &str) -> BackendFault {
     BackendFault {
-        event_id: BoundedString256::new(event_id).expect("fixture event id must be valid"),
+        event_id: BoundedString256::new(event_id)
+            .assert_value_with("fixture event id must be valid"),
         execution_ref: None,
         code: FaultCode::Unavailable,
         consequence: FaultConsequence::TurnFailed,
@@ -55,10 +118,10 @@ pub fn sample_backend_fault(event_id: &str) -> BackendFault {
         action: FaultAction::Retry,
         severity: FaultSeverity::Error,
         summary: BoundedString256::new("upstream worker unavailable")
-            .expect("fixture summary must be valid"),
+            .assert_value_with("fixture summary must be valid"),
         source: vec![FaultSourceFrame {
             component: BoundedString256::new("worker-dispatch")
-                .expect("fixture component must be valid"),
+                .assert_value_with("fixture component must be valid"),
         }],
     }
 }

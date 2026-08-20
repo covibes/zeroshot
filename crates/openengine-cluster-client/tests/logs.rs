@@ -7,25 +7,46 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_client::{JsonRpcTransport, LogEventOrClosed, NdjsonLogsClient, NdjsonTransport};
-use openengine_cluster_protocol::{
-    BoundedLogTarget, BoundedLogMessage, LogLevel, LogRecord, LogsParams,
+use openengine_cluster_client::{
+    LogEventOrClosed, NdjsonLogsClient, NdjsonLogsEventStream, NdjsonTransport,
 };
-use openengine_cluster_server::logs::fixtures::{LogsFixtureBackend, LogsFixtureStore};
+use openengine_cluster_protocol::{LogLevel, LogRecord, LogsParams};
+use openengine_cluster_server::logs::fixtures::{
+    fixture_log_record, LogsFixtureBackend, LogsFixtureStore,
+};
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+use tokio::io::{BufReader, DuplexStream};
+
+#[path = "support/mod.rs"]
+pub mod support;
+use support::{AssertValue, JsonAt};
+
+#[path = "ndjson_test_support/mod.rs"]
+mod ndjson_test_support;
+use ndjson_test_support::{
+    assert_distinct_ids_and_server, assert_unary_roundtrip, duplex_pair, read_json_line,
+    serve_distinct_subscription_ids, spawn_overflow_scenario, write_json_line,
+    CLIENT_QUEUE_CAPACITY,
+};
 
 #[path = "cancel_leak_support/mod.rs"]
 mod cancel_leak_support;
 use cancel_leak_support::assert_cancel_stops_further_delivery;
 
 fn sample_log_record(message: &str) -> LogRecord {
-    LogRecord {
-        level: LogLevel::Info,
-        target: BoundedLogTarget::new("worker-dispatch").expect("fixture target must be valid"),
-        message: BoundedLogMessage::new(message).expect("fixture message must be valid"),
-    }
+    fixture_log_record(LogLevel::Info, message)
+        .assert_value_with("fixture log record must be valid")
+}
+
+async fn open_log_stream<'a>(
+    transport: &'a NdjsonTransport<DuplexStream, DuplexStream>,
+) -> NdjsonLogsEventStream<'a, DuplexStream, DuplexStream> {
+    NdjsonLogsClient::new(transport)
+        .logs(LogsParams::default())
+        .await
+        .assert_value()
+        .1
 }
 
 #[tokio::test]
@@ -35,14 +56,15 @@ async fn cancel_stops_further_delivery() {
         spawn_ndjson(LogsFixtureBackend::new(Arc::clone(&store)));
 
     let transport = NdjsonTransport::new(client_read, client_write);
-    let logs_client = NdjsonLogsClient::new(&transport);
-    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
+    let mut stream = open_log_stream(&transport).await;
 
     store.publish(sample_log_record("first")).await;
-    match stream.next().await.unwrap().unwrap() {
-        LogEventOrClosed::Event(record) => assert_eq!(record.message.as_str(), "first"),
-        other => panic!("expected an event, got {other:?}"),
+    let record = match stream.next().await.assert_value().assert_value() {
+        LogEventOrClosed::Event(record) => Some(record),
+        LogEventOrClosed::Closed { .. } => None,
     }
+    .assert_value_with("expected the first log event");
+    assert_eq!(record.message.as_str(), "first");
 
     assert_cancel_stops_further_delivery(
         &mut stream,
@@ -60,52 +82,14 @@ async fn cancel_stops_further_delivery() {
     await_ndjson_shutdown(server).await;
 }
 
-async fn write_json_line(writer: &mut DuplexStream, value: Value) {
-    writer
-        .write_all(value.to_string().as_bytes())
-        .await
-        .unwrap();
-    writer.write_all(b"\n").await.unwrap();
-    writer.flush().await.unwrap();
-}
-
-async fn read_json_line(reader: &mut BufReader<DuplexStream>) -> Value {
-    let mut line = String::new();
-    assert!(reader.read_line(&mut line).await.unwrap() > 0);
-    serde_json::from_str(&line).unwrap()
-}
-
 #[tokio::test]
 async fn independent_request_id_source() {
-    let (client_write, server_read) = tokio::io::duplex(1 << 16);
-    let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
-    let server = tokio::spawn(async move {
-        let mut server_read = BufReader::new(server_read);
-        let first = read_json_line(&mut server_read).await;
-        let second = read_json_line(&mut server_read).await;
-        let first_id = first["id"].clone();
-        let second_id = second["id"].clone();
-        assert_ne!(first_id, second_id);
-
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "id": second_id,
-                "result": {"subscriptionId": "sub-2"}
-            }),
-        )
-        .await;
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "id": first_id,
-                "result": {"subscriptionId": "sub-1"}
-            }),
-        )
-        .await;
-    });
+    let (client_write, server_read, server_write, client_read) = duplex_pair(1 << 16);
+    let server = tokio::spawn(serve_distinct_subscription_ids(
+        server_read,
+        server_write,
+        |subscription_id| json!({"subscriptionId": subscription_id}),
+    ));
 
     let transport = NdjsonTransport::new(client_read, client_write);
     let first = NdjsonLogsClient::new(&transport);
@@ -114,17 +98,22 @@ async fn independent_request_id_source() {
         first.logs(LogsParams::default()),
         second.logs(LogsParams::default())
     );
-    assert_ne!(
-        first_result.unwrap().0.subscription_id,
-        second_result.unwrap().0.subscription_id
+    let ids = (
+        first_result.assert_value().0.subscription_id,
+        second_result.assert_value().0.subscription_id,
     );
-    server.await.unwrap();
+    assert_distinct_ids_and_server(ids, server).await;
 }
 
 #[tokio::test]
 async fn next_returns_an_error_instead_of_panicking_on_a_malformed_event_notification() {
+    assert_stream_rejects_notification("event", json!({"subscriptionId": "sub-1"})).await;
+}
+
+async fn assert_stream_rejects_notification(method: &str, params: Value) {
     let (client_write, server_read) = tokio::io::duplex(1 << 16);
     let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
+    let method = method.to_owned();
     let server = tokio::spawn(async move {
         let mut server_read = BufReader::new(server_read);
         let logs = read_json_line(&mut server_read).await;
@@ -132,7 +121,7 @@ async fn next_returns_an_error_instead_of_panicking_on_a_malformed_event_notific
             &mut server_write,
             json!({
                 "jsonrpc": "2.0",
-                "id": logs["id"],
+                "id": logs.assert_key("id"),
                 "result": {"subscriptionId": "sub-1"}
             }),
         )
@@ -141,87 +130,34 @@ async fn next_returns_an_error_instead_of_panicking_on_a_malformed_event_notific
             &mut server_write,
             json!({
                 "jsonrpc": "2.0",
-                "method": "event",
-                "params": {"subscriptionId": "sub-1"}
+                "method": method,
+                "params": params
             }),
         )
         .await;
     });
 
     let transport = NdjsonTransport::new(client_read, client_write);
-    let logs_client = NdjsonLogsClient::new(&transport);
-    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
+    let mut stream = open_log_stream(&transport).await;
 
-    match stream.next().await {
-        Some(Err(_)) => {}
-        other => panic!("expected an error for a malformed event notification, got {other:?}"),
-    }
+    assert!(matches!(stream.next().await, Some(Err(_))));
 
-    server.await.unwrap();
+    server.await.assert_value();
 }
 
 #[tokio::test]
 async fn next_returns_an_error_instead_of_panicking_on_an_unexpected_notification_method() {
-    let (client_write, server_read) = tokio::io::duplex(1 << 16);
-    let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
-    let server = tokio::spawn(async move {
-        let mut server_read = BufReader::new(server_read);
-        let logs = read_json_line(&mut server_read).await;
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "id": logs["id"],
-                "result": {"subscriptionId": "sub-1"}
-            }),
-        )
+    assert_stream_rejects_notification("unexpected/method", json!({"subscriptionId": "sub-1"}))
         .await;
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "method": "unexpected/method",
-                "params": {"subscriptionId": "sub-1"}
-            }),
-        )
-        .await;
-    });
-
-    let transport = NdjsonTransport::new(client_read, client_write);
-    let logs_client = NdjsonLogsClient::new(&transport);
-    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
-
-    match stream.next().await {
-        Some(Err(_)) => {}
-        other => panic!("expected an error for an unexpected notification method, got {other:?}"),
-    }
-
-    server.await.unwrap();
 }
 
 /// Drives the wire side of `unread_subscription_overflow_does_not_block_unary_responses`: accepts
 /// the `logs` subscription, floods `queue_capacity + 1` events to force a local client-side
 /// overflow, then waits for both the resulting cancellation and an interleaved unary `get`.
-async fn run_overflow_then_await_cancel_and_unary(
-    server_read: DuplexStream,
-    mut server_write: DuplexStream,
-    queue_capacity: usize,
-) {
-    let mut server_read = BufReader::new(server_read);
-    let logs = read_json_line(&mut server_read).await;
-    write_json_line(
-        &mut server_write,
-        json!({
-            "jsonrpc": "2.0",
-            "id": logs["id"],
-            "result": { "subscriptionId": "slow-subscription" }
-        }),
-    )
-    .await;
-
-    for index in 1..=queue_capacity + 1 {
-        write_json_line(
-            &mut server_write,
+#[tokio::test]
+async fn unread_subscription_overflow_does_not_block_unary_responses() {
+    let (client_write, client_read, server) =
+        spawn_overflow_scenario(json!({"subscriptionId": "slow-subscription"}), |index| {
             json!({
                 "jsonrpc": "2.0",
                 "method": "event",
@@ -233,76 +169,36 @@ async fn run_overflow_then_await_cancel_and_unary(
                         "message": format!("message-{index}")
                     }
                 }
-            }),
-        )
-        .await;
-    }
-
-    let mut saw_cancel = false;
-    let mut saw_unary = false;
-    while !(saw_cancel && saw_unary) {
-        let request = read_json_line(&mut server_read).await;
-        if request["method"] == "subscription/cancel" {
-            assert_eq!(request["params"]["subscriptionId"], "slow-subscription");
-            saw_cancel = true;
-        } else {
-            assert_eq!(request["method"], "get");
-            write_json_line(
-                &mut server_write,
-                json!({"jsonrpc": "2.0", "id": request["id"], "result": {}}),
-            )
-            .await;
-            saw_unary = true;
-        }
-    }
-}
-
-#[tokio::test]
-async fn unread_subscription_overflow_does_not_block_unary_responses() {
-    const CLIENT_QUEUE_CAPACITY: usize = 1024;
-
-    let (client_write, server_read) = tokio::io::duplex(1 << 20);
-    let (server_write, client_read) = tokio::io::duplex(1 << 20);
-    let server = tokio::spawn(run_overflow_then_await_cancel_and_unary(
-        server_read,
-        server_write,
-        CLIENT_QUEUE_CAPACITY,
-    ));
+            })
+        });
 
     let transport = NdjsonTransport::new(client_read, client_write);
-    let logs_client = NdjsonLogsClient::new(&transport);
-    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
+    let mut stream = open_log_stream(&transport).await;
 
-    let unary =
-        json!({"jsonrpc": "2.0", "id": "unary-1", "method": "get", "params": {}}).to_string();
-    let response = tokio::time::timeout(Duration::from_secs(2), transport.request(unary))
-        .await
-        .expect("an unread subscription must not block the shared response pump")
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&response).unwrap()["id"],
-        "unary-1"
-    );
+    assert_unary_roundtrip(&transport).await;
 
-    server.await.unwrap();
+    server.await.assert_value();
     let events = tokio::time::timeout(Duration::from_secs(2), async {
         let mut events = 0;
         loop {
-            match stream.next().await {
-                Some(Ok(LogEventOrClosed::Event(_))) => events += 1,
-                Some(Ok(LogEventOrClosed::Closed { reason })) => {
+            match stream
+                .next()
+                .await
+                .assert_value_with("expected a local overflow close")
+                .assert_value()
+            {
+                LogEventOrClosed::Event(_) => events += 1,
+                LogEventOrClosed::Closed { reason } => {
                     assert_eq!(
                         reason,
                         openengine_cluster_protocol::SubscriptionCloseReason::SlowConsumer
                     );
                     break events;
                 }
-                Some(Err(e)) => panic!("unexpected error: {e}"),
-                None => panic!("local overflow ended without a SLOW_CONSUMER close"),
             }
         }
     })
     .await
-    .expect("buffered notifications and the local overflow close must drain");
+    .assert_value_with("buffered notifications and the local overflow close must drain");
     assert_eq!(events, CLIENT_QUEUE_CAPACITY);
 }

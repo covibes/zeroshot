@@ -77,6 +77,10 @@ pub(super) fn loop_graph() -> Value {
 }
 
 pub(super) fn parallel_graph(join_kind: &str) -> Value {
+    assert!(
+        matches!(join_kind, "all" | "any" | "quorum" | "first"),
+        "join domain is closed"
+    );
     let (branches, join, field) = match join_kind {
         "all" => (
             vec![
@@ -111,7 +115,7 @@ pub(super) fn parallel_graph(join_kind: &str) -> Value {
                 "value":{"name":"raceVerify","source":"signal","field":"verdict"},"labels":["accepted"]}}),
             "raced",
         ),
-        _ => unreachable!("join domain is closed"),
+        _ => (Vec::new(), Value::Null, "invalid"),
     };
     let par = json!({
         "kind":"par","name":"parallel","state":data_state_type(),

@@ -1,0 +1,34 @@
+{
+  "event": {
+    "cursor": "v2:8",
+    "runId": "run-1",
+    "size": "standard",
+    "source": {
+      "branch": "main",
+      "repository": "open-engine/zeroshot",
+      "revision": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "status": {
+      "phase": "finished",
+      "terminalResult": {
+        "output": {
+          "kind": "verification_receipt",
+          "passed": true,
+          "summary": "checkout repaired"
+        },
+        "status": "succeeded"
+      }
+    },
+    "subscriptionId": "watch-1",
+    "title": "Repair checkout flow"
+  },
+  "params": {
+    "fromCursor": "v2:7",
+    "runId": "run-1"
+  },
+  "result": {
+    "atCursor": "v2:7",
+    "runId": "run-1",
+    "subscriptionId": "watch-1"
+  }
+}

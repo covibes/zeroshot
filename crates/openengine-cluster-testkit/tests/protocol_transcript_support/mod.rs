@@ -31,7 +31,11 @@ macro_rules! collect_transcript {
     ($stream:expr) => {{
         let mut events = Vec::new();
         loop {
-            match $stream.next().await.expect("stream ended before Finished") {
+            match $stream
+                .next()
+                .await
+                .assert_value_with("stream ended before Finished")
+            {
                 ::openengine_cluster_client::EventOrClosed::Event(record) => {
                     let finished = matches!(
                         record.event,
@@ -43,7 +47,9 @@ macro_rules! collect_transcript {
                     }
                 }
                 ::openengine_cluster_client::EventOrClosed::Closed { reason, .. } => {
-                    panic!("stream closed ({reason:?}) before the Finished event was observed")
+                    None::<()>.assert_value_with(&format!(
+                        "stream closed ({reason:?}) before the Finished event was observed"
+                    ));
                 }
             }
         }
@@ -64,13 +70,13 @@ pub async fn in_process_side_transcript(graph: &GraphSpec) -> Vec<PublicEventRec
     let backend = AdmissionCoordinator::from_shared(verifier, store);
     let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
     let in_process_client = ClusterClient::new(InProcessTransport::new(dispatcher.clone()));
-    in_process_client.initialize().await.unwrap();
+    in_process_client.initialize().await.assert_value();
     let in_process_watch = WatchClient::new(dispatcher);
 
     let (_parked, mut in_process_stream, _handle) = in_process_watch
         .watch(WatchParams::default())
         .await
-        .unwrap();
+        .assert_value();
 
     let apply_result = in_process_client
         .apply(committed(
@@ -80,16 +86,19 @@ pub async fn in_process_side_transcript(graph: &GraphSpec) -> Vec<PublicEventRec
             "in-process-create",
         ))
         .await
-        .unwrap();
-    let generation = apply_result.generation.unwrap().get();
+        .assert_value();
+    let generation = apply_result.generation.assert_value().get();
     // AC: a unary request completes correctly while the watch subscription is actively
     // streaming on the same connection.
-    let get_result = in_process_client.get(GetParams::default()).await.unwrap();
+    let get_result = in_process_client
+        .get(GetParams::default())
+        .await
+        .assert_value();
     assert_eq!(get_result.spec, Some(graph.clone()));
     in_process_client
         .stop(stop(StopMode::Drain, generation, "in-process-stop"))
         .await
-        .unwrap();
+        .assert_value();
     collect_transcript!(in_process_stream)
 }
 
@@ -119,7 +128,8 @@ pub async fn assert_cancel_probe_leak_model<'a, T>(
     loop {
         match tokio::time::timeout(Duration::from_millis(300), cancel_probe.next()).await {
             Ok(Some(EventOrClosed::Event(record))) => leaked.push(record),
-            Ok(Some(other)) => panic!("unexpected notification after cancel: {other:?}"),
+            Ok(Some(other)) => None::<()>
+                .assert_value_with(&format!("unexpected notification after cancel: {other:?}")),
             Ok(None) | Err(_) => break,
         }
     }
@@ -134,3 +144,5 @@ pub async fn assert_cancel_probe_leak_model<'a, T>(
         );
     }
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

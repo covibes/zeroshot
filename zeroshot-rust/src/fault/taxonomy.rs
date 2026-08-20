@@ -95,10 +95,22 @@ const CONSEQUENCES: [FaultConsequence; 7] = [
     FaultConsequence::ObservationDegraded,
 ];
 
-pub(super) const fn semantics_for_evidence(class: EvidenceClass) -> EvidenceSemantics {
-    EVIDENCE_SEMANTICS[class as usize]
+pub(super) fn semantics_for_evidence(class: EvidenceClass) -> EvidenceSemantics {
+    EVIDENCE_SEMANTICS
+        .get(class as usize)
+        .copied()
+        .unwrap_or(EvidenceSemantics {
+            code: FaultCode::InvariantViolation,
+            retry_disposition: RetryDisposition::DoNotRetry,
+            user_action: UserAction::ContactSupport,
+            severity: FaultSeverity::Critical,
+            summary: "A native engine invariant was violated.",
+        })
 }
 
-pub(super) const fn consequence_for_context(context: FaultContext) -> FaultConsequence {
-    CONSEQUENCES[context as usize]
+pub(super) fn consequence_for_context(context: FaultContext) -> FaultConsequence {
+    CONSEQUENCES
+        .get(context as usize)
+        .copied()
+        .unwrap_or(FaultConsequence::ObservationDegraded)
 }

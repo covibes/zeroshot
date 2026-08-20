@@ -187,7 +187,6 @@ pub struct SourceMaterializationError;
 
 pub(crate) trait SourceMaterializationTarget: Send + Sync {
     fn is_available(&self) -> bool;
-    fn remove_file(&self, name: &str) -> Result<(), SourceMaterializationError>;
     fn write_file(&self, name: &str, contents: &[u8]) -> Result<(), SourceMaterializationError>;
 }
 
@@ -256,10 +255,6 @@ impl SourceMaterializationContractHarness {
 impl SourceMaterializationTarget for SourceMaterializationContractHarness {
     fn is_available(&self) -> bool {
         true
-    }
-
-    fn remove_file(&self, _name: &str) -> Result<(), SourceMaterializationError> {
-        Err(SourceMaterializationError)
     }
 
     fn write_file(&self, _name: &str, _contents: &[u8]) -> Result<(), SourceMaterializationError> {
