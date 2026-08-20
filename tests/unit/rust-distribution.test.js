@@ -14,8 +14,8 @@ describe('Rust product distribution', function () {
     assert.strictEqual(distribution.rustReleaseTag('1.2.3'), 'zeroshot-rust-v1.2.3');
     assert.strictEqual(distribution.normalizeVersion('zeroshot-rust-v1.2.3'), '1.2.3');
     assert.strictEqual(
-      distribution.archiveName('zeroshot-rust-v1.2.3', 'x86_64-unknown-linux-gnu'),
-      'zeroshot-rust-v1.2.3-x86_64-unknown-linux-gnu.tar.gz'
+      distribution.archiveName('zeroshot-rust-v1.2.3', 'x86_64-unknown-linux-musl'),
+      'zeroshot-rust-v1.2.3-x86_64-unknown-linux-musl.tar.gz'
     );
   });
 
@@ -23,8 +23,8 @@ describe('Rust product distribution', function () {
     assert.deepStrictEqual(
       distribution.targets.map(({ target }) => target),
       [
-        'x86_64-unknown-linux-gnu',
-        'aarch64-unknown-linux-gnu',
+        'x86_64-unknown-linux-musl',
+        'aarch64-unknown-linux-musl',
         'x86_64-apple-darwin',
         'aarch64-apple-darwin',
         'x86_64-pc-windows-msvc',
@@ -93,7 +93,7 @@ describe('Rust product distribution', function () {
 
   it('rejects corrupt archives before extraction', function () {
     const archive = distribution.createArchive(Buffer.from('binary'), 'zeroshot-rust');
-    const filename = distribution.archiveName('1.2.3', 'x86_64-unknown-linux-gnu');
+    const filename = distribution.archiveName('1.2.3', 'x86_64-unknown-linux-musl');
     const manifest = `${'0'.repeat(64)}  ${filename}\n`;
     assert.throws(() => shim.verifyArchive(filename, archive, manifest), /CHECKSUM_MISMATCH/);
   });
