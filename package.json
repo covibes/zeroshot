@@ -189,7 +189,7 @@
     "npm-shrinkwrap.json"
   ],
   "dependencies": {
-    "@oh-my-pi/pi-coding-agent": "17.2.1",
+    "@oh-my-pi/pi-coding-agent": "17.3.5",
     "ajv": "^8.18.0",
     "ansi-to-html": "^0.7.2",
     "better-sqlite3": "^12.6.2",
