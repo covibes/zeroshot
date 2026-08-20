@@ -48,18 +48,28 @@ jobs:
       - name: Checkout exact CI-tested main commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Classify exact main commit
+      - name: Classify unreleased Node history
         id: classify
         shell: bash
         env:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          git diff-tree --root --no-commit-id --name-only -r -z "$TESTED_SHA" |
-            node .github/ci-path-classifier.js >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          git fetch --tags --force
+          latest_node_tag="$(
+            git describe --tags --match 'v[0-9]*' --abbrev=0 "$TESTED_SHA" 2>/dev/null || true
+          )"
+          {
+            if [[ -n "$latest_node_tag" ]]; then
+              git rev-list --reverse "$latest_node_tag..$TESTED_SHA"
+            else
+              git rev-list --reverse "$TESTED_SHA"
+            fi
+          } | node scripts/node-release-commits.js >> "$GITHUB_OUTPUT"
 
   install-matrix:
     needs: [node-relevance]

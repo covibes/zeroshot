@@ -852,9 +852,12 @@ function checkNodeReleaseIndependence(document) {
     [...(release?.needs || [])].sort()
   );
   findStep(release, 'Run semantic-release');
-  const relevance = findStep(jobs['node-relevance'], 'Classify exact main commit');
-  if (!relevance.run?.includes('.github/ci-path-classifier.js')) {
-    failIntegrity('Node release does not cheaply reject Rust-only main commits');
+  const relevance = findStep(jobs['node-relevance'], 'Classify unreleased Node history');
+  if (
+    !relevance.run?.includes('git rev-list --reverse') ||
+    !relevance.run.includes('scripts/node-release-commits.js')
+  ) {
+    failIntegrity('Node release does not classify all history since the latest Node tag');
   }
 }
 

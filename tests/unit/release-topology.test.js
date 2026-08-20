@@ -129,6 +129,10 @@ describe('release topology', function () {
 describe('Node release ownership', function () {
   it('filters Rust-only history from semantic releases', function () {
     const packageJson = JSON.parse(readText('package.json'));
+    const releaseWorkflow = readText('.github/workflows/release.yml');
     assert(packageJson.release.plugins.includes('./scripts/node-release-analyzer.js'));
+    assert(/Classify unreleased Node history/.test(releaseWorkflow));
+    assert(/git rev-list --reverse/.test(releaseWorkflow));
+    assert(/node scripts\/node-release-commits\.js/.test(releaseWorkflow));
   });
 });
