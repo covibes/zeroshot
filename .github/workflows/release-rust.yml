@@ -206,6 +206,7 @@ jobs:
           sudo apt-get install --yes musl-tools
           command -v "$C_COMPILER"
           echo "CC=$C_COMPILER" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C link-arg=-lgcc" >> "$GITHUB_ENV"
 
       - name: Verify bundled SQLite C toolchain
         if: runner.os == 'macOS'

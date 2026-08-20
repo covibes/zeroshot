@@ -58,6 +58,11 @@ describe('Rust release workflow causal guards', function () {
         /statically portable/,
       ],
       [
+        'echo "RUSTFLAGS=-C link-arg=-lgcc" >> "$GITHUB_ENV"',
+        'echo skip-static-gcc-runtime',
+        /static C toolchain/,
+      ],
+      [
         'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
         'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber',
         /assets are not verified/,
