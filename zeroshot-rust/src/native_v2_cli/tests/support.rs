@@ -2,10 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use openengine_cluster_protocol::{
-    RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult, RunId,
-    RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    EnvironmentVariableName, RunStatusResult, RunSubmitResult, RunTitle, RunWatchEventNotification,
-    RunWatchParams, RuntimePlan,
+    EnvironmentVariableName, RunAttachEventNotification, RunAttachParams, RunForceParams, RunId,
+    RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult,
+    RunTitle, RunWatchParams, RuntimePlan,
 };
 use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
@@ -15,6 +14,12 @@ use super::*;
 #[path = "support/attach.rs"]
 mod attach;
 use attach::{attach_event, AttachBehavior};
+#[path = "support/cursor.rs"]
+mod cursor;
+use cursor::{record_cursor_call, CursorCallArgs};
+#[path = "support/lifecycle.rs"]
+mod lifecycle;
+use lifecycle::queued_watch;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Call {
@@ -133,19 +138,13 @@ pub(super) struct FakeBackend {
     reconnect_logs: bool,
     attach_behavior: AttachBehavior,
     failed_watch: bool,
+    queued_lifecycle: bool,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum CursorCallKind {
     Watch,
     Logs,
-}
-
-struct CursorCallArgs<'a> {
-    kind: CursorCallKind,
-    target: Option<&'a str>,
-    run_id: &'a RunId,
-    from_cursor: Option<&'a openengine_cluster_protocol::Cursor>,
 }
 
 impl FakeBackend {
@@ -173,6 +172,13 @@ impl FakeBackend {
     pub(super) fn with_failed_watch() -> Self {
         Self {
             failed_watch: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_queued_lifecycle() -> Self {
+        Self {
+            queued_lifecycle: true,
             ..Self::default()
         }
     }
@@ -208,42 +214,11 @@ impl FakeBackend {
     pub(super) fn calls(&self) -> Vec<Call> {
         self.calls.lock().assert_value().clone()
     }
-
-    fn record_cursor_call(&self, args: CursorCallArgs<'_>) -> usize {
-        let mut calls = self.calls.lock().assert_value();
-        let attempt = calls
-            .iter()
-            .filter(|call| {
-                matches!(
-                    (args.kind, call),
-                    (CursorCallKind::Watch, Call::Watch { .. })
-                        | (CursorCallKind::Logs, Call::Logs { .. })
-                )
-            })
-            .count()
-            + 1;
-        let target = args.target.map(str::to_owned);
-        let run_id = args.run_id.as_str().to_owned();
-        let from_cursor = args.from_cursor.map(|cursor| cursor.as_str().to_owned());
-        calls.push(match args.kind {
-            CursorCallKind::Watch => Call::Watch {
-                target,
-                run_id,
-                from_cursor,
-            },
-            CursorCallKind::Logs => Call::Logs {
-                target,
-                run_id,
-                from_cursor,
-            },
-        });
-        attempt
-    }
 }
 
 #[async_trait]
 impl NativeV2CliBackend for FakeBackend {
-    type Watch = FakeSubscription<RunWatchEventNotification>;
+    type Watch = FakeSubscription<CliRunWatchEventNotification>;
     type Logs = FakeSubscription<RunLogEventNotification>;
     type Attach = FakeSubscription<RunAttachEventNotification>;
 
@@ -301,23 +276,35 @@ impl NativeV2CliBackend for FakeBackend {
         &self,
         target: Option<&str>,
         _params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
+    ) -> Result<CliRunListResult, NativeV2CliError> {
         self.calls.lock().assert_value().push(Call::List {
             target: target.map(str::to_owned),
         });
-        Ok(RunListResult { runs: Vec::new() })
+        let runs = self
+            .queued_lifecycle
+            .then(|| status("run-public", "queued"))
+            .into_iter()
+            .collect();
+        Ok(CliRunListResult { runs })
     }
 
     async fn run_status(
         &self,
         target: Option<&str>,
         params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
+    ) -> Result<CliRunStatusResult, NativeV2CliError> {
         self.calls.lock().assert_value().push(Call::Status {
             target: target.map(str::to_owned),
             run_id: params.run_id.as_str().to_owned(),
         });
-        Ok(status("run-public", "admitted"))
+        Ok(status(
+            "run-public",
+            if self.queued_lifecycle {
+                "queued"
+            } else {
+                "admitted"
+            },
+        ))
     }
 
     async fn run_watch(
@@ -325,14 +312,20 @@ impl NativeV2CliBackend for FakeBackend {
         target: Option<&str>,
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
-        let attempt = self.record_cursor_call(CursorCallArgs {
-            kind: CursorCallKind::Watch,
-            target,
-            run_id: &params.run_id,
-            from_cursor: params.from_cursor.as_ref(),
-        });
+        let attempt = record_cursor_call(
+            self,
+            CursorCallArgs {
+                kind: CursorCallKind::Watch,
+                target,
+                run_id: &params.run_id,
+                from_cursor: params.from_cursor.as_ref(),
+            },
+        );
         if self.pending_watch {
             return Ok(FakeSubscription::pending());
+        }
+        if self.queued_lifecycle {
+            return Ok(queued_watch(&params, attempt));
         }
         if self.reconnect_watch && attempt == 1 {
             return Ok(FakeSubscription::disconnect_after(vec![
@@ -374,12 +367,15 @@ impl NativeV2CliBackend for FakeBackend {
         target: Option<&str>,
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
-        let attempt = self.record_cursor_call(CursorCallArgs {
-            kind: CursorCallKind::Logs,
-            target,
-            run_id: &params.run_id,
-            from_cursor: params.from_cursor.as_ref(),
-        });
+        let attempt = record_cursor_call(
+            self,
+            CursorCallArgs {
+                kind: CursorCallKind::Logs,
+                target,
+                run_id: &params.run_id,
+                from_cursor: params.from_cursor.as_ref(),
+            },
+        );
         if self.reconnect_logs {
             let (cursor, message) = if attempt == 1 {
                 ("v2:4", "before disconnect")
@@ -466,7 +462,7 @@ impl NativeV2CliBackend for FakeBackend {
         &self,
         target: Option<&str>,
         params: RunForceParams,
-    ) -> Result<RunForceResult, NativeV2CliError> {
+    ) -> Result<CliRunForceResult, NativeV2CliError> {
         self.calls.lock().assert_value().push(Call::Force {
             target: target.map(str::to_owned),
             run_id: params.run_id.as_str().to_owned(),

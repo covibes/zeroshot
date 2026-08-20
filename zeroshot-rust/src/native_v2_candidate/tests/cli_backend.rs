@@ -32,7 +32,7 @@ impl InProcessCliBackend {
 
 #[async_trait]
 impl NativeV2CliBackend for InProcessCliBackend {
-    type Watch = EmptySubscription<RunWatchEventNotification>;
+    type Watch = EmptySubscription<CliRunWatchEventNotification>;
     type Logs = EmptySubscription<RunLogEventNotification>;
     type Attach = EmptySubscription<RunAttachEventNotification>;
 
@@ -96,10 +96,11 @@ impl NativeV2CliBackend for InProcessCliBackend {
         &self,
         target: Option<&str>,
         params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
+    ) -> Result<CliRunListResult, NativeV2CliError> {
         self.target(target)?;
         ClusterBackend::run_list(&*self.controller, &ConnectionContext::default(), params)
             .await
+            .map(Into::into)
             .map_err(cli_protocol_error)
     }
 
@@ -107,10 +108,11 @@ impl NativeV2CliBackend for InProcessCliBackend {
         &self,
         target: Option<&str>,
         params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
+    ) -> Result<CliRunStatusResult, NativeV2CliError> {
         self.target(target)?;
         ClusterBackend::run_status(&*self.controller, &ConnectionContext::default(), params)
             .await
+            .map(Into::into)
             .map_err(cli_protocol_error)
     }
 
@@ -148,10 +150,11 @@ impl NativeV2CliBackend for InProcessCliBackend {
         &self,
         target: Option<&str>,
         params: RunForceParams,
-    ) -> Result<RunForceResult, NativeV2CliError> {
+    ) -> Result<CliRunForceResult, NativeV2CliError> {
         self.target(target)?;
         ClusterBackend::run_force(&*self.controller, &ConnectionContext::default(), params)
             .await
+            .map(Into::into)
             .map_err(cli_protocol_error)
     }
 }

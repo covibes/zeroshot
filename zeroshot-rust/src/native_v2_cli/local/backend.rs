@@ -2,7 +2,7 @@ use super::*;
 
 #[async_trait]
 impl NativeV2CliBackend for LocalCliBackend {
-    type Watch = ChannelSubscription<RunWatchEventNotification>;
+    type Watch = ChannelSubscription<CliRunWatchEventNotification>;
     type Logs = ChannelSubscription<RunLogEventNotification>;
     type Attach = ChannelSubscription<RunAttachEventNotification>;
 
@@ -38,18 +38,18 @@ impl NativeV2CliBackend for LocalCliBackend {
         &self,
         target: Option<&str>,
         _params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
+    ) -> Result<CliRunListResult, NativeV2CliError> {
         require_local(target)?;
-        self.list_local().await
+        self.list_local().await.map(Into::into)
     }
 
     async fn run_status(
         &self,
         target: Option<&str>,
         params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
+    ) -> Result<CliRunStatusResult, NativeV2CliError> {
         require_local(target)?;
-        self.status_local(params).await
+        self.status_local(params).await.map(Into::into)
     }
 
     async fn run_watch(
@@ -86,8 +86,8 @@ impl NativeV2CliBackend for LocalCliBackend {
         &self,
         target: Option<&str>,
         params: RunForceParams,
-    ) -> Result<RunForceResult, NativeV2CliError> {
+    ) -> Result<CliRunForceResult, NativeV2CliError> {
         require_local(target)?;
-        self.force_local(params).await
+        self.force_local(params).await.map(Into::into)
     }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use openengine_cluster_protocol::{RunStatusResult, RunTitle, RuntimePlan};
+use openengine_cluster_protocol::{RunTitle, RuntimePlan};
 use serde_json::{json, Value};
 
 use super::*;
@@ -11,6 +11,8 @@ use super::*;
 mod attach_tests;
 #[path = "tests/environment.rs"]
 mod environment_tests;
+#[path = "tests/lifecycle.rs"]
+mod lifecycle_tests;
 #[path = "tests/outcome.rs"]
 mod outcome_tests;
 #[path = "tests/parser.rs"]
@@ -168,7 +170,7 @@ fn source() -> Value {
     })
 }
 
-fn status(run_id: &str, phase: &str) -> RunStatusResult {
+fn status(run_id: &str, phase: &str) -> CliRunStatusResult {
     serde_json::from_value(json!({
         "runId":run_id,
         "title":"Repair checkout",

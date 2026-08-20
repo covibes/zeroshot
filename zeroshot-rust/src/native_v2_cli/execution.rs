@@ -2,14 +2,13 @@ use std::io::Write;
 use std::time::Duration;
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
-    RunLogsParams, RunStatus, RunStatusParams, RunWatchEventNotification, RunWatchParams,
-    SubscriptionCloseReason, TerminalResult,
+    RunLogsParams, RunStatusParams, RunWatchParams, SubscriptionCloseReason, TerminalResult,
 };
 use serde::Serialize;
 use super::{
     BuiltinGraphTemplate, CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal,
-    NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector,
-    TemplateDelivery, HELP,
+    CliRunStatus, CliRunWatchEventNotification, NativeV2CliBackend, NativeV2CliCommand,
+    NativeV2CliError, RunCommand, RunSelector, TemplateDelivery, HELP,
 };
 #[path = "execution/attach.rs"]
 mod attach;
@@ -358,7 +357,7 @@ enum DurableSubscription<W, L> {
 
 impl<W, L> DurableSubscription<W, L>
 where
-    W: CliSubscription<RunWatchEventNotification>,
+    W: CliSubscription<CliRunWatchEventNotification>,
     L: CliSubscription<RunLogEventNotification>,
 {
     async fn next(&mut self) -> Result<Option<DurableItem>, NativeV2CliError> {
@@ -380,7 +379,7 @@ where
 }
 
 enum DurableItem {
-    Watch(RunWatchEventNotification),
+    Watch(CliRunWatchEventNotification),
     Log(RunLogEventNotification),
     Closed(SubscriptionCloseReason),
 }
@@ -459,10 +458,10 @@ fn write_durable_event(
     let outcome = match event {
         DurableItem::Watch(event) => {
             let outcome = match &event.status {
-                RunStatus::Finished {
+                CliRunStatus::Finished {
                     terminal_result: TerminalResult::Succeeded { .. },
                 } => Some(CliOutcome::Finished),
-                RunStatus::Finished {
+                CliRunStatus::Finished {
                     terminal_result: TerminalResult::Failed { .. },
                 } => Some(CliOutcome::Failed),
                 _ => None,
@@ -487,12 +486,12 @@ fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), Nat
     Ok(())
 }
 
-fn outcome_for_status(status: &RunStatus) -> CliOutcome {
+fn outcome_for_status(status: &CliRunStatus) -> CliOutcome {
     match status {
-        RunStatus::Finished {
+        CliRunStatus::Finished {
             terminal_result: TerminalResult::Succeeded { .. },
         } => CliOutcome::Finished,
-        RunStatus::Finished {
+        CliRunStatus::Finished {
             terminal_result: TerminalResult::Failed { .. },
         } => CliOutcome::Failed,
         _ => CliOutcome::Completed,

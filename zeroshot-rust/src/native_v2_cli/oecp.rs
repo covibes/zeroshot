@@ -7,13 +7,13 @@ use openengine_cluster_client::{
     ClientError, ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
 };
 use openengine_cluster_protocol::{
-    RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult, RunListParams,
-    RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult,
-    RunSubmitResult, RunWatchEventNotification, RunWatchParams,
+    RunAttachEventNotification, RunAttachParams, RunForceParams, RunListParams,
+    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult, RunWatchParams,
 };
 use tokio::sync::mpsc;
 
 use super::{
+    CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
     CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliError, TargetAdd,
     TargetRunRequest, TargetSetup,
 };
@@ -72,7 +72,7 @@ impl<C> NativeV2CliBackend for OecpCliBackend<C>
 where
     C: TargetConnector,
 {
-    type Watch = ChannelSubscription<RunWatchEventNotification>;
+    type Watch = ChannelSubscription<CliRunWatchEventNotification>;
     type Logs = ChannelSubscription<RunLogEventNotification>;
     type Attach = ChannelSubscription<RunAttachEventNotification>;
 
@@ -102,7 +102,7 @@ where
         &self,
         target: Option<&str>,
         params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
+    ) -> Result<CliRunListResult, NativeV2CliError> {
         let transport = self
             .connector
             .connect(require_named_target(target)?)
@@ -110,6 +110,7 @@ where
         ClusterClient::new(transport.as_ref())
             .run_list(params)
             .await
+            .map(Into::into)
             .map_err(protocol_error)
     }
 
@@ -117,7 +118,7 @@ where
         &self,
         target: Option<&str>,
         params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
+    ) -> Result<CliRunStatusResult, NativeV2CliError> {
         let transport = self
             .connector
             .connect(require_named_target(target)?)
@@ -125,6 +126,7 @@ where
         ClusterClient::new(transport.as_ref())
             .run_status(params)
             .await
+            .map(Into::into)
             .map_err(protocol_error)
     }
 
@@ -168,7 +170,7 @@ where
         &self,
         target: Option<&str>,
         params: RunForceParams,
-    ) -> Result<RunForceResult, NativeV2CliError> {
+    ) -> Result<CliRunForceResult, NativeV2CliError> {
         let transport = self
             .connector
             .connect(require_named_target(target)?)
@@ -176,6 +178,7 @@ where
         ClusterClient::new(transport.as_ref())
             .run_force(params)
             .await
+            .map(Into::into)
             .map_err(protocol_error)
     }
 }
@@ -183,7 +186,7 @@ where
 pub(super) fn spawn_watch<T>(
     transport: Arc<T>,
     params: RunWatchParams,
-) -> ChannelSubscription<RunWatchEventNotification>
+) -> ChannelSubscription<CliRunWatchEventNotification>
 where
     T: SubscriptionTransport + Send + Sync + 'static,
 {
@@ -246,16 +249,17 @@ where
     ChannelSubscription { receiver, task }
 }
 
-async fn forward<T, E>(
+async fn forward<T, E, O>(
     stream: &mut openengine_cluster_client::RunSubscriptionEventStream<'_, T, E>,
-    sender: mpsc::Sender<Result<CliSubscriptionItem<E>, NativeV2CliError>>,
+    sender: mpsc::Sender<Result<CliSubscriptionItem<O>, NativeV2CliError>>,
 ) where
     T: SubscriptionTransport,
     E: serde::de::DeserializeOwned + Send,
+    O: From<E> + Send,
 {
     while let Some(item) = stream.next().await {
         let item = match item {
-            Ok(RunSubscriptionEvent::Event(event)) => Ok(CliSubscriptionItem::Event(event)),
+            Ok(RunSubscriptionEvent::Event(event)) => Ok(CliSubscriptionItem::Event(event.into())),
             Ok(RunSubscriptionEvent::Closed { reason, .. }) => {
                 let closed = CliSubscriptionItem::Closed { reason };
                 let _ = sender.send(Ok(closed)).await;

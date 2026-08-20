@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
-    RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification, RunWatchParams,
-    SourceBranchId, SubscriptionCloseReason,
+    RunStatusParams, RunTitle, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
@@ -24,6 +23,13 @@ pub use templates::{BuiltinGraphTemplate, TemplateDelivery};
 
 #[path = "native_v2_cli/oecp.rs"]
 pub mod oecp;
+
+#[path = "native_v2_cli/lifecycle.rs"]
+mod lifecycle;
+pub use lifecycle::{
+    CliRunForceResult, CliRunListResult, CliRunStatus, CliRunStatusResult,
+    CliRunWatchEventNotification,
+};
 
 #[cfg(unix)]
 #[path = "native_v2_cli/local.rs"]
@@ -215,7 +221,7 @@ impl DetachSignal for NeverDetach {
 
 #[async_trait]
 pub trait NativeV2CliBackend: Send + Sync {
-    type Watch: CliSubscription<RunWatchEventNotification>;
+    type Watch: CliSubscription<CliRunWatchEventNotification>;
     type Logs: CliSubscription<RunLogEventNotification>;
     type Attach: CliSubscription<RunAttachEventNotification>;
 
@@ -232,12 +238,12 @@ pub trait NativeV2CliBackend: Send + Sync {
         &self,
         target: Option<&str>,
         params: RunListParams,
-    ) -> Result<openengine_cluster_protocol::RunListResult, NativeV2CliError>;
+    ) -> Result<CliRunListResult, NativeV2CliError>;
     async fn run_status(
         &self,
         target: Option<&str>,
         params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError>;
+    ) -> Result<CliRunStatusResult, NativeV2CliError>;
     async fn run_watch(
         &self,
         target: Option<&str>,
@@ -257,5 +263,5 @@ pub trait NativeV2CliBackend: Send + Sync {
         &self,
         target: Option<&str>,
         params: RunForceParams,
-    ) -> Result<openengine_cluster_protocol::RunForceResult, NativeV2CliError>;
+    ) -> Result<CliRunForceResult, NativeV2CliError>;
 }

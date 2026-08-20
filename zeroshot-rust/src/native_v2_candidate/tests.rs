@@ -10,10 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    IdempotencyKey, NodeName, RunAttachEventNotification, RunAttachParams, RunForceParams,
-    RunForceResult, RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams,
-    RunStatus, RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult,
-    RunWatchEventNotification, RunWatchParams, TerminalResult, WorkerOutcome,
+    IdempotencyKey, NodeName, RunAttachEventNotification, RunAttachParams, RunForceParams, RunId,
+    RunListParams, RunLogEventNotification, RunLogsParams, RunStatus, RunStatusParams,
+    RunSubmitParams, RunSubmitResult, RunWatchParams, TerminalResult, WorkerOutcome,
 };
 use openengine_cluster_server::{ClusterBackend, ConnectionContext};
 use serde_json::{json, Value};
@@ -27,8 +26,10 @@ use crate::native_v2_capsule::{NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunne
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cli::execution::{CliExecutionContext, execute_native_v2_cli_with_context};
 use crate::native_v2_cli::{
-    CliOutcome, CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliCommand,
-    NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd, TargetRunRequest, TargetSetup,
+    CliOutcome, CliRunForceResult, CliRunListResult, CliRunStatusResult,
+    CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
+    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd,
+    TargetRunRequest, TargetSetup,
 };
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,

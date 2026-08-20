@@ -252,6 +252,9 @@ target discovery authentication mode, and sends no HTTP or OECP Authorization. `
 rejects direct targets locally. `target serve` is the raw, auth-free multi-run composition for one
 private VM; it accepts only HTTPS public origins or literal-loopback HTTP, uses one static target
 identity, and adds no queue, scheduler, TLS, or per-user isolation layer.
+The CLI backend lifecycle alone adds `queued` for cloud-owned work before OECP admission, including
+target startup. Local and direct backends mechanically project OECP phases and never synthesize
+`queued`; it does not belong in OECP, the target server, the controller ledger, or retry policy.
 
 `GraphSpec` remains the control-flow source of truth. Its companion runtime plan fixes the
 graph-wide harness/provider and each node's model, effort, session scope, and declared environment
