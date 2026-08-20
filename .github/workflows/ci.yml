@@ -80,6 +80,8 @@ jobs:
         run: npm run opcore:graph:build
 
       - name: Opcore introduced-change gate
+        # The Rust lane runs the same full-diff gate when both products are selected.
+        if: needs.classify.outputs.rust != 'true'
         env:
           CARGO_BUILD_JOBS: 1
           OPCORE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}

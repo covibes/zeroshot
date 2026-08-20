@@ -89,6 +89,10 @@ it('keeps one always-starting classifier and one stable aggregate result', funct
   assert.match(workflow, /node \.github\/ci-path-classifier\.js/);
   assert.match(workflow, /\n {2}node-check:\n[\s\S]*?needs: classify/);
   assert.match(workflow, /\n {2}rust-check:\n[\s\S]*?needs: classify/);
+  assert.match(
+    workflow,
+    /node-check:[\s\S]*?Opcore introduced-change gate[\s\S]*?if: needs\.classify\.outputs\.rust != 'true'/
+  );
   assert.match(workflow, /\n {2}required:\n[\s\S]*?name: required/);
   assert.match(workflow, /RUST_DOCKER_RESULT: \$\{\{ needs\.rust-docker\.result \}\}/);
   assert.match(workflow, /if \[\[ "\$NODE_SELECTED" == "true" \]\]/);
