@@ -565,6 +565,56 @@ function checkScriptInstalls(jobs) {
   }
 }
 
+function checkLinuxCToolchain(job) {
+  const linuxC = findStep(job, 'Install static Linux C toolchain');
+  if (
+    linuxC.if !== "runner.os == 'Linux'" ||
+    linuxC.env?.C_COMPILER !== '${{ matrix.c-compiler }}' ||
+    !linuxC.run?.includes('sudo apt-get install --yes musl-tools') ||
+    !linuxC.run.includes('echo "CC=$C_COMPILER" >> "$GITHUB_ENV"')
+  ) {
+    failIntegrity('Linux release build does not use the matrix-selected static C toolchain');
+  }
+}
+
+function checkMacCToolchain(job) {
+  const macC = findStep(job, 'Verify bundled SQLite C toolchain');
+  if (
+    macC.if !== "runner.os == 'macOS'" ||
+    macC.env?.C_COMPILER !== '${{ matrix.c-compiler }}' ||
+    macC.run?.trim() !== 'command -v "$C_COMPILER"'
+  ) {
+    failIntegrity('macOS bundled-SQLite C compiler setup does not use the matrix mapping');
+  }
+}
+
+function checkWindowsCToolchain(job) {
+  const windowsC = findStep(job, 'Verify bundled SQLite MSVC toolchain');
+  if (
+    windowsC.if !== "runner.os == 'Windows'" ||
+    !windowsC.run?.includes('Microsoft.VisualStudio.Component.VC.Tools.x86.x64')
+  ) {
+    failIntegrity('Windows bundled-SQLite MSVC setup is missing');
+  }
+}
+
+function checkNativeCToolchains(job) {
+  checkLinuxCToolchain(job);
+  checkMacCToolchain(job);
+  checkWindowsCToolchain(job);
+}
+
+function checkStaticLinuxBinary(job) {
+  const step = findStep(job, 'Verify static Linux release binary');
+  if (
+    step.if !== "runner.os == 'Linux'" ||
+    !step.run?.includes('readelf --program-headers "$BINARY_PATH"') ||
+    !step.run.includes('Linux release binary has a dynamic interpreter')
+  ) {
+    failIntegrity('Linux release binary is not verified as statically portable');
+  }
+}
+
 function checkBuildJob(jobs) {
   const job = jobs['rust-binaries'];
   if (!job) failIntegrity('release workflow has no rust-binaries job');
@@ -585,21 +635,7 @@ function checkBuildJob(jobs) {
   ) {
     failIntegrity('Rust target toolchain setup does not install the declared matrix target');
   }
-  const unixC = findStep(job, 'Verify bundled SQLite C toolchain');
-  if (
-    unixC.if !== "runner.os != 'Windows'" ||
-    unixC.env?.C_COMPILER !== '${{ matrix.c-compiler }}' ||
-    unixC.run?.trim() !== 'command -v "$C_COMPILER"'
-  ) {
-    failIntegrity('Unix bundled-SQLite C compiler setup does not use the matrix mapping');
-  }
-  const windowsC = findStep(job, 'Verify bundled SQLite MSVC toolchain');
-  if (
-    windowsC.if !== "runner.os == 'Windows'" ||
-    !windowsC.run?.includes('Microsoft.VisualStudio.Component.VC.Tools.x86.x64')
-  ) {
-    failIntegrity('Windows bundled-SQLite MSVC setup is missing');
-  }
+  checkNativeCToolchains(job);
 
   const stage = findStep(job, 'Stage explicit Rust package version');
   if (
@@ -627,6 +663,7 @@ function checkBuildJob(jobs) {
   ) {
     failIntegrity(`rust-binaries build step must execute exactly: ${exactBuild}`);
   }
+  checkStaticLinuxBinary(job);
   const nativeSmoke = findStep(job, 'Run standalone Rust release binary');
   if (
     nativeSmoke.if !== undefined ||
@@ -805,6 +842,7 @@ function checkPublicationJobs(jobs) {
   ).run;
   if (
     !shimInstall?.includes('npm install --ignore-scripts --prefix "$install_root"') ||
+    !shimInstall.includes('tarballs=(./shim-release/*.tgz)') ||
     !shimInstall.includes('$install_root/node_modules/.bin/zeroshot-rust')
   ) {
     failIntegrity('npm shim input is not installed and invoked from the exact packed tarball');
@@ -812,6 +850,9 @@ function checkPublicationJobs(jobs) {
   const shimDryRun = findStep(shimInput, 'Dry-run npm shim publication');
   if (shimDryRun.if !== "inputs.action == 'dry-run'") {
     failIntegrity('npm shim dry-run must not gate recoverable publication');
+  }
+  if (!shimDryRun.run?.includes('npm publish --dry-run --access public ./shim-release/*.tgz')) {
+    failIntegrity('npm shim dry-run must publish the exact local tarball');
   }
   findStep(shimInput, 'Upload exact npm shim publication input');
 
@@ -826,7 +867,7 @@ function checkPublicationJobs(jobs) {
   if (
     !npmPublish?.includes('npm view "$package" version') ||
     !npmPublish.includes('npm view "$package" dist.integrity') ||
-    !npmPublish.includes('npm publish')
+    !npmPublish.includes('npm publish --provenance --access public ./shim-release/*.tgz')
   ) {
     failIntegrity('npm shim publication is not idempotently recoverable');
   }

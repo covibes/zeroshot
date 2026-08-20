@@ -14,7 +14,7 @@ function registerShimInstallTests() {
   it('installs only a checksum-verified archive selected for the host', async function () {
     const packageRoot = temporaryDirectory();
     const binary = Buffer.from('standalone native fixture');
-    const target = 'x86_64-unknown-linux-gnu';
+    const target = 'x86_64-unknown-linux-musl';
     const filename = distribution.archiveName('1.2.3', target);
     const archive = distribution.createArchive(binary, 'zeroshot-rust');
     const manifest = Buffer.from(`${distribution.sha256(archive)}  ${filename}\n`);
@@ -53,7 +53,7 @@ function registerShimInstallTests() {
             Promise.resolve(
               url.endsWith('/SHA256SUMS')
                 ? Buffer.from(
-                    `${'0'.repeat(64)}  zeroshot-rust-v1.2.3-x86_64-unknown-linux-gnu.tar.gz\n`
+                    `${'0'.repeat(64)}  zeroshot-rust-v1.2.3-x86_64-unknown-linux-musl.tar.gz\n`
                   )
                 : distribution.createArchive(Buffer.from('untrusted'), 'zeroshot-rust')
             ),

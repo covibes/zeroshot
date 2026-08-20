@@ -148,14 +148,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             executable: zeroshot-rust
-            c-compiler: cc
-          - target: aarch64-unknown-linux-gnu
+            c-compiler: musl-gcc
+          - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             executable: zeroshot-rust
-            c-compiler: cc
+            c-compiler: musl-gcc
           - target: x86_64-apple-darwin
             runner: macos-15-intel
             executable: zeroshot-rust
@@ -196,8 +196,19 @@ jobs:
           toolchain: 1.97.0
           targets: ${{ matrix.target }}
 
+      - name: Install static Linux C toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          C_COMPILER: ${{ matrix.c-compiler }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          command -v "$C_COMPILER"
+          echo "CC=$C_COMPILER" >> "$GITHUB_ENV"
+
       - name: Verify bundled SQLite C toolchain
-        if: runner.os != 'Windows'
+        if: runner.os == 'macOS'
         shell: bash
         env:
           C_COMPILER: ${{ matrix.c-compiler }}
@@ -225,6 +236,15 @@ jobs:
 
       - name: Build standalone Rust release binary
         run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}
+
+      - name: Verify static Linux release binary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if readelf --program-headers "$BINARY_PATH" | grep -q INTERP; then
+            echo "::error::Linux release binary has a dynamic interpreter"
+            exit 1
+          fi
 
       - name: Run standalone Rust release binary
         run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"
@@ -604,7 +624,7 @@ jobs:
         run: |
           set -euo pipefail
           install_root="$RUNNER_TEMP/zeroshot-rust-shim-install"
-          tarballs=(shim-release/*.tgz)
+          tarballs=(./shim-release/*.tgz)
           [[ "${#tarballs[@]}" -eq 1 ]]
           npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"
           package_root="$install_root/node_modules/@the-open-engine/zeroshot-rust"
@@ -633,7 +653,7 @@ jobs:
         if: inputs.action == 'dry-run'
         shell: bash
         run: |
-          npm publish --dry-run --access public shim-release/*.tgz
+          npm publish --dry-run --access public ./shim-release/*.tgz
 
       - name: Upload exact npm shim publication input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -670,7 +690,7 @@ jobs:
         run: |
           set -euo pipefail
           package="@the-open-engine/zeroshot-rust@$RELEASE_VERSION"
-          tarballs=(shim-release/*.tgz)
+          tarballs=(./shim-release/*.tgz)
           [[ "${#tarballs[@]}" -eq 1 ]]
           local_integrity="$(
             node - "${tarballs[0]}" <<'NODE'
@@ -695,5 +715,5 @@ jobs:
             }
             echo "$package is already published; recovery is complete"
           else
-            npm publish --provenance --access public shim-release/*.tgz
+            npm publish --provenance --access public ./shim-release/*.tgz
           fi

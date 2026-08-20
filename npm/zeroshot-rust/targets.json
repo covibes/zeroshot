@@ -2,13 +2,13 @@
   {
     "platform": "linux",
     "arch": "x64",
-    "target": "x86_64-unknown-linux-gnu",
+    "target": "x86_64-unknown-linux-musl",
     "executable": "zeroshot-rust"
   },
   {
     "platform": "linux",
     "arch": "arm64",
-    "target": "aarch64-unknown-linux-gnu",
+    "target": "aarch64-unknown-linux-musl",
     "executable": "zeroshot-rust"
   },
   {

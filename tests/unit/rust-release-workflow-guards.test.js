@@ -53,6 +53,11 @@ describe('Rust release workflow causal guards', function () {
         /canonical image guard/,
       ],
       [
+        'readelf --program-headers "$BINARY_PATH"',
+        'echo skip-static-linux-check',
+        /statically portable/,
+      ],
+      [
         'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
         'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber',
         /assets are not verified/,
@@ -85,8 +90,25 @@ describe('Rust release workflow causal guards', function () {
       '$install_root/bin/zeroshot-rust',
       /exact packed tarball/
     );
+    rejectsRustMutation(
+      'tarballs=(./shim-release/*.tgz)',
+      'tarballs=(shim-release/*.tgz)',
+      /exact packed tarball/
+    );
+    rejectsRustMutation(
+      'npm publish --dry-run --access public ./shim-release/*.tgz',
+      'npm publish --dry-run --access public shim-release/*.tgz',
+      /exact local tarball/
+    );
+    rejectsRustMutation(
+      'npm publish --provenance --access public ./shim-release/*.tgz',
+      'npm publish --provenance --access public shim-release/*.tgz',
+      /idempotently recoverable/
+    );
   });
+});
 
+describe('Rust and Node release isolation', function () {
   it('keeps the Node semantic-release train free of Rust dependencies', function () {
     const coupled = mutation(
       nodeReleaseWorkflow(),
