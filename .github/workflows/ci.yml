@@ -24,8 +24,43 @@ on:
         default: false
 
 jobs:
-  # Fast quality gates - must pass before anything else
-  check:
+  classify:
+    name: Classify changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      node: ${{ steps.paths.outputs.node }}
+      rust: ${{ steps.paths.outputs.rust }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Select product CI lanes
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]] ||
+             [[ -z "$BASE_SHA" ]] ||
+             [[ "$BASE_SHA" =~ ^0+$ ]] ||
+             ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null ||
+             ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
+            node .github/ci-path-classifier.js < /dev/null | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only -z "$BASE_SHA" "$HEAD_SHA" |
+            node .github/ci-path-classifier.js |
+            tee -a "$GITHUB_OUTPUT"
+
+  node-check:
+    name: Node checks
+    needs: classify
+    if: needs.classify.outputs.node == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -38,15 +73,6 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Setup Rust 1.97.0
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.97.0
-          components: clippy,rustfmt
-
-      - name: Install Opcore Rust metrics analyzer
-        run: npm run opcore:install:rust-metrics
-
       - name: Install dependencies
         run: npm ci
 
@@ -58,18 +84,6 @@ jobs:
           CARGO_BUILD_JOBS: 1
           OPCORE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
         run: npm run opcore:check -- --base "$OPCORE_BASE"
-
-      - name: Check generated Cluster Protocol artifacts
-        run: npm run protocol:check
-
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
-
-      - name: Lint Rust
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test Rust workspace
-        run: cargo test --workspace
 
       - name: Security audit
         run: npm run audit:production
@@ -113,12 +127,119 @@ jobs:
           fail_ci_if_error: false
         continue-on-error: true
 
+  rust-check:
+    name: Rust checks
+    needs: classify
+    if: needs.classify.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Rust 1.97.0
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          components: clippy,rustfmt
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Opcore Rust metrics analyzer
+        run: npm run opcore:install:rust-metrics
+
+      - name: Build Opcore graph
+        run: npm run opcore:graph:build
+
+      - name: Opcore introduced-change gate
+        env:
+          CARGO_BUILD_JOBS: 1
+          OPCORE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
+        run: npm run opcore:check -- --base "$OPCORE_BASE"
+
+      - name: Check generated Cluster Protocol artifacts
+        run: npm run protocol:check
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --workspace
+
+      - name: Lint native distribution tooling
+        run: npm exec -- eslint .github/ci-path-classifier.js scripts/rust-distribution.js npm/zeroshot-rust tests/unit/rust-*.js
+
+      - name: Test native distribution tooling
+        run: npx mocha --no-config --timeout 120000 'tests/unit/rust-*.test.js'
+
+      - name: Check native distribution contracts
+        run: npm run rust:distribution:check
+
+      - name: Native CLI smoke
+        run: |
+          cargo build --locked --release --package zeroshot-rust --bin zeroshot-rust
+          ./target/release/zeroshot-rust --help
+
+  rust-docker:
+    name: Rust Docker target
+    needs: [classify, rust-check]
+    if: |
+      always() &&
+      needs.classify.outputs.rust == 'true' &&
+      needs.rust-check.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build amd64 target image
+        run: docker build --platform linux/amd64 --file docker/zeroshot-rust-target/Dockerfile --tag zeroshot-rust-target:ci .
+
+      - name: Smoke target image and bundled harnesses
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run --detach --platform linux/amd64 --publish 127.0.0.1:18080:8080 zeroshot-rust-target:ci)"
+          trap 'docker rm --force "$container_id" >/dev/null 2>&1 || true' EXIT
+
+          ready=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18080/.well-known/zeroshot-native-v2 \
+              --output /tmp/zeroshot-rust-discovery.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "true" ]]; then
+            docker logs "$container_id"
+            exit 1
+          fi
+
+          jq --exit-status '.kind == "zeroshot.native-v2-target/v1"' /tmp/zeroshot-rust-discovery.json
+          docker exec "$container_id" codex --version
+          docker exec "$container_id" claude --version
+
   # Tier 2: worktree/container isolation e2e (real Docker). Non-blocking and
-  # opt-in via workflow_dispatch - the Docker sub-tests in `check`'s
+  # opt-in via workflow_dispatch - the Docker sub-tests in `node-check`'s
   # "Integration tests (slow)" step self-skip under CI (this is what that
   # step's Docker coverage was previously silently missing).
   e2e-docker:
-    if: github.event_name == 'workflow_dispatch' && inputs.include_docker_e2e
+    needs: classify
+    if: |
+      needs.classify.outputs.node == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.include_docker_e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -142,10 +263,11 @@ jobs:
   # Cross-platform/version compatibility (main only)
   # NOTE: macOS runners cost 10x Linux minutes - keep this scoped to main.
   install-matrix:
-    needs: check
+    needs: [classify, node-check]
     if: |
       always() &&
-      needs.check.result == 'success' &&
+      needs.classify.outputs.node == 'true' &&
+      needs.node-check.result == 'success' &&
       (
         github.ref == 'refs/heads/main' ||
         github.event_name == 'workflow_dispatch' ||
@@ -236,13 +358,17 @@ jobs:
 
   release-preflight:
     name: Release preflight
+    needs: classify
     if: |
-      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-      (github.event_name == 'merge_group' && (
-        github.event.merge_group.base_ref == 'main' ||
-        github.event.merge_group.base_ref == 'refs/heads/main' ||
-        startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
-      ))
+      needs.classify.outputs.node == 'true' &&
+      (
+        (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+        (github.event_name == 'merge_group' && (
+          github.event.merge_group.base_ref == 'main' ||
+          github.event.merge_group.base_ref == 'refs/heads/main' ||
+          startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
+        ))
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -267,26 +393,52 @@ jobs:
     name: required
     if: ${{ always() }}
     needs:
-      - check
+      - classify
+      - node-check
+      - rust-check
+      - rust-docker
       - install-matrix
       - release-preflight
     runs-on: ubuntu-latest
     steps:
       - name: Require every applicable CI gate
         env:
-          CHECK_RESULT: ${{ needs.check.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          NODE_SELECTED: ${{ needs.classify.outputs.node }}
+          RUST_SELECTED: ${{ needs.classify.outputs.rust }}
+          NODE_CHECK_RESULT: ${{ needs.node-check.result }}
+          RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
+          RUST_DOCKER_RESULT: ${{ needs.rust-docker.result }}
           INSTALL_MATRIX_RESULT: ${{ needs.install-matrix.result }}
           RELEASE_PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
         run: |
-          if [[ "$CHECK_RESULT" != "success" ]]; then
-            echo "::error::check concluded with $CHECK_RESULT"
+          if [[ "$CLASSIFY_RESULT" != "success" ]]; then
+            echo "::error::classify concluded with $CLASSIFY_RESULT"
             exit 1
           fi
-          if [[ "$INSTALL_MATRIX_RESULT" != "success" ]]; then
-            echo "::error::install-matrix concluded with $INSTALL_MATRIX_RESULT"
-            exit 1
+
+          if [[ "$NODE_SELECTED" == "true" ]]; then
+            if [[ "$NODE_CHECK_RESULT" != "success" ]]; then
+              echo "::error::node-check concluded with $NODE_CHECK_RESULT"
+              exit 1
+            fi
+            if [[ "$INSTALL_MATRIX_RESULT" != "success" ]]; then
+              echo "::error::install-matrix concluded with $INSTALL_MATRIX_RESULT"
+              exit 1
+            fi
+            if [[ "$RELEASE_PREFLIGHT_RESULT" != "success" && "$RELEASE_PREFLIGHT_RESULT" != "skipped" ]]; then
+              echo "::error::release-preflight concluded with $RELEASE_PREFLIGHT_RESULT"
+              exit 1
+            fi
           fi
-          if [[ "$RELEASE_PREFLIGHT_RESULT" != "success" && "$RELEASE_PREFLIGHT_RESULT" != "skipped" ]]; then
-            echo "::error::release-preflight concluded with $RELEASE_PREFLIGHT_RESULT"
-            exit 1
+
+          if [[ "$RUST_SELECTED" == "true" ]]; then
+            if [[ "$RUST_CHECK_RESULT" != "success" ]]; then
+              echo "::error::rust-check concluded with $RUST_CHECK_RESULT"
+              exit 1
+            fi
+            if [[ "$RUST_DOCKER_RESULT" != "success" ]]; then
+              echo "::error::rust-docker concluded with $RUST_DOCKER_RESULT"
+              exit 1
+            fi
           fi
