@@ -41,7 +41,7 @@ function run(command, args, options = {}) {
     encoding: options.encoding ?? 'buffer',
     env: options.env ?? process.env,
     maxBuffer: 64 * 1024 * 1024,
-    timeout: options.timeout ?? 300_000,
+    timeout: options.timeout ?? 600_000,
   });
   if (result.error) throw result.error;
   return result;

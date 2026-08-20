@@ -248,9 +248,11 @@ fn nonempty_env(name: &str) -> Option<std::ffi::OsString> {
 
 #[cfg(target_os = "windows")]
 fn platform_config_root() -> Result<PathBuf, TargetConnectorError> {
-    nonempty_env("LOCALAPPDATA").ok_or(TargetConnectorError::RegistryPath(
-        "LOCALAPPDATA is unavailable",
-    ))
+    nonempty_env("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or(TargetConnectorError::RegistryPath(
+            "LOCALAPPDATA is unavailable",
+        ))
 }
 
 #[cfg(target_os = "macos")]
