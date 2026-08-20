@@ -78,8 +78,8 @@ describe('Rust npm shim release guards', function () {
   it('keeps dry-run inputs non-publishing and the npm shim independently recoverable', function () {
     rejectsRustMutation('          - dry-run\n', '', /Rust release actions/);
     rejectsRustMutation(
-      "if: inputs.action == 'publish-npm-shim' && needs.rust-shim-input.result == 'success'",
-      "if: inputs.action == 'release'",
+      '  rust-shim-publish:\n    needs: [plan, rust-shim-input]\n    if: |\n      always() &&\n',
+      '  rust-shim-publish:\n    needs: [plan, rust-shim-input]\n    if: |\n      !always() &&\n',
       /separate OIDC-authorized action/
     );
     rejectsRustMutation(
