@@ -571,7 +571,8 @@ function checkLinuxCToolchain(job) {
     linuxC.if !== "runner.os == 'Linux'" ||
     linuxC.env?.C_COMPILER !== '${{ matrix.c-compiler }}' ||
     !linuxC.run?.includes('sudo apt-get install --yes musl-tools') ||
-    !linuxC.run.includes('echo "CC=$C_COMPILER" >> "$GITHUB_ENV"')
+    !linuxC.run.includes('echo "CC=$C_COMPILER" >> "$GITHUB_ENV"') ||
+    !linuxC.run.includes('echo "RUSTFLAGS=-C link-arg=-lgcc" >> "$GITHUB_ENV"')
   ) {
     failIntegrity('Linux release build does not use the matrix-selected static C toolchain');
   }
