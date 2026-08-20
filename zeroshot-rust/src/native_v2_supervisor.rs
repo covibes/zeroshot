@@ -354,8 +354,8 @@ fn has_required_delivery_receipt(
     };
     let Ok(target) = DeliveryTarget::new(
         admitted.source.repository.as_str(),
-        admitted.source.target_branch.as_str(),
-        admitted.source.base_revision.as_str(),
+        admitted.source.branch.as_str(),
+        admitted.source.revision.as_str(),
     ) else {
         return false;
     };

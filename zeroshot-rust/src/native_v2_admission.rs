@@ -175,6 +175,7 @@ impl NativeV2Admission {
                 graph,
                 initial_input,
                 runtime,
+                branch: None,
                 submission_key,
             },
             delivery_policy,
@@ -218,6 +219,7 @@ fn prepare_submission(
         graph,
         initial_input,
         runtime,
+        branch: _,
         submission_key: _,
     } = intent;
     validate_graph_input(&graph, &initial_input)?;

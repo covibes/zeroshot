@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::{GraphSpec, IdempotencyKey, NodeName, RunId, RunStatusResult};
 
-use super::{ClaudeProvider, CodexProvider, NodeRuntimeBinding, RunSize, SourceSnapshot};
+use super::{ClaudeProvider, CodexProvider, NodeRuntimeBinding, RunSize, ResolvedSource};
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, tag = "harness", rename_all = "snake_case")]
@@ -47,7 +47,7 @@ pub struct RunSubmission {
     pub graph: GraphSpec,
     pub initial_input: Value,
     pub runtime: RuntimePlan,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     pub submission_key: IdempotencyKey,
 }
 

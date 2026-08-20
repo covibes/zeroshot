@@ -9,7 +9,7 @@ use openengine_cluster_protocol::{
     ActiveExecution, Cursor, ExecutionRef, NodeName, RunAttachEventNotification, RunAttachParams,
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunSize,
     RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
-    RunWatchParams, SourceSnapshot, SubscriptionId, TerminalResult,
+    RunWatchParams, ResolvedSource, SubscriptionId, TerminalResult,
 };
 use serde_json::json;
 
@@ -17,12 +17,12 @@ fn title() -> RunTitle {
     RunTitle::new("Repair checkout flow").assert_value()
 }
 
-fn source() -> SourceSnapshot {
+fn source() -> ResolvedSource {
     serde_json::from_slice(
         br#"{
             "repository": "open-engine/zeroshot",
-            "targetBranch": "main",
-            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            "branch": "main",
+            "revision": "0123456789abcdef0123456789abcdef01234567"
         }"#,
     )
     .assert_value()
@@ -67,8 +67,8 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
             "title": "Repair checkout flow",
             "source": {
                 "repository": "open-engine/zeroshot",
-                "targetBranch": "main",
-                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+                "branch": "main",
+                "revision": "0123456789abcdef0123456789abcdef01234567"
             },
             "size": "standard",
             "atCursor": "v2:7",
@@ -91,8 +91,8 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
             "title": "Repair checkout flow",
             "source": {
                 "repository": "open-engine/zeroshot",
-                "targetBranch": "main",
-                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+                "branch": "main",
+                "revision": "0123456789abcdef0123456789abcdef01234567"
             },
             "size": "standard",
             "atCursor": "v2:7",

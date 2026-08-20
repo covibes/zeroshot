@@ -7,20 +7,14 @@ pub(crate) const LIVE_TARGET_PREAMBLE: &str = r#"
 : "${ZEROSHOT_NATIVE_V2_LIVE_BASE:?live test base branch is required}"
 "$1" target add prod --url "$2" || exit $?
 "$1" target login prod || exit $?
-if test -n "${ZEROSHOT_NATIVE_V2_LIVE_TARGET_BRANCH:-}"; then
-  "$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
-    --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" \
-    --target-branch "$ZEROSHOT_NATIVE_V2_LIVE_TARGET_BRANCH" || exit $?
-else
-  "$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
-    --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
-fi
+"$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
+  --branch "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
 "#;
 
 pub(crate) const LOOPBACK_TARGET_PREAMBLE: &str = r#"
 "$1" target add prod --url "$2" || exit $?
 "$1" target login prod || exit $?
-"$1" target setup prod --repository open-engine/zeroshot --base main || exit $?
+"$1" target setup prod --repository open-engine/zeroshot --branch main || exit $?
 "#;
 
 pub(crate) const WAIT_FOR_FINISHED_STATUS: &str = r#"
@@ -110,7 +104,7 @@ pub(crate) fn delivery_shell_script() -> String {
         r#"
 "$1" target add prod --url "$2" || exit $?
 "$1" target login prod || exit $?
-"$1" target setup prod --repository acme/project --base main || exit $?
+"$1" target setup prod --repository acme/project --branch main || exit $?
 result=$(
   "$1" run --target prod --title "Delivery acceptance" \
     --runtime-config "$4" --graph "$5" --input "$6" \

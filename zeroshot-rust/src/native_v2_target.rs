@@ -14,7 +14,7 @@ use thiserror::Error;
 use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
 use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetRunIntent, TargetSetup};
 use openengine_cluster_protocol::RunSubmitResult;
-pub use zeroshot_engine::native_v2_target_authority::{TargetBase, TargetSetupDocument};
+pub use zeroshot_engine::native_v2_target_authority::TargetSetupDocument;
 
 mod contract;
 mod controller_authority;
@@ -27,7 +27,7 @@ pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_p
 pub use controller_authority::HostedTargetControlAuthority;
 
 #[cfg(test)]
-use contract::{normalize_base, normalize_origin};
+use contract::normalize_origin;
 #[cfg(test)]
 #[path = "native_v2_target/tests.rs"]
 mod tests;
@@ -143,10 +143,6 @@ pub enum TargetConnectorError {
     Randomness,
     #[error("repository must have the form owner/name")]
     InvalidRepository,
-    #[error("base must be a bounded Git branch or a lowercase 40-character revision")]
-    InvalidBase,
-    #[error("--target-branch is required with an exact revision and forbidden otherwise")]
-    TargetBranchMismatch,
     #[error("target control authority failed: {0}")]
     Authority(#[from] TargetAuthorityError),
     #[error("target OECP endpoint is invalid")]

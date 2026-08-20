@@ -143,8 +143,8 @@ async fn admitted(binding: NodeRuntimeBinding, provider: CodexProvider) -> Admit
         },
         source: serde_json::from_value(json!({
             "repository": "open-engine/zeroshot",
-            "targetBranch": "main",
-            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            "branch": "main",
+            "revision": "0123456789abcdef0123456789abcdef01234567"
         }))
         .assert_value(),
         submission_key: IdempotencyKey::new("codex-adapter-test").assert_value(),

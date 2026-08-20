@@ -28,14 +28,14 @@ pub(super) enum Call {
     TargetSetup {
         name: String,
         repository: String,
-        base: Option<String>,
-        target_branch: Option<String>,
+        default_branch: Option<String>,
     },
     Submit {
         target: Option<String>,
         title: RunTitle,
         runtime: RuntimePlan,
         input: Value,
+        branch: Option<String>,
         submission_key: String,
     },
     Watch {
@@ -257,8 +257,9 @@ impl NativeV2CliBackend for FakeBackend {
         self.calls.lock().assert_value().push(Call::TargetSetup {
             name: request.name,
             repository: request.repository,
-            base: request.base,
-            target_branch: request.target_branch,
+            default_branch: request
+                .default_branch
+                .map(|branch| branch.as_str().to_owned()),
         });
         Ok(())
     }
@@ -273,6 +274,7 @@ impl NativeV2CliBackend for FakeBackend {
             title: intent.title,
             runtime: intent.runtime,
             input: intent.initial_input,
+            branch: intent.branch.map(|branch| branch.as_str().to_owned()),
             submission_key: intent.submission_key.as_str().to_owned(),
         });
         Ok(RunSubmitResult {

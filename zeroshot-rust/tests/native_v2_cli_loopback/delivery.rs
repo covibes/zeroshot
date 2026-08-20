@@ -287,8 +287,8 @@ impl CapsuleAllocator for DeliveryAllocator {
                 git_program: PathBuf::from("/usr/bin/git"),
                 target: DeliveryTarget::new(
                     admitted.source.repository.as_str(),
-                    admitted.source.target_branch.as_str(),
-                    admitted.source.base_revision.as_str(),
+                    admitted.source.branch.as_str(),
+                    admitted.source.revision.as_str(),
                 )
                 .map_err(|_| CapsuleAllocationUnavailable)?,
                 poll: DeliveryPollPolicy::new(3, Duration::ZERO)

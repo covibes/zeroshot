@@ -144,7 +144,7 @@ fn identity() -> ConnectionIdentity {
 fn setup(repository: &str) -> TargetSetupDocument {
     TargetSetupDocument {
         repository: repository.to_owned(),
-        base: TargetBase::Default,
+        default_branch: None,
     }
 }
 
@@ -158,6 +158,7 @@ fn intent() -> TargetRunIntent {
             size: RunSize::Tiny,
             nodes: BTreeMap::new(),
         },
+        branch: None,
         submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
     }
 }

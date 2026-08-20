@@ -233,10 +233,10 @@ async fn admitted_routing_graph(base_revision: &str) -> crate::native_v2_contrac
                     (NodeName::new("repair").assert_value(), repair),
                 ]),
             },
-            source: SourceSnapshot {
+            source: ResolvedSource {
                 repository: SourceRepositoryId::new("acme/project").assert_value(),
-                target_branch: SourceBranchId::new("main").assert_value(),
-                base_revision: SourceRevisionId::new(base_revision).assert_value(),
+                branch: SourceBranchId::new("main").assert_value(),
+                revision: SourceRevisionId::new(base_revision).assert_value(),
             },
             submission_key: IdempotencyKey::new("delivery-routing").assert_value(),
         })

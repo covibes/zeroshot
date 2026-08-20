@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use openengine_cluster_protocol::{
     CodexProvider, DeclaredEnvironment, EnumLabel, FieldName, IdempotencyKey, NodeName,
     PositiveInteger, RunId, RunSize, RunTitle, SessionScope, SourceBranchId, SourceRepositoryId,
-    SourceRevisionId, SourceSnapshot, TerminalResult, WorkerOutcome,
+    SourceRevisionId, ResolvedSource, TerminalResult, WorkerOutcome,
 };
 use serde_json::{Value, json};
 
@@ -28,12 +28,11 @@ fn agent_binding() -> NodeRuntimeBinding {
     }
 }
 
-fn source() -> SourceSnapshot {
-    SourceSnapshot {
+fn source() -> ResolvedSource {
+    ResolvedSource {
         repository: SourceRepositoryId::new("acme/project").assert_value(),
-        target_branch: SourceBranchId::new("main").assert_value(),
-        base_revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-            .assert_value(),
+        branch: SourceBranchId::new("main").assert_value(),
+        revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").assert_value(),
     }
 }
 

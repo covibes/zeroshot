@@ -1,7 +1,8 @@
 //! Lean native-v2 command contract.
 //!
 //! Parsing and local file validation happen before a local controller or named target is
-//! contacted. Every submission carries its immutable source snapshot and runtime plan.
+//! contacted. Named-target submissions carry only a mutable branch selector; the host resolves it
+//! once before the controller receives the immutable source and runtime plan.
 
 use std::path::PathBuf;
 
@@ -9,7 +10,7 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ExecutionRef, IdempotencyKey, RunAttachEventNotification, RunAttachParams, RunForceParams,
     RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult,
-    RunTitle, RunWatchEventNotification, RunWatchParams, SubscriptionCloseReason,
+    RunTitle, RunWatchEventNotification, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
@@ -44,12 +45,12 @@ zeroshot v2
 
   target add <name> --url <https-origin>
   target login <name>
-  target setup <name> --repository <owner/name> [--base <ref>] [--target-branch <branch>]
+  target setup <name> --repository <owner/name> [--branch <branch>]
   template list
   template show <single-worker|software-change> [--pr|--ship]
   run --title <title> (--graph <file>|--template <name>) --input <file>
       --runtime-config <file> [--target <name>]
-      [--submission-key <key>] [-d]
+      [--branch <branch>] [--submission-key <key>] [-d]
       (--pr|--ship are valid only with --template software-change)
   list [--target <name>]
   status <run-id> [--target <name>]
@@ -69,8 +70,7 @@ pub struct TargetAdd {
 pub struct TargetSetup {
     pub name: String,
     pub repository: String,
-    pub base: Option<String>,
-    pub target_branch: Option<String>,
+    pub default_branch: Option<SourceBranchId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +80,7 @@ pub struct RunCommand {
     pub graph: RunGraph,
     pub input: PathBuf,
     pub runtime_config: PathBuf,
+    pub branch: Option<SourceBranchId>,
     pub detach: bool,
     pub submission_key: Option<IdempotencyKey>,
 }

@@ -3,9 +3,9 @@
   "runId": "run-1",
   "size": "standard",
   "source": {
-    "baseRevision": "0123456789abcdef0123456789abcdef01234567",
+    "branch": "main",
     "repository": "open-engine/zeroshot",
-    "targetBranch": "main"
+    "revision": "0123456789abcdef0123456789abcdef01234567"
   },
   "status": {
     "activeExecutions": [

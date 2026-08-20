@@ -1,6 +1,6 @@
 //! Public native-v2 run admission and inventory values.
 //!
-//! The protocol carries the immutable source snapshot, graph, actual initial value, runtime plan,
+//! The protocol carries the immutable resolved source, graph, actual initial value, runtime plan,
 //! run title, and existing submission-key seam. Runtime plans declare environment names only;
 //! resolved values and provider credentials remain private host input.
 
@@ -292,10 +292,10 @@ native_v2_string_kind!(
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct SourceSnapshot {
+pub struct ResolvedSource {
     pub repository: SourceRepositoryId,
-    pub target_branch: SourceBranchId,
-    pub base_revision: SourceRevisionId,
+    pub branch: SourceBranchId,
+    pub revision: SourceRevisionId,
 }
 
 #[derive(

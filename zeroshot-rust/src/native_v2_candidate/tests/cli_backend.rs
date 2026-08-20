@@ -68,14 +68,12 @@ impl NativeV2CliBackend for InProcessCliBackend {
                 graph: intent.graph,
                 initial_input: intent.initial_input,
                 runtime: intent.runtime,
-                source: SourceSnapshot {
+                source: ResolvedSource {
                     repository: SourceRepositoryId::new("acme/project")
                         .map_err(cli_protocol_error)?,
-                    target_branch: SourceBranchId::new("main").map_err(cli_protocol_error)?,
-                    base_revision: SourceRevisionId::new(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    )
-                    .map_err(cli_protocol_error)?,
+                    branch: SourceBranchId::new("main").map_err(cli_protocol_error)?,
+                    revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                        .map_err(cli_protocol_error)?,
                 },
                 submission_key: intent.submission_key,
             },

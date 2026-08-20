@@ -11,7 +11,7 @@ use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     RunId, RunListParams, RunListResult, RunSize, RunStatus, RunStatusResult, RunSubmitParams,
     RunSubmitResult, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId,
-    SourceSnapshot,
+    ResolvedSource,
 };
 use serde_json::{json, Value};
 
@@ -40,8 +40,8 @@ fn submission() -> Value {
         },
         "source": {
             "repository": "open-engine/zeroshot",
-            "targetBranch": "main",
-            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            "branch": "main",
+            "revision": "0123456789abcdef0123456789abcdef01234567"
         },
         "submissionKey": "submission-1"
     })
@@ -71,6 +71,25 @@ fn submit_is_closed_secret_free_and_requires_actual_initial_input() {
 }
 
 #[test]
+fn resolved_source_has_one_unambiguous_wire_shape() {
+    let source = json!({
+        "repository": "open-engine/zeroshot",
+        "branch": "main",
+        "revision": "0123456789abcdef0123456789abcdef01234567"
+    });
+    let resolved: ResolvedSource = serde_json::from_value(source.clone()).assert_value();
+    assert_eq!(serde_json::to_value(resolved).assert_value(), source);
+    assert!(
+        serde_json::from_value::<ResolvedSource>(json!({
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn submit_rejects_removed_ship_and_inventory_is_closed() {
     let mut wire = json!({ "runId": "run-1", "submission": submission() });
     json_insert::json_insert(&mut wire, "", "ship", json!(false));
@@ -95,10 +114,10 @@ fn submit_and_list_results_expose_only_public_run_identity_and_status() {
         runs: vec![RunStatusResult {
             run_id,
             title: RunTitle::new("Protocol contract").assert_value(),
-            source: SourceSnapshot {
+            source: ResolvedSource {
                 repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
-                target_branch: SourceBranchId::new("main").assert_value(),
-                base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+                branch: SourceBranchId::new("main").assert_value(),
+                revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
                     .assert_value(),
             },
             size: RunSize::Tiny,

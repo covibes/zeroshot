@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use openengine_cluster_protocol::{
     EnvironmentVariableName, RunId, RunSubmission, RuntimePlan, SourceBranchId, SourceRepositoryId,
-    SourceRevisionId, SourceSnapshot,
+    SourceRevisionId, ResolvedSource,
 };
 use thiserror::Error;
 use url::Url;
@@ -48,8 +48,8 @@ pub enum LocalCompositionError {
     DetachedHead,
     #[error("current Git workspace must have a GitHub origin")]
     RepositoryIdentity,
-    #[error("current Git source snapshot is invalid")]
-    SourceSnapshot,
+    #[error("current Git resolved source is invalid")]
+    ResolvedSource,
     #[error("local run identity could not be assigned")]
     RunIdentity,
     #[error("declared environment variable {0} is unavailable or is not valid UTF-8")]
@@ -92,7 +92,7 @@ fn prepare_local_run_with_environment<F>(
 where
     F: Fn(&str) -> Option<OsString>,
 {
-    let (workspace, source) = local_source_snapshot(current_directory, git_program)?;
+    let (workspace, source) = local_resolved_source(current_directory, git_program)?;
     let selected = select_environment(&intent.runtime, environment)?;
     RunEnvironment::exact(&intent.runtime, selected.clone())?;
     let run_id = fresh_local_run_id()?;
@@ -137,10 +137,10 @@ fn declared_environment_names(runtime: &RuntimePlan) -> BTreeSet<EnvironmentVari
         .collect()
 }
 
-fn local_source_snapshot(
+fn local_resolved_source(
     current_directory: &Path,
     git_program: &Path,
-) -> Result<(PathBuf, SourceSnapshot), LocalCompositionError> {
+) -> Result<(PathBuf, ResolvedSource), LocalCompositionError> {
     let workspace = PathBuf::from(git_line(
         git_program,
         current_directory,
@@ -166,13 +166,12 @@ fn local_source_snapshot(
     )
     .map_err(|_| LocalCompositionError::RepositoryIdentity)?;
     let repository = github_repository(&origin).ok_or(LocalCompositionError::RepositoryIdentity)?;
-    let source = SourceSnapshot {
+    let source = ResolvedSource {
         repository: SourceRepositoryId::new(repository)
-            .map_err(|_| LocalCompositionError::SourceSnapshot)?,
-        target_branch: SourceBranchId::new(branch)
-            .map_err(|_| LocalCompositionError::SourceSnapshot)?,
-        base_revision: SourceRevisionId::new(revision)
-            .map_err(|_| LocalCompositionError::SourceSnapshot)?,
+            .map_err(|_| LocalCompositionError::ResolvedSource)?,
+        branch: SourceBranchId::new(branch).map_err(|_| LocalCompositionError::ResolvedSource)?,
+        revision: SourceRevisionId::new(revision)
+            .map_err(|_| LocalCompositionError::ResolvedSource)?,
     };
     Ok((workspace, source))
 }
@@ -290,10 +289,10 @@ pub fn build_local_process_candidate(
     };
     let target = DeliveryTarget::new(
         admitted.source.repository.as_str(),
-        admitted.source.target_branch.as_str(),
-        admitted.source.base_revision.as_str(),
+        admitted.source.branch.as_str(),
+        admitted.source.revision.as_str(),
     )
-    .map_err(|_| LocalCompositionError::SourceSnapshot)?;
+    .map_err(|_| LocalCompositionError::ResolvedSource)?;
     let mut github_config = GhCliAuthorityConfig::hosted(runtime_home);
     github_config.git_program = PathBuf::from("git");
     github_config.gh_program = PathBuf::from("gh");

@@ -18,7 +18,7 @@ use super::*;
 use crate::native_v2_candidate::test_support::{full_graph, success_node};
 use crate::native_v2_contract::{
     CodexProvider, RunSize, RunSubmission, RunSubmissionIntent, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
 };
 use crate::native_v2_runner::{NodeHandle, NodeRunRequest, NodeRunnerError};
 use crate::v2_run_ledger::{CreateRun, CreateRunOutcome, RunLedger};
@@ -70,11 +70,11 @@ fn submission(key: &str) -> RunSubmission {
             size: RunSize::Tiny,
             nodes: BTreeMap::new(),
         },
-        source: SourceSnapshot {
+        source: ResolvedSource {
             repository: SourceRepositoryId::new("open-engine/zeroshot")
                 .assert_value_with("repository"),
-            target_branch: SourceBranchId::new("main").assert_value_with("branch"),
-            base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+            branch: SourceBranchId::new("main").assert_value_with("branch"),
+            revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
                 .assert_value_with("revision"),
         },
         submission_key: IdempotencyKey::new(key).assert_value_with("submission key"),

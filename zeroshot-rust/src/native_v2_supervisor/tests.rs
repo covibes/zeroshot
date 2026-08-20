@@ -278,8 +278,8 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         },
         "source": {
             "repository": "open-engine/zeroshot",
-            "targetBranch": "main",
-            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            "branch": "main",
+            "revision": "0123456789abcdef0123456789abcdef01234567"
         },
         "submissionKey": "supervisor-test"
     }))

@@ -23,31 +23,22 @@ fn target_origins_match_the_existing_hosted_cli_contract() {
 }
 
 #[test]
-fn setup_base_contract_matches_current_hosted_semantics() {
+fn setup_carries_one_optional_default_branch() {
+    let request = setup_request();
     assert_eq!(
-        normalize_base(None, None).assert_value(),
-        TargetBase::Default
-    );
-    assert_eq!(
-        normalize_base(Some("main"), None).assert_value(),
-        TargetBase::Branch {
-            branch: "main".to_owned()
+        prepare_setup(&request).assert_value(),
+        TargetSetupDocument {
+            repository: "open-engine/zeroshot".to_owned(),
+            default_branch: Some("main".to_owned()),
         }
     );
-    let revision = "a".repeat(40);
+
+    let mut remote_default = request;
+    remote_default.default_branch = None;
     assert_eq!(
-        normalize_base(Some(&revision), Some("main")).assert_value(),
-        TargetBase::Revision {
-            revision: revision.clone(),
-            target_branch: "main".to_owned()
-        }
+        prepare_setup(&remote_default).assert_value().default_branch,
+        None
     );
-    assert!(normalize_base(Some(&revision), None).is_err());
-    assert!(normalize_base(None, Some("main")).is_err());
-    assert!(normalize_base(Some("main"), Some("release")).is_err());
-    for invalid in ["refs/heads/release.lock", "topic@{one", "mäin"] {
-        assert!(normalize_base(Some(invalid), None).is_err());
-    }
 }
 
 #[test]

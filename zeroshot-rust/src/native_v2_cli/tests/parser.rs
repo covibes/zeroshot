@@ -14,6 +14,8 @@ fn parser_is_the_agreed_lean_hosted_surface() {
         "input.json",
         "--runtime-config",
         "runtime.json",
+        "--branch",
+        "feature/source-selection",
         "-d",
         "--submission-key",
         "retry-1",
@@ -24,6 +26,10 @@ fn parser_is_the_agreed_lean_hosted_surface() {
     assert_eq!(run.title.as_str(), "Repair checkout");
     assert_eq!(run.graph, RunGraph::File(PathBuf::from("graph.json")));
     assert_eq!(run.runtime_config, PathBuf::from("runtime.json"));
+    assert_eq!(
+        run.branch.as_ref().map(SourceBranchId::as_str),
+        Some("feature/source-selection")
+    );
     assert!(run.detach);
     assert_eq!(run.submission_key.assert_value().as_str(), "retry-1");
 
@@ -124,6 +130,59 @@ fn parser_rejects_ambiguous_graph_and_delivery_materialization() {
 }
 
 #[test]
+fn branch_override_requires_a_named_target() {
+    let error = parse_native_v2_args(args(&[
+        "run",
+        "--title",
+        "Repair checkout",
+        "--graph",
+        "graph.json",
+        "--input",
+        "input.json",
+        "--runtime-config",
+        "runtime.json",
+        "--branch",
+        "feature",
+    ]))
+    .assert_error();
+    assert!(
+        matches!(error, NativeV2CliError::Usage(message) if message == "--branch requires --target")
+    );
+}
+
+#[test]
+fn branch_selectors_are_validated_before_target_contact() {
+    for argv in [
+        vec![
+            "target",
+            "setup",
+            "prod",
+            "--repository",
+            "open/engine",
+            "--branch",
+            "release.lock",
+        ],
+        vec![
+            "run",
+            "--target",
+            "prod",
+            "--title",
+            "Repair checkout",
+            "--graph",
+            "graph.json",
+            "--input",
+            "input.json",
+            "--runtime-config",
+            "runtime.json",
+            "--branch",
+            "release.lock",
+        ],
+    ] {
+        assert!(parse_native_v2_args(args(&argv)).is_err());
+    }
+}
+
+#[test]
 fn parser_keeps_capsules_private_and_attach_read_only() {
     let attach = parse_native_v2_args(args(&["attach", "run-7", "exec-2", "--target", "prod"]))
         .assert_value();
@@ -138,17 +197,15 @@ fn parser_keeps_capsules_private_and_attach_read_only() {
 }
 
 #[test]
-fn parser_exposes_named_target_setup_without_runtime_overrides() {
+fn parser_exposes_named_target_default_branch() {
     let command = parse_native_v2_args(args(&[
         "target",
         "setup",
         "prod",
         "--repository",
         "open/engine",
-        "--base",
+        "--branch",
         "main",
-        "--target-branch",
-        "release",
     ]))
     .assert_value();
     let setup = match command {
@@ -157,8 +214,10 @@ fn parser_exposes_named_target_setup_without_runtime_overrides() {
     };
     let setup = setup.assert_value_with("setup command");
     assert_eq!(setup.repository, "open/engine");
-    assert_eq!(setup.base.as_deref(), Some("main"));
-    assert_eq!(setup.target_branch.as_deref(), Some("release"));
+    assert_eq!(
+        setup.default_branch.as_ref().map(SourceBranchId::as_str),
+        Some("main")
+    );
 }
 
 #[tokio::test]
@@ -187,8 +246,7 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
             Call::TargetSetup {
                 name: "prod".to_owned(),
                 repository: "open/engine".to_owned(),
-                base: None,
-                target_branch: None,
+                default_branch: None,
             },
         ]
     );

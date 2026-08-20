@@ -22,7 +22,7 @@ use crate::native_v2_candidate::test_support::{TestGitRepository, full_graph, gi
 use crate::native_v2_contract::{
     self, CodexProvider, DeclaredEnvironment, ExecutionRef, NodeInvocation, NodeRuntimeBinding,
     RunSize, RunSubmission, RunTitle, RuntimePlan, SourceBranchId, SourceRepositoryId,
-    SourceRevisionId, SourceSnapshot, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
+    SourceRevisionId, ResolvedSource, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
 };
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, NativeNodeRunner, NodeDriver, NodeRunRequest, NodeRunner,
@@ -324,10 +324,10 @@ async fn admitted(repo: &TempRepo, mode: DeliveryMode) -> crate::native_v2_contr
                 size: RunSize::Standard,
                 nodes: BTreeMap::from([(NodeName::new("deliver").assert_value(), binding)]),
             },
-            source: SourceSnapshot {
+            source: ResolvedSource {
                 repository: SourceRepositoryId::new("acme/project").assert_value(),
-                target_branch: SourceBranchId::new("main").assert_value(),
-                base_revision: SourceRevisionId::new(repo.base.clone()).assert_value(),
+                branch: SourceBranchId::new("main").assert_value(),
+                revision: SourceRevisionId::new(repo.base.clone()).assert_value(),
             },
             submission_key: IdempotencyKey::new(format!("delivery-{}-{}", repo.base, mode.label()))
                 .assert_value(),

@@ -1,10 +1,8 @@
 use tokio_tungstenite::tungstenite::http::Uri;
 use zeroshot_engine::native_v2_cli::{TargetAdd, TargetSetup};
-use zeroshot_engine::native_v2_target_authority::{
-    is_exact_target_revision, valid_cli_target_branch, valid_target_repository,
-};
+use zeroshot_engine::native_v2_target_authority::valid_target_repository;
 
-use super::{TargetBase, TargetConnectorError, TargetRecord, TargetSetupDocument};
+use super::{TargetConnectorError, TargetRecord, TargetSetupDocument};
 
 const MAX_BEARER_TOKEN_BYTES: usize = 16 * 1024;
 
@@ -39,10 +37,12 @@ pub(super) fn prepare_setup(
     if !valid_target_repository(&request.repository) {
         return Err(TargetConnectorError::InvalidRepository);
     }
-    let base = normalize_base(request.base.as_deref(), request.target_branch.as_deref())?;
     Ok(TargetSetupDocument {
         repository: request.repository.clone(),
-        base,
+        default_branch: request
+            .default_branch
+            .as_ref()
+            .map(|branch| branch.as_str().to_owned()),
     })
 }
 
@@ -83,49 +83,6 @@ pub(super) fn normalize_origin(raw: &str) -> Result<String, TargetConnectorError
         Some(port) => Ok(format!("{scheme}://{rendered_host}:{port}")),
         None => Ok(format!("{scheme}://{rendered_host}")),
     }
-}
-
-pub(super) fn normalize_base(
-    base: Option<&str>,
-    target_branch: Option<&str>,
-) -> Result<TargetBase, TargetConnectorError> {
-    match base {
-        None if target_branch.is_none() => Ok(TargetBase::Default),
-        None => Err(TargetConnectorError::TargetBranchMismatch),
-        Some(revision) if is_exact_target_revision(revision) => {
-            normalize_revision_base(revision, target_branch)
-        }
-        Some(branch) => normalize_branch_base(branch, target_branch),
-    }
-}
-
-fn normalize_revision_base(
-    revision: &str,
-    target_branch: Option<&str>,
-) -> Result<TargetBase, TargetConnectorError> {
-    let branch = target_branch.ok_or(TargetConnectorError::TargetBranchMismatch)?;
-    if !valid_cli_target_branch(branch) {
-        return Err(TargetConnectorError::TargetBranchMismatch);
-    }
-    Ok(TargetBase::Revision {
-        revision: revision.to_owned(),
-        target_branch: branch.to_owned(),
-    })
-}
-
-fn normalize_branch_base(
-    branch: &str,
-    target_branch: Option<&str>,
-) -> Result<TargetBase, TargetConnectorError> {
-    if target_branch.is_some() {
-        return Err(TargetConnectorError::TargetBranchMismatch);
-    }
-    if !valid_cli_target_branch(branch) {
-        return Err(TargetConnectorError::InvalidBase);
-    }
-    Ok(TargetBase::Branch {
-        branch: branch.to_owned(),
-    })
 }
 
 pub(super) fn validate_bearer_token(token: &str) -> Result<(), TargetConnectorError> {

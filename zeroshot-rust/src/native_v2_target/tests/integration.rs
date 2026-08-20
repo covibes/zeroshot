@@ -87,12 +87,7 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
     let (record, installed) = install.assert_value_with("expected atomic setup install");
     assert_eq!(record, added);
     assert_eq!(installed.repository, "open-engine/zeroshot");
-    assert_eq!(
-        installed.base,
-        TargetBase::Branch {
-            branch: "main".to_owned()
-        }
-    );
+    assert_eq!(installed.default_branch.as_deref(), Some("main"));
     let submitted = match calls.assert_at(3) {
         AuthorityCall::Submit(record, intent) => Some((record, intent.as_ref())),
         _ => None,
@@ -126,9 +121,7 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     };
     let setup = TargetSetupDocument {
         repository: "open-engine/zeroshot".to_owned(),
-        base: TargetBase::Branch {
-            branch: "main".to_owned(),
-        },
+        default_branch: Some("main".to_owned()),
     };
 
     authority.login(&target).await.assert_value();

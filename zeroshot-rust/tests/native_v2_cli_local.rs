@@ -36,11 +36,11 @@ async fn target_omitted_run_derives_source_and_preserves_workspace_mutation() {
         "acme/local-fixture"
     );
     assert_eq!(
-        status.assert_key("source").assert_key("targetBranch"),
+        status.assert_key("source").assert_key("branch"),
         "feature/local"
     );
     assert_eq!(
-        status.assert_key("source").assert_key("baseRevision"),
+        status.assert_key("source").assert_key("revision"),
         &fixture.head
     );
     assert_eq!(status.assert_key("size"), "small");

@@ -1,7 +1,7 @@
 //! Target-wide native-v2 control authority and its public network boundary.
 //!
-//! The public object is a target, never a capsule. Setup installs one repository selector and
-//! one source selector atomically. The first authenticated OECP session activates the target
+//! The public object is a target, never a capsule. Setup installs one repository and optional
+//! default branch atomically. The first authenticated OECP session activates the target
 //! adapter; every later connection observes the same RunId/ledger namespace.
 
 mod store;
@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{RunId, SourceBranchId, SourceRepositoryId, SourceRevisionId};
+use openengine_cluster_protocol::{RunId, SourceBranchId, SourceRepositoryId};
 use openengine_cluster_server::identity::ConnectionIdentity;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -45,20 +45,8 @@ pub struct TargetRunReceipt {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetSetupDocument {
     pub repository: String,
-    pub base: TargetBase,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
-pub enum TargetBase {
-    Default,
-    Branch {
-        branch: String,
-    },
-    Revision {
-        revision: String,
-        target_branch: String,
-    },
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 impl TargetSetupDocument {
@@ -68,18 +56,14 @@ impl TargetSetupDocument {
                 "repository must have the form owner/name",
             ));
         }
-        match &self.base {
-            TargetBase::Default => {}
-            TargetBase::Branch { branch } if valid_target_branch(branch) => {}
-            TargetBase::Revision {
-                revision,
-                target_branch,
-            } if is_exact_target_revision(revision) && valid_target_branch(target_branch) => {}
-            _ => {
-                return Err(TargetAuthorityError::invalid(
-                    "base must be a bounded branch or lowercase 40-character revision",
-                ));
-            }
+        if self
+            .default_branch
+            .as_deref()
+            .is_some_and(|branch| !valid_target_branch(branch))
+        {
+            return Err(TargetAuthorityError::invalid(
+                "default branch must be a valid bounded Git branch",
+            ));
         }
         Ok(())
     }
@@ -322,7 +306,7 @@ impl NativeV2TargetAuthority {
         Ok(controller)
     }
 
-    /// Resolves current target selection into a durable source snapshot and host-assigned RunId.
+    /// Resolves current target selection into a durable resolved source and host-assigned RunId.
     pub async fn submit(
         &self,
         intent: TargetRunIntent,
@@ -352,20 +336,7 @@ pub fn valid_target_repository(value: &str) -> bool {
 #[doc(hidden)]
 #[must_use]
 pub fn valid_target_branch(value: &str) -> bool {
-    SourceBranchId::new(value.trim_end_matches('/')).is_ok()
-}
-
-/// CLI selector policy is intentionally stricter than persisted setup-document compatibility.
-#[doc(hidden)]
-#[must_use]
-pub fn valid_cli_target_branch(value: &str) -> bool {
     SourceBranchId::new(value).is_ok()
-}
-
-#[doc(hidden)]
-#[must_use]
-pub fn is_exact_target_revision(value: &str) -> bool {
-    SourceRevisionId::new(value).is_ok()
 }
 
 #[cfg(test)]

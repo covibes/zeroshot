@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use openengine_cluster_client::{
     JsonRpcTransport, PumpedSubscription, SubscriptionTransport, TransportError,
 };
-use openengine_cluster_protocol::{RequestId, RunId, RunSubmitResult, SubscriptionId};
+use openengine_cluster_protocol::{RequestId, RunId, RunSubmitResult, SourceBranchId, SubscriptionId};
 use serde_json::json;
 
 use super::super::*;
@@ -192,8 +192,7 @@ pub(super) fn setup_request() -> TargetSetup {
     TargetSetup {
         name: "prod".to_owned(),
         repository: "open-engine/zeroshot".to_owned(),
-        base: Some("main".to_owned()),
-        target_branch: None,
+        default_branch: Some(SourceBranchId::new("main").assert_value()),
     }
 }
 
@@ -213,6 +212,7 @@ pub(super) fn run_intent() -> TargetRunIntent {
             "size":"standard",
             "nodes":{}
         },
+        "branch":"feature",
         "submissionKey":"target-test"
     }))
     .assert_value()

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use openengine_cluster_protocol::{
     EnumLabel, FieldName, NodeName, NodeRuntimeBinding, PositiveInteger, ReasoningEffort, RunSize,
     RuntimePlan, SessionScope, SourceBranchId, SourceRepositoryId, SourceRevisionId,
-    SourceSnapshot, WorkerOutcome,
+    ResolvedSource, WorkerOutcome,
 };
 use openengine_cluster_server::graph_verifier::graph_node_children;
 use openengine_cluster_testkit::assertions::AssertValue;
@@ -75,11 +75,11 @@ fn agent_binding() -> NodeRuntimeBinding {
     }
 }
 
-pub(super) fn source_snapshot() -> SourceSnapshot {
-    SourceSnapshot {
+pub(super) fn resolved_source() -> ResolvedSource {
+    ResolvedSource {
         repository: SourceRepositoryId::new("acme/project").assert_value(),
-        target_branch: SourceBranchId::new("main").assert_value(),
-        base_revision: SourceRevisionId::new("a".repeat(40)).assert_value(),
+        branch: SourceBranchId::new("main").assert_value(),
+        revision: SourceRevisionId::new("a".repeat(40)).assert_value(),
     }
 }
 

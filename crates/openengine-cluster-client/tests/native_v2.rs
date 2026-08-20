@@ -17,8 +17,8 @@ fn response(method: &str) -> Value {
             json!({
                 "runId":"run-1","title":"Protocol client test",
                 "source":{
-                    "repository":"open-engine/zeroshot","targetBranch":"main",
-                    "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                    "repository":"open-engine/zeroshot","branch":"main",
+                    "revision":"0123456789abcdef0123456789abcdef01234567"
                 },
                 "size":"tiny","atCursor":"v2:1","status":{"phase":"admitted"}
             }),
@@ -28,8 +28,8 @@ fn response(method: &str) -> Value {
             json!({
                 "runId":"run-1","title":"Protocol client test",
                 "source":{
-                    "repository":"open-engine/zeroshot","targetBranch":"main",
-                    "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                    "repository":"open-engine/zeroshot","branch":"main",
+                    "revision":"0123456789abcdef0123456789abcdef01234567"
                 },
                 "size":"tiny","atCursor":"v2:2",
                 "status":{"phase":"stopping","activeExecutions":[]}
@@ -59,8 +59,8 @@ fn submit() -> RunSubmitParams {
                 "harness":"codex","provider":"openai","size":"tiny","nodes":{}
             },
             "source":{
-                "repository":"open-engine/zeroshot","targetBranch":"main",
-                "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                "repository":"open-engine/zeroshot","branch":"main",
+                "revision":"0123456789abcdef0123456789abcdef01234567"
             },
             "submissionKey":"submission-1"
         }

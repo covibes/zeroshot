@@ -27,6 +27,7 @@ pub(super) fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, Na
         graph,
         initial_input,
         runtime,
+        branch: run.branch.clone(),
         submission_key,
     })
 }

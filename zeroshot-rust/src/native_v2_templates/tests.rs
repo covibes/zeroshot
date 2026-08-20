@@ -313,6 +313,7 @@ async fn assert_admissible(
                 graph,
                 initial_input,
                 runtime,
+                branch: None,
                 submission_key: IdempotencyKey::new(format!(
                     "template-{}-{}",
                     template.name(),
@@ -344,7 +345,7 @@ async fn verified_software_template(
             graph,
             initial_input: initial_input.clone(),
             runtime,
-            source: source_snapshot(),
+            source: resolved_source(),
             submission_key: IdempotencyKey::new(format!("template-behavior-{}", delivery.name()))
                 .assert_value(),
         })

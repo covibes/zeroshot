@@ -9,7 +9,7 @@ pub(crate) use std::time::Duration;
 pub(crate) use async_trait::async_trait;
 pub(crate) use openengine_cluster_protocol::{
     IdempotencyKey, RunId, RunSubmission, RunSubmitParams, RunTitle, SourceBranchId,
-    SourceRepositoryId, SourceRevisionId, SourceSnapshot, WorkerOutcome,
+    SourceRepositoryId, SourceRevisionId, ResolvedSource, WorkerOutcome,
 };
 pub(crate) use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
@@ -46,7 +46,7 @@ pub(crate) use zeroshot_engine::native_v2_runner::{
 pub(crate) use zeroshot_engine::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 pub(crate) use zeroshot_engine::native_v2_target_authority::{
     NativeV2TargetAuthority, NativeV2TargetServer, TargetAuthorityError, TargetControllerFactory,
-    TargetBase, TargetRunIntent, TargetRunReceipt, TargetSessionAuthority, TargetSetupDocument,
+    TargetRunIntent, TargetRunReceipt, TargetSessionAuthority, TargetSetupDocument,
 };
 pub(crate) use zeroshot_engine::v2_run_ledger::fake::FakeRunLedger;
 
@@ -292,7 +292,11 @@ pub(crate) async fn submit_test_run(
             run_id: existing.run_id,
         });
     }
-    let source = test_source_snapshot(setup, resolved_base_revision)?;
+    let source = test_resolved_source(
+        setup,
+        intent.branch.as_ref().map(SourceBranchId::as_str),
+        resolved_base_revision,
+    )?;
     let run_id = RunId::new(format!(
         "run-loopback-{}",
         NEXT_TEST_RUN.fetch_add(1, Ordering::Relaxed)
@@ -302,6 +306,7 @@ pub(crate) async fn submit_test_run(
         graph,
         initial_input,
         runtime,
+        branch: _,
         submission_key,
     } = intent;
     let submission = RunSubmission {
@@ -327,24 +332,20 @@ pub(crate) async fn submit_test_run(
     })
 }
 
-fn test_source_snapshot(
+fn test_resolved_source(
     setup: &TargetSetupDocument,
-    resolved_base_revision: &str,
-) -> Result<SourceSnapshot, TargetAuthorityError> {
-    let (target_branch, base_revision) = match &setup.base {
-        TargetBase::Default => ("main", resolved_base_revision),
-        TargetBase::Branch { branch } => (branch.as_str(), resolved_base_revision),
-        TargetBase::Revision {
-            revision,
-            target_branch,
-        } => (target_branch.as_str(), revision.as_str()),
-    };
-    Ok(SourceSnapshot {
+    branch_override: Option<&str>,
+    resolved_revision: &str,
+) -> Result<ResolvedSource, TargetAuthorityError> {
+    let branch = branch_override
+        .or(setup.default_branch.as_deref())
+        .unwrap_or("main");
+    Ok(ResolvedSource {
         repository: SourceRepositoryId::new(&setup.repository)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
-        target_branch: SourceBranchId::new(target_branch)
+        branch: SourceBranchId::new(branch)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
-        base_revision: SourceRevisionId::new(base_revision)
+        revision: SourceRevisionId::new(resolved_revision)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
     })
 }

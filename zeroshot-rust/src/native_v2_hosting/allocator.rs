@@ -29,7 +29,6 @@ use crate::native_v2_contract::{AdmittedRun, EnvironmentVariableName, RuntimePla
 use crate::native_v2_delivery::{GhCliAuthorityConfig, GhCliDeliveryAuthority, NativeV2DeliveryConfig};
 use crate::native_v2_portable_controller::WorkspaceIdentity;
 use crate::native_v2_supervisor::RunRuntimeExit;
-use crate::native_v2_target_authority::TargetBase;
 
 use super::ProductionHostingError;
 use super::repository::{RepositoryInstall, install_repository, production_source, repository_token};
@@ -106,16 +105,11 @@ impl ProductionCapsuleAllocator {
         let filesystem =
             (self.prepare_filesystem)(&workspace, &runtime_home, self.config.process_pool)?;
         let repository = admitted.source.repository.as_str();
-        let base = TargetBase::Revision {
-            revision: admitted.source.base_revision.as_str().to_owned(),
-            target_branch: admitted.source.target_branch.as_str().to_owned(),
-        };
         let source = self.repository_source(repository);
         let target = install_repository(RepositoryInstall {
             git_program: &self.config.git_program,
             source: &source,
-            repository,
-            base: &base,
+            resolved: &admitted.source,
             workspace: &filesystem.workspace,
             process_pool: self.config.process_pool,
             github_token: repository_token(&self.config.environment),

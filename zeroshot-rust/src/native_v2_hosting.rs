@@ -25,7 +25,7 @@ use crate::execution::process::HostedProcessPool;
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cloud::{NativeV2CloudController, run_intent_digest};
-use crate::native_v2_contract::EnvironmentVariableName;
+use crate::native_v2_contract::{EnvironmentVariableName, SourceBranchId};
 use crate::native_v2_target_authority::{
     FileTargetSetupStore, NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory,
     TargetRunIntent, TargetRunReceipt, TargetSetupDocument,
@@ -35,7 +35,7 @@ use crate::v2_run_ledger::sqlite::SqliteRunLedger;
 use crate::native_v2_supervisor::RunEnvironment;
 
 use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
-use repository::{repository_token, resolve_source_snapshot};
+use repository::{production_source, repository_token, resolve_source, SourceResolution};
 
 const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const TARGET_SETUP_FILE: &str = "target-setup.json";
@@ -175,14 +175,18 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
         let environment =
             RunEnvironment::from_available(&intent.runtime, &self.config.controller_environment)
                 .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
-        let source = resolve_source_snapshot(
-            &self.config.git_program,
-            setup,
-            self.config.process_pool,
-            repository_token(&self.config.controller_environment),
-        )
+        let repository_source = production_source(&setup.repository);
+        let branch = effective_branch(intent.branch.as_ref(), setup.default_branch.as_deref());
+        let source = resolve_source(SourceResolution {
+            git_program: &self.config.git_program,
+            source: &repository_source,
+            repository: &setup.repository,
+            branch,
+            process_pool: self.config.process_pool,
+            github_token: repository_token(&self.config.controller_environment),
+        })
         .await
-        .map_err(|_| TargetAuthorityError::unavailable("source snapshot could not be resolved"))?;
+        .map_err(|_| TargetAuthorityError::unavailable("source could not be resolved"))?;
         let run_id = fresh_host_run_id()?;
         let receipt = controller
             .submit_with_intent_digest_and_exact_environment(
@@ -206,6 +210,13 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
             run_id: receipt.run_id,
         })
     }
+}
+
+fn effective_branch<'a>(
+    run_override: Option<&'a SourceBranchId>,
+    target_default: Option<&'a str>,
+) -> Option<&'a str> {
+    run_override.map(SourceBranchId::as_str).or(target_default)
 }
 
 fn fresh_host_run_id() -> Result<RunId, TargetAuthorityError> {

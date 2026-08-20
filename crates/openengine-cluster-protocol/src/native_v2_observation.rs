@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentAttachEvent, Cursor, ExecutionRef, LogRecord, NodeName, RunId, SubscriptionId, RunSize,
-    RunTitle, SourceSnapshot, TerminalResult,
+    RunTitle, ResolvedSource, TerminalResult,
 };
 
 /// One currently active graph-leaf execution.
@@ -58,7 +58,7 @@ pub struct RunStatusParams {
 pub struct RunStatusResult {
     pub run_id: RunId,
     pub title: RunTitle,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     pub size: RunSize,
     pub at_cursor: Cursor,
     pub status: RunStatus,
@@ -92,7 +92,7 @@ pub struct RunWatchEventNotification {
     pub subscription_id: SubscriptionId,
     pub run_id: RunId,
     pub title: RunTitle,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     pub size: RunSize,
     pub cursor: Cursor,
     pub status: RunStatus,
@@ -181,7 +181,7 @@ pub struct RunForceResult {
     /// Immutable title captured when the run was admitted.
     pub title: RunTitle,
     /// Immutable repository snapshot captured when the run was admitted.
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     /// Immutable execution size selected for the run.
     pub size: RunSize,
     /// Durable cursor after the force request was recorded.

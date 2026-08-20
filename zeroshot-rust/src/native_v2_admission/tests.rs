@@ -1,7 +1,7 @@
 use super::*;
 use crate::native_v2_contract::{
     ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, RunSize, RunTitle,
-    GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF, SessionScope, SourceSnapshot,
+    GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF, SessionScope, ResolvedSource,
 };
 use crate::native_v2_delivery::DeliveryMode;
 use crate::native_v2_delivery::contract::{delivery_result_schema, delivery_signal_labels};
@@ -104,12 +104,12 @@ fn delivery_binding() -> NodeRuntimeBinding {
     }
 }
 
-fn source_snapshot() -> SourceSnapshot {
+fn resolved_source() -> ResolvedSource {
     serde_json::from_str(
         r#"{
             "repository": "open-engine/zeroshot",
-            "targetBranch": "main",
-            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            "branch": "main",
+            "revision": "0123456789abcdef0123456789abcdef01234567"
         }"#,
     )
     .assert_value()
@@ -125,7 +125,7 @@ fn submission(graph: GraphSpec, nodes: BTreeMap<NodeName, NodeRuntimeBinding>) -
             size: RunSize::Standard,
             nodes,
         },
-        source: source_snapshot(),
+        source: resolved_source(),
         submission_key: IdempotencyKey::new("admission-test").assert_value(),
     }
 }
@@ -326,7 +326,7 @@ async fn enforces_harness_model_and_effort_catalog() {
                 binding("claude-sonnet-5", Some(ReasoningEffort::Max)),
             )]),
         },
-        source: source_snapshot(),
+        source: resolved_source(),
         submission_key: IdempotencyKey::new("codex-model").assert_value(),
     };
     assert!(matches!(

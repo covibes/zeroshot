@@ -6,7 +6,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     CompiledGraphIr, DeclaredEnvironment, NodeName, NonEmptyVec, PositiveInteger, RunId, RunSize,
-    RunTitle, SourceSnapshot, StructuralBounds, TerminationWitness, WorkerRef,
+    RunTitle, ResolvedSource, StructuralBounds, TerminationWitness, WorkerRef,
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;
@@ -57,11 +57,11 @@ fn executable(name: &str, verifier: bool) -> Value {
     }
 }
 
-fn source() -> SourceSnapshot {
+fn source() -> ResolvedSource {
     serde_json::from_value(json!({
         "repository": "open-engine/zeroshot",
-        "targetBranch": "main",
-        "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        "branch": "main",
+        "revision": "0123456789abcdef0123456789abcdef01234567"
     }))
     .assert_value()
 }

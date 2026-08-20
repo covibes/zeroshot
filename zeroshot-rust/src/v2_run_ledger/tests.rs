@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use openengine_cluster_protocol::{
     ArtifactRef, CompiledGraphIr, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
-    RunSize, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    RunSize, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
     TerminalResult, WorkerOutcome,
 };
 use serde_json::{Value, json};
@@ -34,10 +34,10 @@ fn admitted_run() -> AdmittedRun {
             size: RunSize::Standard,
             nodes: Default::default(),
         },
-        source: SourceSnapshot {
+        source: ResolvedSource {
             repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
-            target_branch: SourceBranchId::new("main").assert_value(),
-            base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+            branch: SourceBranchId::new("main").assert_value(),
+            revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
                 .assert_value(),
         },
     }

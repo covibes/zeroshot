@@ -361,6 +361,7 @@ async fn live_scenarios_are_admissible_full_graphs() {
                         graph: graph.clone(),
                         initial_input: initial_input.clone(),
                         runtime,
+                        branch: None,
                         submission_key: IdempotencyKey::new(format!("live-{lane:?}-{scenario:?}"))
                             .assert_value(),
                     },

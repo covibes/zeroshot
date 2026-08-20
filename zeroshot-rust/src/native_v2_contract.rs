@@ -16,7 +16,7 @@ use openengine_cluster_protocol::{
 pub use openengine_cluster_protocol::{
     ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, ModelId,
     NodeRuntimeBinding, ReasoningEffort, RunSize, RunSubmission, RunTitle, RuntimePlan,
-    SessionScope, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    SessionScope, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
     MAX_DECLARED_ENVIRONMENT_NAMES,
 };
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ pub const GIT_DELIVERY_PR_WORKER_REF: &str = "builtin.git-delivery.pr@1";
 /// Graph-visible merge delivery worker backed by the shared Git delivery implementation.
 pub const GIT_DELIVERY_MERGE_WORKER_REF: &str = "builtin.git-delivery.merge@1";
 
-/// Source- and identity-neutral request used before a host snapshots mutable source selection.
+/// Identity-neutral request used before a host resolves mutable source selection.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunSubmissionIntent {
@@ -36,6 +36,8 @@ pub struct RunSubmissionIntent {
     pub graph: GraphSpec,
     pub initial_input: Value,
     pub runtime: RuntimePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<SourceBranchId>,
     pub submission_key: IdempotencyKey,
 }
 
@@ -46,6 +48,7 @@ impl From<&RunSubmission> for RunSubmissionIntent {
             graph: submission.graph.clone(),
             initial_input: submission.initial_input.clone(),
             runtime: submission.runtime.clone(),
+            branch: None,
             submission_key: submission.submission_key.clone(),
         }
     }
@@ -60,7 +63,7 @@ pub struct AdmittedRun {
     pub graph: CompiledGraphIr,
     pub initial_input: Value,
     pub runtime: RuntimePlan,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -219,8 +222,8 @@ mod tests {
             },
             "source": {
                 "repository": "open-engine/zeroshot",
-                "targetBranch": "main",
-                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+                "branch": "main",
+                "revision": "0123456789abcdef0123456789abcdef01234567"
             },
             "submissionKey": "submission-1"
         })
@@ -328,8 +331,8 @@ mod tests {
 
         for (pointer, value) in [
             ("/source/repository", json!("not-a-repository")),
-            ("/source/targetBranch", json!("bad..branch")),
-            ("/source/baseRevision", json!("not-an-exact-revision")),
+            ("/source/branch", json!("bad..branch")),
+            ("/source/revision", json!("not-an-exact-revision")),
         ] {
             let mut invalid_source = canonical_submission();
             *invalid_source.pointer_mut(pointer).assert_value() = value;

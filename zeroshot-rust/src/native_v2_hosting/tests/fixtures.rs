@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use openengine_cluster_protocol::{
     DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, RunSize, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
 };
 use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use crate::native_v2_cloud::CapsuleAllocationUnavailable;
 use crate::native_v2_contract::{
     ClaudeProvider, CodexProvider, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission,
 };
-use crate::native_v2_target_authority::{TargetBase, TargetSetupDocument};
+use crate::native_v2_target_authority::TargetSetupDocument;
 use crate::worker_catalog::{self, ReasoningEffort};
 
 use super::super::ProductionHostingConfig;
@@ -62,6 +62,13 @@ impl RepositoryFixture {
             feature_revision,
         }
     }
+
+    pub(super) fn move_feature_to(&self, revision: &str) {
+        git(
+            &self.remote,
+            &["update-ref", "refs/heads/feature", revision],
+        );
+    }
 }
 
 pub(super) fn hosting_config(
@@ -100,10 +107,10 @@ pub(super) fn capsule_config(storage_root: PathBuf) -> ProductionCapsuleConfig {
     }
 }
 
-pub(super) fn setup(base: TargetBase) -> TargetSetupDocument {
+pub(super) fn setup(default_branch: Option<&str>) -> TargetSetupDocument {
     TargetSetupDocument {
         repository: "acme/project".to_owned(),
-        base,
+        default_branch: default_branch.map(str::to_owned),
     }
 }
 
@@ -113,10 +120,10 @@ pub(super) fn submission(runtime: RuntimePlan, revision: &str, key: &str) -> Run
         graph: graph(),
         initial_input: Value::Null,
         runtime,
-        source: SourceSnapshot {
+        source: ResolvedSource {
             repository: SourceRepositoryId::new("acme/project").assert_value_with("repository"),
-            target_branch: SourceBranchId::new("main").assert_value_with("branch"),
-            base_revision: SourceRevisionId::new(revision).assert_value_with("revision"),
+            branch: SourceBranchId::new("main").assert_value_with("branch"),
+            revision: SourceRevisionId::new(revision).assert_value_with("revision"),
         },
         submission_key: IdempotencyKey::new(key).assert_value_with("submission key"),
     }

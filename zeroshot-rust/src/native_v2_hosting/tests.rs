@@ -15,14 +15,24 @@ use crate::native_v2_contract::{self, ExecutionRef, NodeInvocation, RunSubmissio
 use crate::native_v2_runner::{NodeRunRequest, ResolvedEnvironment};
 use crate::native_v2_portable_controller::WorkspaceIdentity;
 use crate::native_v2_supervisor::{RunEnvironment, RunEnvironmentError, RunRuntimeExit};
-use crate::native_v2_target_authority::{TargetAuthorityErrorKind, TargetBase, TargetSetupOutcome};
+use crate::native_v2_target_authority::{TargetAuthorityErrorKind, TargetSetupOutcome};
 
 use super::allocator::{ProductionCapsuleAllocator, monitor_workspace_identity};
-use super::repository::{RepositoryInstall, install_repository, path_source};
+use super::repository::{
+    install_repository, path_source, resolve_source, RepositoryInstall, SourceResolution,
+};
 
 mod fixtures;
 
 use fixtures::*;
+
+#[test]
+fn run_branch_override_wins_over_target_default() {
+    let run = SourceBranchId::new("feature").assert_value_with("run branch");
+    assert_eq!(effective_branch(Some(&run), Some("main")), Some("feature"));
+    assert_eq!(effective_branch(None, Some("main")), Some("main"));
+    assert_eq!(effective_branch(None, None), None);
+}
 
 #[test]
 fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() {
@@ -53,7 +63,7 @@ fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() 
 #[tokio::test]
 async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_claim() {
     let root = TestDirectory::new("hosting-controller");
-    let setup = setup(TargetBase::Default);
+    let setup = setup(None);
     let first = ProductionTargetControllerFactory::new(hosting_config(
         root.path().to_owned(),
         BTreeMap::new(),
@@ -76,7 +86,7 @@ async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_cl
 #[tokio::test]
 async fn production_authority_restores_setup_from_target_storage() {
     let root = TestDirectory::new("hosting-authority-setup");
-    let setup = setup(TargetBase::Default);
+    let setup = setup(None);
     let first =
         build_production_target_authority(hosting_config(root.path().to_owned(), BTreeMap::new()))
             .await
@@ -114,7 +124,7 @@ async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
     let mut config = hosting_config(root.path().to_owned(), BTreeMap::new());
     config.git_program = root.path().join("git-must-not-run");
     let factory = ProductionTargetControllerFactory::new(config);
-    let setup = setup(TargetBase::Default);
+    let setup = setup(None);
     let controller = factory
         .create_controller(&setup)
         .await
@@ -140,50 +150,52 @@ async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
 }
 
 #[tokio::test]
-async fn repository_installer_resolves_default_branch_named_branch_and_exact_revision() {
+async fn repository_resolution_and_installation_preserve_the_exact_revision() {
     let repository = RepositoryFixture::new();
     let root = TestDirectory::new("hosting-installs");
     let pool = test_process_pool();
-    let cases = [
-        (
-            TargetBase::Default,
-            "main",
-            repository.main_revision.as_str(),
-        ),
-        (
-            TargetBase::Branch {
-                branch: "feature".to_owned(),
-            },
-            "feature",
-            repository.feature_revision.as_str(),
-        ),
-        (
-            TargetBase::Revision {
-                revision: repository.main_revision.clone(),
-                target_branch: "release".to_owned(),
-            },
-            "release",
-            repository.main_revision.as_str(),
-        ),
-    ];
-    for (index, (base, expected_branch, expected_revision)) in cases.into_iter().enumerate() {
-        let workspace = root.path().join(format!("workspace-{index}"));
-        writable_directory(&workspace);
-        let source = path_source(&repository.remote);
-        let installed = install_repository(RepositoryInstall {
-            git_program: Path::new("/usr/bin/git"),
-            source: &source,
-            repository: "acme/project",
-            base: &base,
-            workspace: &workspace,
-            process_pool: pool,
-            github_token: None,
-        })
-        .await
-        .assert_value_with("install repository");
-        assert_eq!(installed.target_branch, expected_branch);
-        assert_eq!(installed.base_revision, expected_revision);
-    }
+    let source = path_source(&repository.remote);
+    let default = resolve_source(SourceResolution {
+        git_program: Path::new("/usr/bin/git"),
+        source: &source,
+        repository: "acme/project",
+        branch: None,
+        process_pool: pool,
+        github_token: None,
+    })
+    .await
+    .assert_value_with("resolve remote default");
+    assert_eq!(default.branch.as_str(), "main");
+    assert_eq!(default.revision.as_str(), repository.main_revision);
+
+    let feature = resolve_source(SourceResolution {
+        git_program: Path::new("/usr/bin/git"),
+        source: &source,
+        repository: "acme/project",
+        branch: Some("feature"),
+        process_pool: pool,
+        github_token: None,
+    })
+    .await
+    .assert_value_with("resolve named branch");
+    assert_eq!(feature.branch.as_str(), "feature");
+    assert_eq!(feature.revision.as_str(), repository.feature_revision);
+
+    repository.move_feature_to(&repository.main_revision);
+    let workspace = root.path().join("workspace");
+    writable_directory(&workspace);
+    let installed = install_repository(RepositoryInstall {
+        git_program: Path::new("/usr/bin/git"),
+        source: &source,
+        resolved: &feature,
+        workspace: &workspace,
+        process_pool: pool,
+        github_token: None,
+    })
+    .await
+    .assert_value_with("install exact resolved revision");
+    assert_eq!(installed.target_branch, "feature");
+    assert_eq!(installed.base_revision, repository.feature_revision);
 }
 
 #[tokio::test]

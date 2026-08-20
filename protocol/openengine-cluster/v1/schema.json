@@ -3585,6 +3585,32 @@
         }
       ]
     },
+    "ResolvedSource": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "revision"
+      ],
+      "type": "object"
+    },
     "ResubmitParams": {
       "additionalProperties": false,
       "properties": {
@@ -3813,7 +3839,7 @@
           "description": "Immutable execution size selected for the run."
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot",
+          "$ref": "#/$defs/ResolvedSource",
           "description": "Immutable repository snapshot captured when the run was admitted."
         },
         "status": {
@@ -4050,7 +4076,7 @@
           "$ref": "#/$defs/RunSize"
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot"
+          "$ref": "#/$defs/ResolvedSource"
         },
         "status": {
           "$ref": "#/$defs/RunStatus"
@@ -4084,7 +4110,7 @@
           "$ref": "#/$defs/RuntimePlan"
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot"
+          "$ref": "#/$defs/ResolvedSource"
         },
         "submissionKey": {
           "maxLength": 256,
@@ -4153,7 +4179,7 @@
           "$ref": "#/$defs/RunSize"
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot"
+          "$ref": "#/$defs/ResolvedSource"
         },
         "status": {
           "$ref": "#/$defs/RunStatus"
@@ -4324,32 +4350,6 @@
         "node_instance"
       ],
       "type": "string"
-    },
-    "SourceSnapshot": {
-      "additionalProperties": false,
-      "properties": {
-        "baseRevision": {
-          "pattern": "^[0-9a-f]{40}$",
-          "type": "string"
-        },
-        "repository": {
-          "maxLength": 255,
-          "minLength": 3,
-          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
-          "type": "string"
-        },
-        "targetBranch": {
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "repository",
-        "targetBranch",
-        "baseRevision"
-      ],
-      "type": "object"
     },
     "StopMode": {
       "enum": [

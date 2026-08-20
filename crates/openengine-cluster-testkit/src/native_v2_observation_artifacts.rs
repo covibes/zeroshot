@@ -9,7 +9,7 @@ use openengine_cluster_protocol::{
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunLogsResult,
     RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
     RunWatchParams, RunWatchResult, SourceBranchId, SourceRepositoryId, SourceRevisionId,
-    SourceSnapshot, SubscriptionId, TerminalResult,
+    ResolvedSource, SubscriptionId, TerminalResult,
 };
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Value};
@@ -79,12 +79,11 @@ fn title() -> RunTitle {
     RunTitle::new("Repair checkout flow").assert_value()
 }
 
-pub fn native_v2_source_fixture() -> SourceSnapshot {
-    SourceSnapshot {
+pub fn native_v2_source_fixture() -> ResolvedSource {
+    ResolvedSource {
         repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
-        target_branch: SourceBranchId::new("main").assert_value(),
-        base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
-            .assert_value(),
+        branch: SourceBranchId::new("main").assert_value(),
+        revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567").assert_value(),
     }
 }
 

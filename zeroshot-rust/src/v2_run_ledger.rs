@@ -10,7 +10,7 @@ use std::fmt;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     Cursor, IdempotencyKey, Phase, PositiveInteger, RunId, RunSize, RunTitle, Sha256Digest,
-    SourceSnapshot, TerminalResult, WorkerOutcome,
+    ResolvedSource, TerminalResult, WorkerOutcome,
 };
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -96,7 +96,7 @@ impl RunPhase {
 pub struct RunSnapshot {
     pub run_id: RunId,
     pub title: RunTitle,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     pub size: RunSize,
     pub cursor: Cursor,
     pub phase: RunPhase,
@@ -276,7 +276,7 @@ pub struct SnapshotAndTail {
 pub struct RunSummary {
     pub run_id: RunId,
     pub title: RunTitle,
-    pub source: SourceSnapshot,
+    pub source: ResolvedSource,
     pub size: RunSize,
     pub cursor: Cursor,
     pub phase: RunPhase,

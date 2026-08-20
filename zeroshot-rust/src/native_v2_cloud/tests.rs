@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, NodeRuntimeBinding, RunForceParams,
     RunId, RunSize, RunStatus, RunStatusParams, RunSubmitParams, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot, TerminalResult,
+    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource, TerminalResult,
     WorkerOutcome,
 };
 use serde_json::{json, Value};

@@ -138,10 +138,10 @@ pub(super) async fn admitted(kind: RuntimePlanKind) -> AdmittedRun {
             graph: shipping_graph(),
             initial_input: json!({}),
             runtime: runtime(kind),
-            source: SourceSnapshot {
+            source: ResolvedSource {
                 repository: SourceRepositoryId::new("acme/project").assert_value_with("repository"),
-                target_branch: SourceBranchId::new("main").assert_value_with("target branch"),
-                base_revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                branch: SourceBranchId::new("main").assert_value_with("target branch"),
+                revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                     .assert_value_with("base revision"),
             },
             submission_key: IdempotencyKey::new("candidate-config").assert_value_with("key"),

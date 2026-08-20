@@ -45,11 +45,11 @@ pub(super) fn request_with_key(input: Value, submission_key: &str) -> RunSubmitP
     }
 }
 
-pub(super) fn source() -> SourceSnapshot {
-    SourceSnapshot {
+pub(super) fn source() -> ResolvedSource {
+    ResolvedSource {
         repository: SourceRepositoryId::new("owner/repo").assert_value_with("repository"),
-        target_branch: SourceBranchId::new("main").assert_value_with("branch"),
-        base_revision: SourceRevisionId::new("1111111111111111111111111111111111111111")
+        branch: SourceBranchId::new("main").assert_value_with("branch"),
+        revision: SourceRevisionId::new("1111111111111111111111111111111111111111")
             .assert_value_with("revision"),
     }
 }

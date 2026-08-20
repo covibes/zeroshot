@@ -174,8 +174,8 @@ fn software_change_runtime() -> RuntimePlan {
 fn source() -> Value {
     json!({
         "repository":"open-engine/zeroshot",
-        "targetBranch":"main",
-        "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+        "branch":"main",
+        "revision":"0123456789abcdef0123456789abcdef01234567"
     })
 }
 
@@ -295,7 +295,7 @@ async fn run_follows_by_default_and_forwards_per_run_intent_unchanged() {
         &files.graph,
         &files.input,
         &files.runtime,
-        &["--submission-key", "stable-key"],
+        &["--branch", "feature", "--submission-key", "stable-key"],
     ))
     .assert_value();
     let backend = FakeBackend::default();
@@ -312,6 +312,7 @@ async fn run_follows_by_default_and_forwards_per_run_intent_unchanged() {
                 title: RunTitle::new("Repair checkout").assert_value(),
                 runtime: runtime(),
                 input: json!({"task":"ship it"}),
+                branch: Some("feature".to_owned()),
                 submission_key: "stable-key".to_owned(),
             },
             Call::Watch {

@@ -230,9 +230,11 @@ backend-neutral behavior observable through public dispatcher and typed subscrip
 The existing integration binaries remain the richer reference regression suite; their
 implementation-specific vectors are not represented as portable external certification.
 `zeroshot-rust/` ships one portable, auth-free native-v2 engine/library for exactly one run and a
-private controller-process mode around the same engine. A host assigns the `RunId`, snapshots the
-immutable source, resolves the submission, and passes only the exact bounded run-scoped environment
-declared by its runtime plan. The controller does not allocate identity, authenticate users, inspect
+private controller-process mode around the same engine. A host assigns the `RunId`, resolves the
+selected repository branch to one exact immutable revision, and passes only the exact bounded
+run-scoped environment declared by its runtime plan. Run branch selection overrides the target
+default branch; otherwise the remote default branch is used. The controller does not allocate
+identity, authenticate users, inspect
 target-wide inventory, queue work, or choose another run. Local and hosted compositions reuse this
 same engine and differ only in their host adapters.
 

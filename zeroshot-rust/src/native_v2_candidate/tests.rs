@@ -36,7 +36,7 @@ use crate::native_v2_cloud::{
 };
 use crate::native_v2_contract::{
     CodexProvider, DeclaredEnvironment, EnvironmentVariableName, NodeInvocation, RunSize,
-    RunSubmission, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    RunSubmission, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
 };
 use crate::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,
@@ -382,6 +382,7 @@ async fn submit_through_cli(
             graph: RunGraph::File(graph_path),
             input: input_path,
             runtime_config: runtime_path,
+            branch: None,
             detach: true,
             submission_key: Some(
                 IdempotencyKey::new("candidate-e2e").assert_value_with("submission key"),

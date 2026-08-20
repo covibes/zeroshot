@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey, RunTitle};
+use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey, RunTitle, SourceBranchId};
 
 use super::{
     BuiltinGraphTemplate, NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph, RunSelector,
@@ -135,13 +135,11 @@ fn parse_target_login(args: &[String]) -> Result<NativeV2CliCommand, NativeV2Cli
 }
 
 fn parse_target_setup(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
-    let (name, options) =
-        parse_target_options(args, &["--repository", "--base", "--target-branch"])?;
+    let (name, options) = parse_target_options(args, &["--repository", "--branch"])?;
     Ok(NativeV2CliCommand::TargetSetup(TargetSetup {
         name,
         repository: options.required("--repository")?,
-        base: options.optional("--base"),
-        target_branch: options.optional("--target-branch"),
+        default_branch: optional_branch(&options)?,
     }))
 }
 
@@ -164,25 +162,54 @@ fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
             "--template",
             "--input",
             "--runtime-config",
+            "--branch",
             "--submission-key",
         ],
         &["--detach", "-d", "--pr", "--ship"],
     )?;
-    let submission_key = options
-        .optional("--submission-key")
-        .map(IdempotencyKey::new)
-        .transpose()
-        .map_err(|error| usage(format!("invalid --submission-key: {error}")))?;
+    let (target, branch) = parse_run_route(&options)?;
     Ok(NativeV2CliCommand::Run(RunCommand {
-        target: optional_target(&options)?,
+        target,
         title: RunTitle::new(options.required("--title")?)
             .map_err(|error| usage(format!("invalid --title: {error}")))?,
         graph: parse_run_graph(&options)?,
         input: PathBuf::from(options.required("--input")?),
         runtime_config: PathBuf::from(options.required("--runtime-config")?),
-        detach: options.flag("--detach") || options.flag("-d"),
-        submission_key,
+        branch,
+        detach: detach_requested(&options),
+        submission_key: parse_submission_key(&options)?,
     }))
+}
+
+fn parse_run_route(
+    options: &Options,
+) -> Result<(Option<String>, Option<SourceBranchId>), NativeV2CliError> {
+    let target = optional_target(options)?;
+    let branch = optional_branch(options)?;
+    if target.is_none() && branch.is_some() {
+        return Err(usage("--branch requires --target"));
+    }
+    Ok((target, branch))
+}
+
+fn detach_requested(options: &Options) -> bool {
+    options.flag("--detach") || options.flag("-d")
+}
+
+fn parse_submission_key(options: &Options) -> Result<Option<IdempotencyKey>, NativeV2CliError> {
+    options
+        .optional("--submission-key")
+        .map(IdempotencyKey::new)
+        .transpose()
+        .map_err(|error| usage(format!("invalid --submission-key: {error}")))
+}
+
+fn optional_branch(options: &Options) -> Result<Option<SourceBranchId>, NativeV2CliError> {
+    options
+        .optional("--branch")
+        .map(SourceBranchId::new)
+        .transpose()
+        .map_err(|error| usage(format!("invalid --branch: {error}")))
 }
 
 fn parse_run_graph(options: &Options) -> Result<RunGraph, NativeV2CliError> {

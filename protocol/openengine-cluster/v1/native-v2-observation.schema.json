@@ -500,6 +500,32 @@
         }
       ]
     },
+    "ResolvedSource": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "branch",
+        "revision"
+      ],
+      "type": "object"
+    },
     "RunAttachEventNotification": {
       "additionalProperties": false,
       "description": "One live read-only attach event. Carrying both identities prevents events from simultaneous\nverifier attachments being confused on a multiplexed transport.",
@@ -601,7 +627,7 @@
           "description": "Immutable execution size selected for the run."
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot",
+          "$ref": "#/$defs/ResolvedSource",
           "description": "Immutable repository snapshot captured when the run was admitted."
         },
         "status": {
@@ -817,7 +843,7 @@
           "$ref": "#/$defs/RunSize"
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot"
+          "$ref": "#/$defs/ResolvedSource"
         },
         "status": {
           "$ref": "#/$defs/RunStatus"
@@ -853,7 +879,7 @@
           "$ref": "#/$defs/RunSize"
         },
         "source": {
-          "$ref": "#/$defs/SourceSnapshot"
+          "$ref": "#/$defs/ResolvedSource"
         },
         "status": {
           "$ref": "#/$defs/RunStatus"
@@ -915,32 +941,6 @@
         "subscriptionId",
         "runId",
         "atCursor"
-      ],
-      "type": "object"
-    },
-    "SourceSnapshot": {
-      "additionalProperties": false,
-      "properties": {
-        "baseRevision": {
-          "pattern": "^[0-9a-f]{40}$",
-          "type": "string"
-        },
-        "repository": {
-          "maxLength": 255,
-          "minLength": 3,
-          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
-          "type": "string"
-        },
-        "targetBranch": {
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "repository",
-        "targetBranch",
-        "baseRevision"
       ],
       "type": "object"
     },

@@ -396,8 +396,8 @@ mod tests {
                         "title":"Protocol client test",
                         "source":{
                             "repository":"open-engine/zeroshot",
-                            "targetBranch":"main",
-                            "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                            "branch":"main",
+                            "revision":"0123456789abcdef0123456789abcdef01234567"
                         },
                         "size":"tiny",
                         "status":{"phase":"running","activeExecutions":[]}
@@ -414,8 +414,8 @@ mod tests {
                         "title":"Protocol client test",
                         "source":{
                             "repository":"open-engine/zeroshot",
-                            "targetBranch":"main",
-                            "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                            "branch":"main",
+                            "revision":"0123456789abcdef0123456789abcdef01234567"
                         },
                         "size":"tiny",
                         "status":{"phase":"running","activeExecutions":[]}
