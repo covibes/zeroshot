@@ -1,19 +1,19 @@
-# Zeroshot v2 self-hosted target
+# Zeroshot Rust self-hosted target
 
-This image runs one long-lived, no-login Zeroshot target for a trusted private VM. It can host
-many runs, each with its own workspace and runtime homes. It includes the native server, Codex,
-Claude Code, Git, and GitHub CLI. It is not a tenant-isolation boundary and does not include a queue
-or scheduler.
+This image runs one long-lived, no-login Zeroshot Rust target for a trusted private VM. It can
+host many runs, each with its own workspace and runtime homes. It includes the native server,
+Codex, Claude Code, Git, and GitHub CLI. It is not a tenant-isolation boundary and does not include
+a queue or scheduler.
 
-Build it from the root of a Zeroshot source checkout; the npm package does not contain the Rust
-workspace used by this Dockerfile. Start it on host loopback:
+Build it from the root of a Zeroshot source checkout; the Node npm package does not contain the
+Rust workspace used by this Dockerfile. Start it on host loopback:
 
 ```sh
-docker build -f docker/zeroshot-v2-target/Dockerfile -t zeroshot-v2-target .
-docker run -d --name zeroshot-v2-target --restart unless-stopped \
+docker build -f docker/zeroshot-rust-target/Dockerfile -t zeroshot-rust-target .
+docker run -d --name zeroshot-rust-target --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
-  -v zeroshot-v2-data:/var/lib/zeroshot/native-v2 \
-  zeroshot-v2-target
+  -v zeroshot-rust-data:/var/lib/zeroshot/native-v2 \
+  zeroshot-rust-target
 ```
 
 Register and configure the target with the native CLI:
@@ -34,8 +34,8 @@ ANTHROPIC_API_KEY=... GH_TOKEN=... zeroshot-rust run \
   --title "Ship the change" \
   --template software-change \
   --ship \
-  --input docker/zeroshot-v2-target/examples/software-change-input.json \
-  --runtime-config docker/zeroshot-v2-target/examples/claude-anthropic-runtime.json
+  --input docker/zeroshot-rust-target/examples/software-change-input.json \
+  --runtime-config docker/zeroshot-rust-target/examples/claude-anthropic-runtime.json
 ```
 
 Use `list`, `status`, `watch`, `logs`, and read-only `attach` with `--target vm`. Direct targets

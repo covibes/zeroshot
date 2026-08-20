@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::{
     BuiltinGraphTemplate, CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal,
     CliRunStatus, CliRunWatchEventNotification, NativeV2CliBackend, NativeV2CliCommand,
-    NativeV2CliError, RunCommand, RunSelector, TemplateDelivery, HELP,
+    NativeV2CliError, RunCommand, RunSelector, TemplateDelivery,
 };
 #[path = "execution/attach.rs"]
 mod attach;
@@ -64,12 +64,12 @@ pub fn try_execute_native_v2_static(
     command: &NativeV2CliCommand,
     output: &mut impl Write,
 ) -> Result<Option<CliOutcome>, NativeV2CliError> {
+    if let Some(text) = command.product_info() {
+        output.write_all(text.as_bytes())?;
+        output.flush()?;
+        return Ok(Some(CliOutcome::Completed));
+    }
     let outcome = match command {
-        NativeV2CliCommand::Help => {
-            output.write_all(HELP.as_bytes())?;
-            output.flush()?;
-            CliOutcome::Completed
-        }
         NativeV2CliCommand::TemplateList => execute_template_list(output)?,
         NativeV2CliCommand::TemplateShow { template, delivery } => {
             execute_template_show(*template, *delivery, output)?

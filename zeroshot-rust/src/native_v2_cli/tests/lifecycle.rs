@@ -65,7 +65,7 @@ async fn watch_surfaces_a_permanent_reopen_error() {
 
     assert_eq!(
         error.to_string(),
-        "native-v2 OECP request failed: hosted watch authorization rejected"
+        "Zeroshot Rust OECP request failed: hosted watch authorization rejected"
     );
     assert_cursor_calls(
         &backend.calls(),

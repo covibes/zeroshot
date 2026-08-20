@@ -37,6 +37,12 @@ zeroshot
 
 Requires **Node ≥ 22** and one supported provider. Guided setup detects installed providers, chooses a default, and configures worktree isolation for fresh repositories. Linux and macOS today; Windows is deferred.
 
+This repository also contains **Zeroshot Rust**, the independent native product and `zeroshot-rust`
+CLI. It has its own releases and self-hosted target image; see the
+[distribution contract](docs/zeroshot-rust-distribution.md) and
+[target image guide](docker/zeroshot-rust-target/README.md). The remainder of this README describes
+the established Node product.
+
 ## First run
 
 ```bash

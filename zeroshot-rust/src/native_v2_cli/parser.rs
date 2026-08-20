@@ -48,10 +48,19 @@ fn parse_primary_command(
 ) -> Result<NativeV2CliCommand, NativeV2CliError> {
     match command {
         "help" | "--help" | "-h" => exact_help(args),
+        "version" | "--version" | "-V" => exact_version(args),
         "target" => parse_target(argument_tail(args, 1)?),
         "run" => parse_run(argument_tail(args, 1)?),
         "list" => parse_list(argument_tail(args, 1)?),
-        _ => Err(usage(format!("unknown native-v2 command {command:?}"))),
+        _ => Err(usage(format!("unknown zeroshot-rust command {command:?}"))),
+    }
+}
+
+fn exact_version(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
+    if args.len() == 1 {
+        Ok(NativeV2CliCommand::Version)
+    } else {
+        Err(usage("version accepts no arguments"))
     }
 }
 

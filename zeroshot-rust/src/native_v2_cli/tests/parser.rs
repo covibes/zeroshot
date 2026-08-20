@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn parser_exposes_static_help_and_version_commands() {
+    assert_eq!(
+        parse_native_v2_args(args(&["--version"])).assert_value(),
+        NativeV2CliCommand::Version
+    );
+    assert_eq!(
+        parse_native_v2_args(args(&["version"])).assert_value(),
+        NativeV2CliCommand::Version
+    );
+    assert!(parse_native_v2_args(args(&["--version", "extra"])).is_err());
+}
+
+#[test]
 fn parser_is_the_agreed_lean_hosted_surface() {
     let run = parse_native_v2_args(args(&[
         "run",

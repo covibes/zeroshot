@@ -94,7 +94,7 @@ pub async fn serve_direct_target(config: DirectTargetServeConfig) -> Result<(), 
         endpoint,
     )?);
     eprintln!(
-        "zeroshot native-v2 direct target listening on {} as {}",
+        "Zeroshot Rust direct target listening on {} as {}",
         config.listen, config.public_origin
     );
     server.serve(listener).await?;

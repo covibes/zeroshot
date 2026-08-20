@@ -123,6 +123,7 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
         | NativeV2CliCommand::ForceStop(run) => run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
         NativeV2CliCommand::Help
+        | NativeV2CliCommand::Version
         | NativeV2CliCommand::TemplateList
         | NativeV2CliCommand::TemplateShow { .. }
         | NativeV2CliCommand::TargetAdd(_)

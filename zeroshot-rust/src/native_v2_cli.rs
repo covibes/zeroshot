@@ -49,8 +49,9 @@ pub use parser::parse_native_v2_args;
 mod tests;
 
 pub const HELP: &str = "\
-zeroshot v2
+zeroshot-rust
 
+  --version
   target add <name> --url <origin> [--direct]
   target login <name>
   target setup <name> --repository <owner/name> [--branch <branch>]
@@ -68,6 +69,8 @@ zeroshot v2
   attach <run-id> <execution-ref> [--target <name>]
   force-stop <run-id> [--target <name>]
 ";
+
+pub const VERSION: &str = concat!("zeroshot-rust ", env!("CARGO_PKG_VERSION"), "\n");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetAdd {
@@ -113,6 +116,7 @@ pub struct RunSelector {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeV2CliCommand {
     Help,
+    Version,
     TargetAdd(TargetAdd),
     TargetLogin {
         name: String,
@@ -135,6 +139,16 @@ pub enum NativeV2CliCommand {
         execution: ExecutionRef,
     },
     ForceStop(RunSelector),
+}
+
+impl NativeV2CliCommand {
+    fn product_info(&self) -> Option<&'static str> {
+        match self {
+            Self::Help => Some(HELP),
+            Self::Version => Some(VERSION),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,9 +193,9 @@ pub enum NativeV2CliError {
     Target(String),
     #[error("local controller operation failed: {0}")]
     Local(String),
-    #[error("native-v2 OECP request failed: {0}")]
+    #[error("Zeroshot Rust OECP request failed: {0}")]
     Protocol(String),
-    #[error("native-v2 observation transport disconnected")]
+    #[error("Zeroshot Rust observation transport disconnected")]
     Disconnected,
     #[error("run finished unsuccessfully")]
     RunFailed,
