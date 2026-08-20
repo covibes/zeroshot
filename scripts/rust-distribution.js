@@ -841,7 +841,9 @@ function checkPublicationJobs(jobs) {
     'Install exact shim tarball against verified release inputs'
   ).run;
   if (
-    !shimInstall?.includes('npm install --ignore-scripts --prefix "$install_root"') ||
+    !shimInstall?.includes(
+      'npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"'
+    ) ||
     !shimInstall.includes('tarballs=(./shim-release/*.tgz)') ||
     !shimInstall.includes('$install_root/node_modules/.bin/zeroshot-rust')
   ) {

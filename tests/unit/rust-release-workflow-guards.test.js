@@ -67,7 +67,9 @@ describe('Rust release workflow causal guards', function () {
       rejectsRustMutation(before, after, error);
     }
   });
+});
 
+describe('Rust npm shim release guards', function () {
   it('keeps dry-run inputs non-publishing and the npm shim independently recoverable', function () {
     rejectsRustMutation('          - dry-run\n', '', /Rust release actions/);
     rejectsRustMutation(
@@ -93,6 +95,11 @@ describe('Rust release workflow causal guards', function () {
     rejectsRustMutation(
       'tarballs=(./shim-release/*.tgz)',
       'tarballs=(shim-release/*.tgz)',
+      /exact packed tarball/
+    );
+    rejectsRustMutation(
+      'npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"',
+      'npm install --ignore-scripts --prefix "$install_root" ./npm/zeroshot-rust',
       /exact packed tarball/
     );
     rejectsRustMutation(
