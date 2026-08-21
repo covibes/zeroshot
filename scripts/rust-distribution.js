@@ -464,6 +464,20 @@ function exactJson(label, expected, actual) {
   }
 }
 
+function requireFragments(label, value, fragments) {
+  const missing = fragments.filter((fragment) => !value?.includes(fragment));
+  if (missing.length > 0) {
+    failIntegrity(`${label} is missing: ${missing.join(', ')}`);
+  }
+}
+
+function exactCondition(label, expected, actual) {
+  const normalize = (value) => String(value).replace(/\s+/g, ' ').trim();
+  if (normalize(actual) !== normalize(expected)) {
+    failIntegrity(`${label} has changed`);
+  }
+}
+
 function findStep(job, name) {
   const step = job.steps?.find((candidate) => candidate.name === name);
   if (!step) failIntegrity(`job is missing enabled step ${name}`);
@@ -716,11 +730,10 @@ function checkManifestJob(jobs) {
 
 function checkManualInputs(document, jobs) {
   const dispatch = document.on?.workflow_dispatch;
-  exactJson(
-    'Rust release actions',
-    ['dry-run', 'release', 'publish-npm-shim'],
-    dispatch?.inputs?.action?.options
-  );
+  exactJson('Rust release actions', ['dry-run', 'release'], dispatch?.inputs?.action?.options);
+  if (JSON.stringify(document).includes('publish-npm-shim')) {
+    failIntegrity('Rust release retains the removed standalone npm shim action');
+  }
   if (!dispatch.inputs.version?.required || !dispatch.inputs.release_commit?.required) {
     failIntegrity('manual Rust release requires explicit version and commit inputs');
   }
@@ -827,13 +840,29 @@ function checkPublicationJobs(jobs) {
   ) {
     failIntegrity('GitHub Release assets are not verified and uploaded without overwrite');
   }
+}
 
+function checkShimInputJob(jobs) {
   const shimInput = jobs['rust-shim-input'];
-  if (
-    !shimInput.if?.includes("inputs.action == 'dry-run'") ||
-    !shimInput.if.includes("inputs.action == 'publish-npm-shim'")
-  ) {
-    failIntegrity('npm shim input is not exercised by dry-run and explicit shim publication');
+  exactJson(
+    'rust-shim-input dependencies',
+    ['plan', 'rust-manifest', 'rust-publish'],
+    [...(shimInput?.needs || [])].sort()
+  );
+  exactCondition(
+    'npm shim input is not exercised by dry-run and complete release',
+    `always() &&
+      needs.plan.result == 'success' &&
+      needs.rust-manifest.result == 'success' &&
+      (
+        inputs.action == 'dry-run' ||
+        (inputs.action == 'release' && needs.rust-publish.result == 'success')
+      )`,
+    shimInput.if
+  );
+  const publishedShimInput = findStep(shimInput, 'Download published Rust distribution');
+  if (publishedShimInput.if !== "inputs.action == 'release'") {
+    failIntegrity('release shim input does not come from published GitHub assets');
   }
   findStep(shimInput, 'Verify exact shim distribution inputs');
   findStep(shimInput, 'Pack exact npm shim publication input');
@@ -841,15 +870,15 @@ function checkPublicationJobs(jobs) {
     shimInput,
     'Install exact shim tarball against verified release inputs'
   ).run;
-  if (
-    !shimInstall?.includes(
-      'npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"'
-    ) ||
-    !shimInstall.includes('tarballs=(./shim-release/*.tgz)') ||
-    !shimInstall.includes('$install_root/node_modules/.bin/zeroshot-rust')
-  ) {
-    failIntegrity('npm shim input is not installed and invoked from the exact packed tarball');
-  }
+  requireFragments(
+    'npm shim input is not installed and invoked from the exact packed tarball',
+    shimInstall,
+    [
+      'npm install --ignore-scripts --prefix "$install_root" "${tarballs[0]}"',
+      'tarballs=(./shim-release/*.tgz)',
+      '$install_root/node_modules/.bin/zeroshot-rust',
+    ]
+  );
   const shimDryRun = findStep(shimInput, 'Dry-run npm shim publication');
   if (shimDryRun.if !== "inputs.action == 'dry-run'") {
     failIntegrity('npm shim dry-run must not gate recoverable publication');
@@ -858,23 +887,35 @@ function checkPublicationJobs(jobs) {
     failIntegrity('npm shim dry-run must publish the exact local tarball');
   }
   findStep(shimInput, 'Upload exact npm shim publication input');
+}
 
+function checkShimPublishJob(jobs) {
   const shimPublish = jobs['rust-shim-publish'];
+  exactJson(
+    'rust-shim-publish dependencies',
+    ['plan', 'rust-image-publish', 'rust-shim-input'],
+    [...(shimPublish?.needs || [])].sort()
+  );
+  exactCondition(
+    'npm shim publication is not the final OIDC-authorized release step',
+    `always() &&
+      inputs.action == 'release' &&
+      needs.rust-image-publish.result == 'success' &&
+      needs.rust-shim-input.result == 'success'`,
+    shimPublish.if
+  );
   if (
     !shimPublish.if?.trim().startsWith('always() &&') ||
-    !shimPublish.if?.includes("inputs.action == 'publish-npm-shim'") ||
     shimPublish.permissions?.['id-token'] !== 'write'
   ) {
-    failIntegrity('npm shim publication is not a separate OIDC-authorized action');
+    failIntegrity('npm shim publication is not the final OIDC-authorized release step');
   }
   const npmPublish = findStep(shimPublish, 'Idempotently publish standalone Rust shim package').run;
-  if (
-    !npmPublish?.includes('npm view "$package" version') ||
-    !npmPublish.includes('npm view "$package" dist.integrity') ||
-    !npmPublish.includes('npm publish --provenance --access public ./shim-release/*.tgz')
-  ) {
-    failIntegrity('npm shim publication is not idempotently recoverable');
-  }
+  requireFragments('npm shim publication is not idempotently recoverable', npmPublish, [
+    'npm view "$package" version',
+    'npm view "$package" dist.integrity',
+    'npm publish --provenance --access public ./shim-release/*.tgz',
+  ]);
 }
 
 function checkNodeReleaseIndependence(document) {
@@ -979,6 +1020,8 @@ function checkRepository(
   checkManualInputs(document, document.jobs);
   checkImageJobs(document.jobs);
   checkPublicationJobs(document.jobs);
+  checkShimInputJob(document.jobs);
+  checkShimPublishJob(document.jobs);
   checkNodeReleaseIndependence(nodeDocument);
   checkShimTargets(shimTargets);
   checkScriptDependencies(packageManifest, packageLock);

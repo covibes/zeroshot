@@ -206,9 +206,9 @@ Node and Rust CI lanes are selected by `.github/ci-path-classifier.js`; shared o
 both. Keep the aggregate `required` check stable. Node release analysis and notes must filter every
 Rust-only commit since the last Node tag, not just the triggering commit. Rust releases are manual,
 use an exact `main` commit and explicit version, and publish `zeroshot-rust-vX.Y.Z`, five native
-archives with `SHA256SUMS`, and the Linux AMD64 `zeroshot-rust-target` image. The optional npm shim
-is published separately only after those GitHub assets exist. Rust GitHub Releases are never marked
-repository-wide latest.
+archives with `SHA256SUMS`, and the Linux AMD64 `zeroshot-rust-target` image. The npm shim
+is published by the same release only after the GitHub assets exist and the image passes anonymous
+installation. Rust GitHub Releases are never marked repository-wide latest.
 The published Node bindings are the standalone `@the-open-engine/zeroshot/cluster` and
 `@the-open-engine/zeroshot/hosted-session` subpaths. Hosted-session owns only short-lived access
 renewal and authenticated reconnect over the public cluster client; provider capsule APIs remain
@@ -1274,7 +1274,7 @@ Multiple CI jobs fail → Diagnose each independently.
   Conventional squash titles select patch/minor/major, and Rust-only history is excluded.
 - Zeroshot Rust releases only by explicit `release-rust.yml` dispatch with a version and exact
   `main` commit. Its canonical outputs are GitHub archives/checksums and the Linux AMD64 GHCR image;
-  the npm downloader shim is optional and separately published.
+  the same release finishes by publishing the npm downloader shim.
 - Checked-in versions are deliberately non-authoritative and are staged only in release workspaces.
 - There is no release-promotion PR and no `dev -> main` synchronization step.
 

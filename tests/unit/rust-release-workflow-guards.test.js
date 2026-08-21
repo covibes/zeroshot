@@ -75,12 +75,32 @@ describe('Rust release workflow causal guards', function () {
 });
 
 describe('Rust npm shim release guards', function () {
-  it('keeps dry-run inputs non-publishing and the npm shim independently recoverable', function () {
+  it('keeps dry-run non-publishing and finishes releases with a recoverable npm shim', function () {
     rejectsRustMutation('          - dry-run\n', '', /Rust release actions/);
     rejectsRustMutation(
-      '  rust-shim-publish:\n    needs: [plan, rust-shim-input]\n    if: |\n      always() &&\n',
-      '  rust-shim-publish:\n    needs: [plan, rust-shim-input]\n    if: |\n      !always() &&\n',
-      /separate OIDC-authorized action/
+      '  rust-shim-publish:\n    needs: [plan, rust-image-publish, rust-shim-input]\n    if: |\n      always() &&\n',
+      '  rust-shim-publish:\n    needs: [plan, rust-image-publish, rust-shim-input]\n    if: |\n      !always() &&\n',
+      /final OIDC-authorized release step/
+    );
+    rejectsRustMutation(
+      "      needs.rust-image-publish.result == 'success' &&\n",
+      "      needs.rust-image-publish.result == 'success' ||\n",
+      /final OIDC-authorized release step/
+    );
+    rejectsRustMutation(
+      "      needs.rust-shim-input.result == 'success'\n",
+      "      needs.rust-shim-input.result == 'failure'\n",
+      /final OIDC-authorized release step/
+    );
+    rejectsRustMutation(
+      "      needs.rust-manifest.result == 'success' &&\n",
+      "      needs.rust-manifest.result == 'success' ||\n",
+      /dry-run and complete release/
+    );
+    rejectsRustMutation(
+      "        if: inputs.action == 'release'\n        env:\n          GH_TOKEN: ${{ github.token }}",
+      "        if: inputs.action == 'dry-run'\n        env:\n          GH_TOKEN: ${{ github.token }}",
+      /published GitHub assets/
     );
     rejectsRustMutation(
       '      contents: read\n    env:\n      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}',
