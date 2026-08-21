@@ -471,6 +471,13 @@ function requireFragments(label, value, fragments) {
   }
 }
 
+function exactCondition(label, expected, actual) {
+  const normalize = (value) => String(value).replace(/\s+/g, ' ').trim();
+  if (normalize(actual) !== normalize(expected)) {
+    failIntegrity(`${label} has changed`);
+  }
+}
+
 function findStep(job, name) {
   const step = job.steps?.find((candidate) => candidate.name === name);
   if (!step) failIntegrity(`job is missing enabled step ${name}`);
@@ -842,15 +849,16 @@ function checkShimInputJob(jobs) {
     ['plan', 'rust-manifest', 'rust-publish'],
     [...(shimInput?.needs || [])].sort()
   );
-  requireFragments(
+  exactCondition(
     'npm shim input is not exercised by dry-run and complete release',
-    shimInput.if,
-    [
-      "inputs.action == 'dry-run'",
-      "inputs.action == 'release'",
-      "needs.rust-manifest.result == 'success'",
-      "needs.rust-publish.result == 'success'",
-    ]
+    `always() &&
+      needs.plan.result == 'success' &&
+      needs.rust-manifest.result == 'success' &&
+      (
+        inputs.action == 'dry-run' ||
+        (inputs.action == 'release' && needs.rust-publish.result == 'success')
+      )`,
+    shimInput.if
   );
   const publishedShimInput = findStep(shimInput, 'Download published Rust distribution');
   if (publishedShimInput.if !== "inputs.action == 'release'") {
@@ -888,14 +896,13 @@ function checkShimPublishJob(jobs) {
     ['plan', 'rust-image-publish', 'rust-shim-input'],
     [...(shimPublish?.needs || [])].sort()
   );
-  requireFragments(
+  exactCondition(
     'npm shim publication is not the final OIDC-authorized release step',
-    shimPublish.if,
-    [
-      "inputs.action == 'release'",
-      "needs.rust-image-publish.result == 'success'",
-      "needs.rust-shim-input.result == 'success'",
-    ]
+    `always() &&
+      inputs.action == 'release' &&
+      needs.rust-image-publish.result == 'success' &&
+      needs.rust-shim-input.result == 'success'`,
+    shimPublish.if
   );
   if (
     !shimPublish.if?.trim().startsWith('always() &&') ||

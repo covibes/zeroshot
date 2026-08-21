@@ -84,7 +84,7 @@ describe('Rust npm shim release guards', function () {
     );
     rejectsRustMutation(
       "      needs.rust-image-publish.result == 'success' &&\n",
-      '',
+      "      needs.rust-image-publish.result == 'success' ||\n",
       /final OIDC-authorized release step/
     );
     rejectsRustMutation(
@@ -94,7 +94,7 @@ describe('Rust npm shim release guards', function () {
     );
     rejectsRustMutation(
       "      needs.rust-manifest.result == 'success' &&\n",
-      '',
+      "      needs.rust-manifest.result == 'success' ||\n",
       /dry-run and complete release/
     );
     rejectsRustMutation(
