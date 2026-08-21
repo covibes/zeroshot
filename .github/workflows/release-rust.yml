@@ -4,14 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Build without publishing, release Rust artifacts and image, or publish the optional npm shim.
+        description: Build without publishing or release the complete Rust distribution.
         required: true
         default: dry-run
         type: choice
         options:
           - dry-run
           - release
-          - publish-npm-shim
       version:
         description: Explicit Rust release version in X.Y.Z form.
         required: true
@@ -96,13 +95,6 @@ jobs:
               exit 1
             }
             tag_exists=true
-          fi
-          if [[ "$RELEASE_ACTION" == "publish-npm-shim" ]]; then
-            [[ "$tag_exists" == "true" ]] || {
-              echo "::error::$release_tag must exist before publishing the npm shim"
-              exit 1
-            }
-            gh release view "$release_tag" >/dev/null
           fi
           if [[ "$tag_exists" == "false" ]]; then
             green_required="$(
@@ -559,13 +551,14 @@ jobs:
         run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release
 
   rust-shim-input:
-    needs: [plan, rust-manifest]
+    needs: [plan, rust-manifest, rust-publish]
     if: |
       always() &&
       needs.plan.result == 'success' &&
+      needs.rust-manifest.result == 'success' &&
       (
-        (inputs.action == 'dry-run' && needs.rust-manifest.result == 'success') ||
-        inputs.action == 'publish-npm-shim'
+        inputs.action == 'dry-run' ||
+        (inputs.action == 'release' && needs.rust-publish.result == 'success')
       )
     runs-on: ubuntu-latest
     permissions:
@@ -598,7 +591,7 @@ jobs:
           path: rust-release
 
       - name: Download published Rust distribution
-        if: inputs.action == 'publish-npm-shim'
+        if: inputs.action == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -664,10 +657,11 @@ jobs:
           if-no-files-found: error
 
   rust-shim-publish:
-    needs: [plan, rust-shim-input]
+    needs: [plan, rust-image-publish, rust-shim-input]
     if: |
       always() &&
-      inputs.action == 'publish-npm-shim' &&
+      inputs.action == 'release' &&
+      needs.rust-image-publish.result == 'success' &&
       needs.rust-shim-input.result == 'success'
     runs-on: ubuntu-latest
     environment: release
