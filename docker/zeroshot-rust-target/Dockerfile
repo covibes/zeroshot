@@ -8,7 +8,7 @@ COPY zeroshot-rust ./zeroshot-rust
 
 RUN cargo build --locked --release --package zeroshot-rust --bin zeroshot-rust
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS runtime
 
 ARG CODEX_VERSION=0.148.0
 ARG CLAUDE_CODE_VERSION=2.1.237
