@@ -171,7 +171,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "title": "Hosted queue test",
                     "source": source(),
                     "size": "standard",
-                    "cursor": "cloud:2",
+                    "cursor": "v2:3",
                     "status": {
                         "phase": "finished",
                         "terminalResult": {"status": "succeeded", "output": null}
@@ -180,7 +180,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
             }),
             json!({"type": "closed", "reason": "done"})
         )),
-        ("GET", "/native-v2/runs/run-hosted/logs?from_cursor=cloud%3A2&execution=worker%2F1") => {
+        ("GET", "/native-v2/runs/run-hosted/logs?from_cursor=v2%3A2&execution=worker%2F1") => {
             Some(format!(
                 "{}\n{}\n",
                 json!({
@@ -188,7 +188,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "event": {
                         "subscriptionId": "logs-1",
                         "runId": "run-hosted",
-                        "cursor": "cloud:3",
+                        "cursor": "v2:4",
                         "execution": "worker/1",
                         "record": {
                             "level": "info",

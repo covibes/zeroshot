@@ -96,7 +96,7 @@ where
     assert_eq!(outcome, CliOutcome::Finished);
     let output = String::from_utf8(output).assert_value();
     assert_eq!(output.matches("\"cursor\":\"cloud:1\"").count(), 1);
-    assert_eq!(output.matches("\"cursor\":\"cloud:2\"").count(), 1);
+    assert_eq!(output.matches("\"cursor\":\"v2:3\"").count(), 1);
 }
 
 async fn assert_retained_logs<B>(backend: &B, run_id: &RunId)
@@ -109,7 +109,7 @@ where
             Some("prod"),
             RunLogsParams {
                 run_id: run_id.clone(),
-                from_cursor: Some(Cursor::new("cloud:2")),
+                from_cursor: Some(Cursor::new("v2:2")),
                 execution: Some(execution.clone()),
             },
         )
@@ -119,7 +119,7 @@ where
     assert!(matches!(
         log,
         CliSubscriptionItem::Event(ref event)
-            if event.cursor == Cursor::new("cloud:3")
+            if event.cursor == Cursor::new("v2:4")
                 && event.execution.as_ref() == Some(&execution)
     ));
 }
@@ -151,7 +151,7 @@ fn assert_cloud_requests(requests: &[CapturedHttpRequest]) {
         request.path == "/native-v2/runs/run-hosted/watch?from_cursor=cloud%3A1"
     }));
     assert!(requests.iter().any(|request| {
-        request.path == "/native-v2/runs/run-hosted/logs?from_cursor=cloud%3A2&execution=worker%2F1"
+        request.path == "/native-v2/runs/run-hosted/logs?from_cursor=v2%3A2&execution=worker%2F1"
     }));
     assert!(requests.iter().any(|request| {
         request.path == "/native-v2/runs/run-hosted/force" && request.body == "{}"

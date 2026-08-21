@@ -242,10 +242,6 @@ where
         let target = require_named_target(target)?;
         let location = self.run_location(target, &params.run_id).await?;
         if location == RunLocation::Cloud {
-            let params = RunWatchParams {
-                run_id: params.run_id,
-                from_cursor: cloud_cursor(params.from_cursor),
-            };
             return self
                 .connector
                 .hosted_run_watch(target, params)
@@ -281,11 +277,6 @@ where
         let target = require_named_target(target)?;
         let location = self.run_location(target, &params.run_id).await?;
         if location == RunLocation::Cloud {
-            let params = RunLogsParams {
-                run_id: params.run_id,
-                from_cursor: cloud_cursor(params.from_cursor),
-                execution: params.execution,
-            };
             return self
                 .connector
                 .hosted_run_logs(target, params)
@@ -363,10 +354,6 @@ fn task_is_active(status: &CliRunStatus) -> bool {
         status,
         CliRunStatus::Admitted {} | CliRunStatus::Running { .. } | CliRunStatus::Stopping { .. }
     )
-}
-
-fn cloud_cursor(cursor: Option<Cursor>) -> Option<Cursor> {
-    cursor.filter(|cursor| cursor.as_str().starts_with("cloud:"))
 }
 
 fn task_cursor(cursor: Option<Cursor>) -> Option<Cursor> {
