@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunWatchParams, SubscriptionCloseReason,
+    HostedRunStreamFrame, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
+    RunStatusParams, RunWatchParams,
 };
 use reqwest::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE};
 use reqwest::{RequestBuilder, Response, Url};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use super::contract::{HostedRunsDescriptor, read_json, require_response_route};
@@ -19,18 +18,6 @@ use crate::native_v2_target::{TargetAccess, TargetAuthorityError, TargetRecord};
 
 const NDJSON_MEDIA_TYPE: &str = "application/x-ndjson";
 const MAX_STREAM_FRAME_BYTES: usize = 64 * 1024;
-
-#[derive(Deserialize)]
-#[serde(
-    bound(deserialize = "E: Deserialize<'de>"),
-    deny_unknown_fields,
-    rename_all = "snake_case",
-    tag = "type"
-)]
-enum HostedRunStreamFrame<E> {
-    Event { event: E },
-    Closed { reason: SubscriptionCloseReason },
-}
 
 struct HostedRunSubscription<E> {
     response: Response,
