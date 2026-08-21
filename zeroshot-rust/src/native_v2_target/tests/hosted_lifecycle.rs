@@ -21,7 +21,7 @@ use super::hosted_authority::*;
 #[tokio::test]
 async fn hosted_lifecycle_stays_cloud_owned_from_queue_through_completion() {
     let root = temp_root();
-    let (origin, server) = spawn_target_authority(36).await;
+    let (origin, server) = spawn_target_authority(50).await;
     let credentials = Arc::new(MemoryCredentialStore::default());
     let authority = TargetHttpControlAuthority::with_dependencies(
         credentials.clone(),
@@ -40,6 +40,7 @@ async fn hosted_lifecycle_stays_cloud_owned_from_queue_through_completion() {
         registry,
         authority,
         dialer.clone(),
+        FakeSourceResolver,
     ));
     let run_id = RunId::new("run-hosted");
 
@@ -140,7 +141,7 @@ where
 }
 
 fn assert_cloud_requests(requests: &[CapturedHttpRequest]) {
-    assert_eq!(requests.len(), 36);
+    assert_eq!(requests.len(), 50);
     assert!(
         requests
             .iter()

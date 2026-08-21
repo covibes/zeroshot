@@ -280,7 +280,7 @@ impl CapsuleAllocator for DeliveryAllocator {
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let delivery = NativeV2DeliveryAdapter::new(
             NativeV2DeliveryConfig {

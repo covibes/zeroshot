@@ -45,6 +45,8 @@ fn file_registry_round_trips_direct_access_without_a_device_credential() {
         name: "vm".to_owned(),
         origin: "http://127.0.0.1:8080".to_owned(),
         access: TargetAccess::Direct,
+        repository: Some("open-engine/zeroshot".to_owned()),
+        default_branch: Some("main".to_owned()),
     };
     registry.insert(direct.clone()).assert_value();
     assert_eq!(registry.get("vm").assert_value(), direct);
@@ -74,7 +76,12 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
     let registry = MemoryRegistry::default();
     let authority = FakeAuthority::new("wss://target.example/oecp");
     let dialer = FakeDialer::default();
-    let connector = NativeV2TargetConnector::new(registry, authority.clone(), dialer.clone());
+    let connector = NativeV2TargetConnector::new(
+        registry,
+        authority.clone(),
+        dialer.clone(),
+        FakeSourceResolver,
+    );
 
     connector
         .add(TargetAdd {
@@ -87,8 +94,11 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
     connector.login("prod").await.assert_value();
     connector.setup(setup_request()).await.assert_value();
     let receipt = connector.submit("prod", run_request()).await.assert_value();
-    connector.connect("prod").await.assert_value();
-    assert_eq!(receipt.run_id, RunId::new("run-hosted"));
+    connector
+        .connect("prod", Some(receipt.run_id.clone()))
+        .await
+        .assert_value();
+    assert_eq!(receipt.run_id, run_request().run_id);
 
     let calls = authority.calls();
     let added = match calls.assert_at(0) {
@@ -104,32 +114,38 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
         TargetAccess::Hosted { device_token } if device_token.len() == 36
     ));
     assert!(matches!(calls.assert_at(1), AuthorityCall::Login(record) if record == added));
-    let install = match calls.assert_at(2) {
-        AuthorityCall::Install(record, installed) => Some((record, installed)),
-        _ => None,
-    };
-    let (record, installed) = install.assert_value_with("expected atomic setup install");
-    assert_eq!(record, added);
-    assert_eq!(installed.repository, "open-engine/zeroshot");
-    assert_eq!(installed.default_branch.as_deref(), Some("main"));
-    let submitted = match calls.assert_at(3) {
+    let submitted = match calls.assert_at(2) {
         AuthorityCall::Submit(record, intent) => Some((record, intent.as_ref())),
         _ => None,
     };
     let (record, request) = submitted.assert_value_with("expected target submission");
-    assert_eq!(record, added);
-    assert_eq!(request, &run_request());
-    assert!(matches!(calls.assert_at(4), AuthorityCall::Session(record) if record == added));
+    assert_eq!(record.repository.as_deref(), Some("open-engine/zeroshot"));
+    assert_eq!(record.default_branch.as_deref(), Some("main"));
+    assert_eq!(request.run_id, run_request().run_id);
+    assert_eq!(
+        request.submission.source.repository.as_str(),
+        "open-engine/zeroshot"
+    );
+    assert_eq!(request.submission.source.branch.as_str(), "feature");
+    assert!(matches!(
+        calls.assert_at(3),
+        AuthorityCall::Session(record, session)
+            if record.repository.as_deref() == Some("open-engine/zeroshot")
+                && session.run_id == Some(run_request().run_id)
+    ));
+    let mut connected = added.clone();
+    connected.repository = Some("open-engine/zeroshot".to_owned());
+    connected.default_branch = Some("main".to_owned());
     assert_eq!(
         dialer.sessions.lock().assert_value().as_slice(),
-        &[(added.clone(), "wss://target.example/oecp".to_owned())]
+        &[(connected, "wss://target.example/oecp".to_owned())]
     );
 }
 
 #[tokio::test]
-async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() {
+async fn hosted_authority_uses_unified_discovery_and_run_scoped_oecp() {
     let root = temp_root();
-    let (origin, server) = spawn_target_authority(24).await;
+    let (origin, server) = spawn_target_authority(15).await;
     let credentials = Arc::new(MemoryCredentialStore::default());
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
     let authority = TargetHttpControlAuthority::with_dependencies(
@@ -138,23 +154,24 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
         root.path("refresh-locks"),
     );
     let target = hosted_target("local", origin.clone());
-    let setup = TargetSetupDocument {
-        repository: "open-engine/zeroshot".to_owned(),
-        default_branch: Some("main".to_owned()),
-    };
+    let request = exact_run_request();
 
     authority.login(&target).await.assert_value();
     assert_eq!(
         notifier.values(),
         vec![(format!("{origin}/activate"), "ABCD-EFGH".to_owned())]
     );
-    authority.install(&target, &setup).await.assert_value();
-    let receipt = authority
-        .submit(&target, &run_request())
+    let receipt = authority.submit(&target, &request).await.assert_value();
+    assert_eq!(receipt.run_id, request.run_id);
+    let session = authority
+        .oecp_session(
+            &target,
+            &TargetOecpSessionRequest {
+                run_id: Some(request.run_id.clone()),
+            },
+        )
         .await
         .assert_value();
-    assert_eq!(receipt.run_id, RunId::new("run-hosted"));
-    let session = authority.oecp_session(&target).await.assert_value();
     assert_eq!(
         session.endpoint(),
         format!(
@@ -164,24 +181,24 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     );
     assert_eq!(
         credentials.get(&target.id).await.assert_value().as_deref(),
-        Some("refresh-4")
+        Some("refresh-3")
     );
 
     let requests = server.await.assert_value();
-    assert_eq!(requests.len(), 24);
+    assert_eq!(requests.len(), 15);
     assert!(
         requests
             .iter()
             .all(|request| !request.path.contains("capsule"))
     );
     assert_device_exchange(&requests);
-    assert_setup_submit_and_session_requests(&requests);
+    assert_submit_and_session_requests(&requests, &request.run_id);
 }
 
 #[tokio::test]
 async fn direct_authority_skips_hosted_auth_and_all_authorization_headers() {
     let root = temp_root();
-    let (origin, server) = spawn_direct_target_authority(7).await;
+    let (origin, server) = spawn_direct_target_authority(5).await;
     let credentials = Arc::new(MemoryCredentialStore::default());
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
     let authority = TargetHttpControlAuthority::with_dependencies(
@@ -190,26 +207,30 @@ async fn direct_authority_skips_hosted_auth_and_all_authorization_headers() {
         root.path("refresh-locks"),
     );
     let target = direct_target(origin);
-    let setup = TargetSetupDocument {
-        repository: "open-engine/zeroshot".to_owned(),
-        default_branch: Some("main".to_owned()),
-    };
+    let request = exact_run_request();
 
     authority.discover(&target).await.assert_value();
     assert_eq!(
         authority.login(&target).await.assert_error().to_string(),
         "direct target does not use login"
     );
-    authority.install(&target, &setup).await.assert_value();
     assert_eq!(
         authority
-            .submit(&target, &run_request())
+            .submit(&target, &request)
             .await
             .assert_value()
             .run_id,
-        RunId::new("run-direct")
+        request.run_id
     );
-    authority.oecp_session(&target).await.assert_value();
+    authority
+        .oecp_session(
+            &target,
+            &TargetOecpSessionRequest {
+                run_id: Some(request.run_id),
+            },
+        )
+        .await
+        .assert_value();
 
     assert!(credentials.get(&target.id).await.assert_value().is_none());
     assert!(notifier.values().is_empty());
@@ -254,31 +275,27 @@ fn assert_device_exchange(requests: &[CapturedHttpRequest]) {
     assert!(request.body.contains("audience=controller"));
 }
 
-fn assert_setup_submit_and_session_requests(requests: &[CapturedHttpRequest]) {
-    let setup = requests
-        .iter()
-        .find(|request| request.path == "/native-v2/setup")
-        .assert_value();
-    assert_eq!(setup.authorization.as_deref(), Some("Bearer access-2"));
-    let body: serde_json::Value = serde_json::from_str(&setup.body).assert_value();
-    assert_eq!(
-        body.get("repository").assert_value(),
-        "open-engine/zeroshot"
-    );
-    assert!(body.get("runtime").is_none());
+fn assert_submit_and_session_requests(requests: &[CapturedHttpRequest], run_id: &RunId) {
     let submit = requests
         .iter()
         .find(|request| request.path == "/native-v2/run")
         .assert_value();
-    assert_eq!(submit.authorization.as_deref(), Some("Bearer access-3"));
+    assert_eq!(submit.authorization.as_deref(), Some("Bearer access-2"));
     let request: serde_json::Value = serde_json::from_str(&submit.body).assert_value();
     assert_eq!(
-        request.pointer("/intent/title").assert_value(),
+        request.pointer("/submission/title").assert_value(),
         "Repair checkout"
     );
     assert_eq!(
-        request.pointer("/intent/runtime/size").assert_value(),
+        request.pointer("/submission/runtime/size").assert_value(),
         "standard"
+    );
+    assert_eq!(request.pointer("/runId").assert_value(), run_id.as_str());
+    assert_eq!(
+        request
+            .pointer("/submission/source/revision")
+            .assert_value(),
+        "0123456789abcdef0123456789abcdef01234567"
     );
     assert!(
         request
@@ -286,19 +303,22 @@ fn assert_setup_submit_and_session_requests(requests: &[CapturedHttpRequest]) {
             .and_then(serde_json::Value::as_object)
             .is_some_and(serde_json::Map::is_empty)
     );
-    assert!(request.pointer("/intent/source").is_none());
     let session = requests
         .iter()
         .find(|request| request.path == "/native-v2/oecp-session")
         .assert_value();
-    assert_eq!(session.authorization.as_deref(), Some("Bearer access-4"));
-    assert!(session.body.is_empty());
+    assert_eq!(session.authorization.as_deref(), Some("Bearer access-3"));
+    let session_request: serde_json::Value = serde_json::from_str(&session.body).assert_value();
+    assert_eq!(
+        session_request.pointer("/runId").assert_value(),
+        run_id.as_str()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hosted_authorities_serialize_one_time_refresh_rotation_per_target() {
     let root = temp_root();
-    let (origin, server) = spawn_target_authority(12).await;
+    let (origin, server) = spawn_target_authority(10).await;
     let credentials = Arc::new(RotatingCredentialStore::new("refresh-0"));
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
     let lock_directory = root.path("refresh-locks");
@@ -313,8 +333,11 @@ async fn hosted_authorities_serialize_one_time_refresh_rotation_per_target() {
         lock_directory,
     );
     let target = hosted_target("local", origin);
-    let (first_session, second_session) =
-        tokio::join!(first.oecp_session(&target), second.oecp_session(&target));
+    let request = TargetOecpSessionRequest::default();
+    let (first_session, second_session) = tokio::join!(
+        first.oecp_session(&target, &request),
+        second.oecp_session(&target, &request)
+    );
     first_session.assert_value();
     second_session.assert_value();
     assert_eq!(credentials.value(), "refresh-2");

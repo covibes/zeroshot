@@ -9,7 +9,7 @@ use tokio::time::timeout;
 use crate::execution::process::{HostedProcessPool, HostedProcessScope};
 use crate::native_v2_delivery::DeliveryTarget;
 use crate::native_v2_delivery::git_auth::encode_basic_credential;
-use crate::native_v2_contract::{ResolvedSource, SourceBranchId, SourceRepositoryId, SourceRevisionId};
+use crate::native_v2_contract::ResolvedSource;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_GIT_OUTPUT_BYTES: usize = 4_096;
@@ -19,15 +19,6 @@ pub(super) struct RepositoryInstall<'a> {
     pub source: &'a OsStr,
     pub resolved: &'a ResolvedSource,
     pub workspace: &'a Path,
-    pub process_pool: HostedProcessPool,
-    pub github_token: Option<&'a str>,
-}
-
-pub(super) struct SourceResolution<'a> {
-    pub git_program: &'a Path,
-    pub source: &'a OsStr,
-    pub repository: &'a str,
-    pub branch: Option<&'a str>,
     pub process_pool: HostedProcessPool,
     pub github_token: Option<&'a str>,
 }
@@ -62,88 +53,6 @@ pub(super) async fn install_repository(
         revision.trim(),
     )
     .map_err(|_| RepositoryInstallError)
-}
-
-pub(super) async fn resolve_source(
-    request: SourceResolution<'_>,
-) -> Result<ResolvedSource, RepositoryInstallError> {
-    let writer = request
-        .process_pool
-        .identity(HostedProcessScope::Writer)
-        .map_err(|_| RepositoryInstallError)?;
-    let git = GitProcess {
-        program: request.git_program,
-        token: request.github_token,
-        uid: writer.uid(),
-        gid: writer.gid(),
-    };
-    let (branch, revision) = match request.branch {
-        None => resolve_default_source(&git, request.source).await?,
-        Some(branch) => (
-            branch.to_owned(),
-            resolve_remote_revision(&git, request.source, &format!("refs/heads/{branch}")).await?,
-        ),
-    };
-    Ok(ResolvedSource {
-        repository: SourceRepositoryId::new(request.repository)
-            .map_err(|_| RepositoryInstallError)?,
-        branch: SourceBranchId::new(branch).map_err(|_| RepositoryInstallError)?,
-        revision,
-    })
-}
-
-async fn resolve_default_source(
-    git: &GitProcess<'_>,
-    source: &OsStr,
-) -> Result<(String, SourceRevisionId), RepositoryInstallError> {
-    let output = git
-        .capture_without_workspace(&[
-            OsString::from("ls-remote"),
-            OsString::from("--symref"),
-            source.to_owned(),
-            OsString::from("HEAD"),
-        ])
-        .await?;
-    let branch = output
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("ref: refs/heads/")?
-                .strip_suffix("\tHEAD")
-        })
-        .ok_or(RepositoryInstallError)?;
-    let revision = remote_revision_from_output(&output, "HEAD")?;
-    Ok((branch.to_owned(), revision))
-}
-
-async fn resolve_remote_revision(
-    git: &GitProcess<'_>,
-    source: &OsStr,
-    reference: &str,
-) -> Result<SourceRevisionId, RepositoryInstallError> {
-    let output = git
-        .capture_without_workspace(&[
-            OsString::from("ls-remote"),
-            source.to_owned(),
-            OsString::from(reference),
-        ])
-        .await?;
-    remote_revision_from_output(&output, reference)
-}
-
-fn remote_revision_from_output(
-    output: &str,
-    reference: &str,
-) -> Result<SourceRevisionId, RepositoryInstallError> {
-    let expected = format!("\t{reference}");
-    let mut matches = output
-        .lines()
-        .filter_map(|line| line.strip_suffix(&expected))
-        .filter_map(|revision| SourceRevisionId::new(revision).ok());
-    let revision = matches.next().ok_or(RepositoryInstallError)?;
-    if matches.next().is_some() {
-        return Err(RepositoryInstallError);
-    }
-    Ok(revision)
 }
 
 fn clone_arguments(request: &RepositoryInstall<'_>) -> Vec<OsString> {
@@ -219,13 +128,6 @@ impl GitProcess<'_> {
         self.capture_at(Some(workspace), arguments).await
     }
 
-    async fn capture_without_workspace(
-        &self,
-        arguments: &[OsString],
-    ) -> Result<String, RepositoryInstallError> {
-        self.capture_at(None, arguments).await
-    }
-
     async fn capture_at(
         &self,
         workspace: Option<&Path>,
@@ -289,16 +191,6 @@ fn configure_identity(_command: &mut Command, _uid: u32, _gid: u32) {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("repository checkout could not be installed")]
 pub(super) struct RepositoryInstallError;
-
-pub(super) fn repository_token(
-    environment: &crate::native_v2_supervisor::RunEnvironment,
-) -> Option<&str> {
-    let name = crate::native_v2_contract::EnvironmentVariableName::new(
-        crate::native_v2_delivery::GITHUB_TOKEN_ENV,
-    )
-    .ok()?;
-    environment.get(&name)
-}
 
 #[cfg(test)]
 pub(super) fn path_source(path: &Path) -> OsString {

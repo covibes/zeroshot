@@ -147,6 +147,7 @@ pub(crate) struct CliInvocation<'a> {
     pub(crate) graph: &'a Path,
     pub(crate) input: &'a Path,
     pub(crate) extra: Option<&'a str>,
+    pub(crate) source_revision: Option<&'a str>,
 }
 
 pub(crate) fn cli_command(invocation: CliInvocation<'_>) -> tokio::process::Command {
@@ -169,7 +170,32 @@ pub(crate) fn cli_command(invocation: CliInvocation<'_>) -> tokio::process::Comm
     if let Some(extra) = invocation.extra {
         command.arg(extra);
     }
+    if let Some(revision) = invocation.source_revision {
+        let git = install_source_git(invocation.config, revision);
+        command.env("ZEROSHOT_RUST_TARGET_GIT_PROGRAM", git);
+    }
     command
+}
+
+fn install_source_git(config: &Path, revision: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert!(revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    std::fs::create_dir_all(config).assert_value();
+    let path = config.join("source-git");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nlast=HEAD\nfor argument do last=$argument; done\n\
+             case \" $* \" in\n  *\" --symref \"*) printf 'ref: refs/heads/main\\tHEAD\\n{revision}\\tHEAD\\n' ;;\n\
+             *) printf '{revision}\\t%s\\n' \"$last\" ;;\nesac\n"
+        ),
+    )
+    .assert_value();
+    let mut permissions = std::fs::metadata(&path).assert_value().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&path, permissions).assert_value();
+    path
 }
 
 pub(crate) async fn run_cli_command(

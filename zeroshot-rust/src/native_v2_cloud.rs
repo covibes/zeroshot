@@ -27,7 +27,7 @@ use thiserror::Error;
 use tokio::sync::{watch, Mutex};
 
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission, NativeV2AdmissionError};
-use crate::native_v2_contract::{AdmittedRun, NodeCompletion, RunSubmission, RunSubmissionIntent};
+use crate::native_v2_contract::{AdmittedRun, NodeCompletion, RunSubmission};
 #[cfg(test)]
 use crate::native_v2_contract::EnvironmentVariableName;
 use crate::native_v2_observability::{
@@ -102,6 +102,11 @@ enum ForceTarget {
     Reconstructed,
 }
 
+struct RunSecretEnvelope {
+    environment: Arc<RunEnvironment>,
+    github_token: Option<String>,
+}
+
 impl NativeV2CloudController {
     /// Claims exclusive target authority, reconciles durable nonterminal runs, then constructs
     /// the target adapter. Each submitted run carries its own immutable runtime plan.
@@ -158,29 +163,8 @@ impl NativeV2CloudController {
         &self,
         request: RunSubmitParams,
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
-        let intent_digest = run_intent_digest(&RunSubmissionIntent::from(&request.submission))?;
         let environment = RunEnvironment::exact(&request.submission.runtime, BTreeMap::new())?;
-        self.submit_inner(request, intent_digest, environment).await
-    }
-
-    pub async fn submit_with_intent_digest(
-        &self,
-        request: RunSubmitParams,
-        intent_digest: Sha256Digest,
-    ) -> Result<CloudRunReceipt, NativeV2CloudError> {
-        let environment = RunEnvironment::exact(&request.submission.runtime, BTreeMap::new())?;
-        self.submit_inner(request, intent_digest, environment).await
-    }
-
-    /// Trusted bootstrap path for a run whose exact, bounded environment and immutable intent
-    /// identity were already selected by the host.
-    pub async fn submit_with_intent_digest_and_exact_environment(
-        &self,
-        request: RunSubmitParams,
-        intent_digest: Sha256Digest,
-        environment: RunEnvironment,
-    ) -> Result<CloudRunReceipt, NativeV2CloudError> {
-        self.submit_inner(request, intent_digest, environment).await
+        self.submit_inner(request, environment, None).await
     }
 
     /// Trusted bootstrap path for a run whose exact, bounded environment was already selected.
@@ -189,15 +173,25 @@ impl NativeV2CloudController {
         request: RunSubmitParams,
         environment: RunEnvironment,
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
-        let intent_digest = run_intent_digest(&RunSubmissionIntent::from(&request.submission))?;
-        self.submit_inner(request, intent_digest, environment).await
+        self.submit_inner(request, environment, None).await
+    }
+
+    /// Trusted target bootstrap with a checkout/delivery credential kept outside provider
+    /// environment selection and durable run state.
+    pub async fn submit_with_exact_environment_and_github_token(
+        &self,
+        request: RunSubmitParams,
+        environment: RunEnvironment,
+        github_token: Option<String>,
+    ) -> Result<CloudRunReceipt, NativeV2CloudError> {
+        self.submit_inner(request, environment, github_token).await
     }
 
     async fn submit_inner(
         &self,
         request: RunSubmitParams,
-        intent_digest: Sha256Digest,
         environment: RunEnvironment,
+        github_token: Option<String>,
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
         let _turn = self.submission_turn.lock().await;
         let RunSubmitParams { run_id, submission } = request;
@@ -212,7 +206,6 @@ impl NativeV2CloudController {
             .create_or_get(CreateRun {
                 run_id,
                 submission_key,
-                intent_digest,
                 submission_digest: digest,
                 admitted: admitted.clone(),
             })
@@ -227,23 +220,30 @@ impl NativeV2CloudController {
                 })
             }
             CreateRunOutcome::Created(stored) => {
-                self.start_created(stored, admitted, Arc::new(environment))
-                    .await
+                self.start_created(
+                    stored,
+                    admitted,
+                    RunSecretEnvelope {
+                        environment: Arc::new(environment),
+                        github_token,
+                    },
+                )
+                .await
             }
         }
     }
 
-    /// Resolves a named-target retry before mutable source or environment authority is consulted.
-    pub async fn resolve_intent(
+    /// Resolves an exact sourceful retry before consulting its replacement secret envelope.
+    pub async fn resolve_submission(
         &self,
         submission_key: &openengine_cluster_protocol::IdempotencyKey,
-        intent_digest: &Sha256Digest,
+        submission_digest: &Sha256Digest,
     ) -> Result<Option<CloudRunReceipt>, NativeV2CloudError> {
         let _turn = self.submission_turn.lock().await;
         let Some(stored) = self.ledger.get_by_submission_key(submission_key).await? else {
             return Ok(None);
         };
-        if stored.intent_digest != *intent_digest {
+        if stored.submission_digest != *submission_digest {
             return Err(RunLedgerError::SubmissionConflict {
                 existing_run_id: stored.snapshot.run_id,
             }
@@ -260,13 +260,13 @@ impl NativeV2CloudController {
         &self,
         stored: StoredRun,
         admitted: AdmittedRun,
-        environment: Arc<RunEnvironment>,
+        secrets: RunSecretEnvelope,
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
         let run_id = stored.snapshot.run_id;
         let controller_claim = self.allocator.claim_controller(&run_id).await?;
         let capsule = match self
             .allocator
-            .allocate(&run_id, &admitted, environment.as_ref())
+            .allocate(&run_id, &admitted, secrets.github_token.as_deref())
             .await
         {
             Ok(capsule) => capsule,
@@ -283,7 +283,7 @@ impl NativeV2CloudController {
         let engine = PortableRunEngine::start(PortableRunEngineBootstrap {
             run_id: run_id.clone(),
             ledger: self.ledger.clone(),
-            environment: environment.as_ref().clone(),
+            environment: secrets.environment.as_ref().clone(),
             runtime: PortableRuntime::with_cleanup(runner, cleanup),
             loss,
             controller_claim,
@@ -470,10 +470,5 @@ impl NativeV2CloudController {
 }
 
 mod backend;
-use backend::*;
-
-pub fn run_intent_digest(intent: &RunSubmissionIntent) -> Result<Sha256Digest, NativeV2CloudError> {
-    let bytes = serde_json::to_vec(intent).map_err(|_| NativeV2CloudError::SubmissionIdentity)?;
-    Sha256Digest::new(format!("{:x}", Sha256::digest(bytes)))
-        .map_err(|_| NativeV2CloudError::SubmissionIdentity)
-}
+use backend::{append_runtime_lost, append_terminal_failure};
+pub(crate) use backend::submission_digest;

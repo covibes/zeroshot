@@ -19,14 +19,14 @@ use tokio::time::{Instant, sleep};
 use super::oecp::{ChannelSubscription, spawn_attach, spawn_logs, spawn_watch};
 use super::{
     CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
-    NativeV2CliBackend, NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup,
+    NativeV2CliBackend, NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
 };
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
-use crate::native_v2_cloud::run_intent_digest;
+use crate::native_v2_cloud::submission_digest;
 use crate::native_v2_local::{PreparedLocalRun, prepare_local_run};
 use crate::native_v2_portable_controller::{
-    ControllerLease, ControllerLeaseError, PortableControllerBootstrap, PortableControllerPaths,
-    PortableRunController, read_ready, write_bootstrap_file,
+    ControllerLease, ControllerLeaseError, PortableControllerBootstrap, PortableControllerError,
+    PortableControllerPaths, PortableRunController, read_ready, write_bootstrap_file,
 };
 use crate::native_v2_portable_controller::process::{PortableControllerTransport, connect_transport};
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
@@ -112,45 +112,54 @@ impl LocalCliBackend {
         run_id: &openengine_cluster_protocol::RunId,
     ) -> Result<Arc<PortableControllerTransport>, NativeV2CliError> {
         let paths = self.paths(run_id)?;
-        if read_ready(&paths).is_ok_and(|ready| &ready.run_id != run_id) {
-            return Err(local_message(
-                "controller readiness has a different run identity",
-            ));
-        }
-        if let Ok(transport) = connect_transport(&paths).await {
-            return Ok(transport);
-        }
+        let deadline = Instant::now() + self.ready_timeout;
+        loop {
+            if read_ready(&paths).is_ok_and(|ready| &ready.run_id != run_id) {
+                return Err(local_message(
+                    "controller readiness has a different run identity",
+                ));
+            }
+            if let Ok(transport) = connect_transport(&paths).await {
+                return Ok(transport);
+            }
 
-        let observer = Arc::new(
-            PortableRunController::open_observer(paths.clone(), run_id.clone())
-                .await
-                .map_err(local_error)?,
-        );
-        let server = observer.bind().await.map_err(local_error)?;
-        tokio::spawn(async move {
-            let _ = server.serve().await;
-        });
-        connect_transport(&paths).await.map_err(local_error)
+            match PortableRunController::open_observer(paths.clone(), run_id.clone()).await {
+                Ok(observer) => {
+                    let observer = Arc::new(observer);
+                    let server = observer.bind().await.map_err(local_error)?;
+                    tokio::spawn(async move {
+                        let _ = server.serve().await;
+                    });
+                    return connect_transport(&paths).await.map_err(local_error);
+                }
+                Err(PortableControllerError::Lease(ControllerLeaseError::Held))
+                    if Instant::now() < deadline =>
+                {
+                    sleep(CONTROLLER_HANDOFF_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(local_error(error)),
+            }
+        }
     }
 
     async fn start_controller(
         &self,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<openengine_cluster_protocol::RunId, NativeV2CliError> {
-        let intent_digest = run_intent_digest(&request.intent).map_err(local_error)?;
-        let _submission_lock = self.acquire_submission_lock().await?;
-        if let Some(run_id) = self
-            .existing_submission(&request.intent.submission_key, &intent_digest)
-            .await?
-        {
-            return Ok(run_id);
-        }
         NativeV2Admission
             .validate_intent(&request.intent, DeliveryPolicy::Optional)
             .await
             .map_err(local_error)?;
         let prepared = prepare_local_run(request, &self.current_directory, &self.git_program)
             .map_err(local_error)?;
+        let digest = submission_digest(&prepared.submission).map_err(local_error)?;
+        let _submission_lock = self.acquire_submission_lock().await?;
+        if let Some(run_id) = self
+            .existing_submission(&prepared.submission.submission_key, &digest)
+            .await?
+        {
+            return Ok(run_id);
+        }
         self.start_prepared_controller(prepared).await
     }
 
@@ -166,6 +175,7 @@ impl LocalCliBackend {
             run_id: prepared.run_id.clone(),
             submission: prepared.submission,
             environment: prepared.environment,
+            github_token: prepared.github_token,
             workspace: prepared.workspace,
             workspace_lease,
             storage,
@@ -203,11 +213,11 @@ impl LocalCliBackend {
     async fn existing_submission(
         &self,
         submission_key: &IdempotencyKey,
-        intent_digest: &Sha256Digest,
+        submission_digest: &Sha256Digest,
     ) -> Result<Option<RunId>, NativeV2CliError> {
         for run_id in self.local_run_ids()? {
             if let Some(existing) = self
-                .matching_submission(run_id, submission_key, intent_digest)
+                .matching_submission(run_id, submission_key, submission_digest)
                 .await?
             {
                 return Ok(Some(existing));
@@ -220,7 +230,7 @@ impl LocalCliBackend {
         &self,
         run_id: RunId,
         submission_key: &IdempotencyKey,
-        intent_digest: &Sha256Digest,
+        submission_digest: &Sha256Digest,
     ) -> Result<Option<RunId>, NativeV2CliError> {
         let ledger_path = self.run_storage(&run_id)?.join("runs.sqlite3");
         if !require_existing_ledger(&ledger_path)? {
@@ -239,7 +249,7 @@ impl LocalCliBackend {
                 "run ledger identity does not match its storage",
             ));
         }
-        if stored.intent_digest != *intent_digest {
+        if stored.submission_digest != *submission_digest {
             return Err(local_error(RunLedgerError::SubmissionConflict {
                 existing_run_id: run_id,
             }));

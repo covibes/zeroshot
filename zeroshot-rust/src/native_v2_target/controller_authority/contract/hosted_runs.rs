@@ -1,35 +1,11 @@
 use openengine_cluster_protocol::{Cursor, ExecutionRef, RunId};
 use reqwest::Url;
-use serde::Deserialize;
+use openengine_cluster_protocol::TargetDiscoveryExtensions;
 
 use super::{authority_error, same_origin_url};
 use crate::native_v2_target::TargetAuthorityError;
 
 const HOSTED_RUNS_KIND: &str = "zeroshot.hosted-runs/v1";
-
-#[derive(Default, Deserialize)]
-pub(super) struct HostedExtensionsWire {
-    #[serde(default)]
-    hosted_runs: Option<HostedRunsWire>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostedRunsWire {
-    kind: String,
-    base_url: String,
-    route_templates: HostedRunRoutesWire,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostedRunRoutesWire {
-    list: String,
-    status: String,
-    watch: String,
-    logs: String,
-    force: String,
-}
 
 #[derive(Clone)]
 pub(in super::super) struct HostedRunsDescriptor {
@@ -172,7 +148,7 @@ impl HostedRunRoute {
 
 pub(super) fn build_hosted_runs_descriptor(
     origin: &Url,
-    extensions: &HostedExtensionsWire,
+    extensions: &TargetDiscoveryExtensions,
 ) -> Result<HostedRunsDescriptor, TargetAuthorityError> {
     let wire = extensions.hosted_runs.as_ref().ok_or_else(|| {
         authority_error("hosted target does not advertise zeroshot.hosted-runs/v1")
@@ -376,7 +352,7 @@ mod tests {
         origin: &Url,
         hosted_runs: Value,
     ) -> Result<HostedRunsDescriptor, TargetAuthorityError> {
-        let extensions = serde_json::from_value::<HostedExtensionsWire>(json!({
+        let extensions = serde_json::from_value::<TargetDiscoveryExtensions>(json!({
             "hosted_runs": hosted_runs
         }))
         .assert_value();

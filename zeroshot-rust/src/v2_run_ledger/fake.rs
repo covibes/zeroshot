@@ -52,8 +52,7 @@ impl RunLedger for FakeRunLedger {
                 .get(existing_id)
                 .ok_or(RunLedgerError::Corrupt)?
                 .stored;
-            if existing.intent_digest == request.intent_digest
-                && existing.submission_digest == request.submission_digest
+            if existing.submission_digest == request.submission_digest
                 && existing.admitted == request.admitted
             {
                 return Ok(CreateRunOutcome::Existing(existing.clone()));
@@ -68,7 +67,6 @@ impl RunLedger for FakeRunLedger {
         let snapshot = super::RunSnapshot::admitted(request.run_id.clone(), &request.admitted);
         let stored = StoredRun {
             submission_key: request.submission_key.clone(),
-            intent_digest: request.intent_digest,
             submission_digest: request.submission_digest,
             admitted: request.admitted,
             snapshot,

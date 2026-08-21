@@ -24,9 +24,10 @@ zeroshot-rust target setup vm --repository owner/repository --branch main
 ```
 
 `run --branch <branch>` overrides the target default for that run. The CLI submits only values for
-environment names declared by the materialized runtime plan; credentials are not container-global
-configuration. The checked-in example uses Claude with Anthropic; `--ship` also declares `GH_TOKEN`
-for the template-owned delivery node:
+environment names declared by the materialized runtime plan. `GH_TOKEN`, when present, is carried
+separately as the ephemeral trusted checkout/delivery credential; provider children receive it
+only when their own binding explicitly declares it. The checked-in example uses Claude with
+Anthropic:
 
 ```sh
 ANTHROPIC_API_KEY=... GH_TOKEN=... zeroshot-rust run \
@@ -40,6 +41,11 @@ ANTHROPIC_API_KEY=... GH_TOKEN=... zeroshot-rust run \
 
 Use `list`, `status`, `watch`, `logs`, and read-only `attach` with `--target vm`. Direct targets
 start runs immediately and therefore never report the cloud-owned `queued` phase.
+
+Managed private deployments may set `ZEROSHOT_TARGET_BOOTSTRAP_KEY` to a task-bound 32-byte
+lowercase-hex key. The entrypoint moves it into a 0600 task-local file, clears the environment, and
+enables the ordinary server's one-time private capability bootstrap. With no key, the image keeps
+the normal auth-free direct-target behavior shown above.
 
 When the CLI is not on the VM, keep the target reachable only through a trusted private network,
 VPN, or equivalent network access control; TLS alone does not authenticate this direct target. Use

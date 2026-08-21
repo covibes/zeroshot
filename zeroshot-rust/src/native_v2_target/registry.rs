@@ -8,13 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use super::contract::{normalize_origin, validate_target_name};
 use super::{TargetAccess, TargetConnectorError, TargetRecord};
+use openengine_cluster_protocol::{SourceBranchId, SourceRepositoryId};
 
-const REGISTRY_VERSION: u32 = 3;
+const REGISTRY_VERSION: u32 = 4;
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 
 pub trait TargetRegistry: Send + Sync {
     fn insert(&self, target: TargetRecord) -> Result<(), TargetConnectorError>;
     fn get(&self, name: &str) -> Result<TargetRecord, TargetConnectorError>;
+    fn setup(
+        &self,
+        name: &str,
+        repository: String,
+        default_branch: Option<String>,
+    ) -> Result<(), TargetConnectorError>;
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +74,23 @@ impl TargetRegistry for FileTargetRegistry {
                 .get(name)
                 .cloned()
                 .ok_or_else(|| TargetConnectorError::NotFound(name.to_owned()))
+        })
+    }
+
+    fn setup(
+        &self,
+        name: &str,
+        repository: String,
+        default_branch: Option<String>,
+    ) -> Result<(), TargetConnectorError> {
+        self.with_state(true, |state| {
+            let target = state
+                .targets
+                .get_mut(name)
+                .ok_or_else(|| TargetConnectorError::NotFound(name.to_owned()))?;
+            target.repository = Some(repository);
+            target.default_branch = default_branch;
+            Ok(())
         })
     }
 }
@@ -147,11 +171,25 @@ fn validate_registry_state(state: &RegistryState) -> Result<(), TargetConnectorE
             || !matches!(normalize_origin(&target.origin), Ok(origin) if origin == target.origin)
             || !valid_uuid(&target.id)
             || !valid_target_access(&target.access)
+            || !valid_target_source(target)
         {
             return Err(malformed_registry("invalid stored target record"));
         }
     }
     Ok(())
+}
+
+fn valid_target_source(target: &TargetRecord) -> bool {
+    match &target.repository {
+        None => target.default_branch.is_none(),
+        Some(repository) => {
+            SourceRepositoryId::new(repository).is_ok()
+                && target
+                    .default_branch
+                    .as_deref()
+                    .is_none_or(|branch| SourceBranchId::new(branch).is_ok())
+        }
+    }
 }
 
 fn valid_target_access(access: &TargetAccess) -> bool {

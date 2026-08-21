@@ -173,7 +173,7 @@ fn cloud_backend_error(error: NativeV2CloudError) -> BackendError {
     }
 }
 
-pub(super) fn submission_digest(
+pub(crate) fn submission_digest(
     submission: &RunSubmission,
 ) -> Result<Sha256Digest, NativeV2CloudError> {
     let bytes =

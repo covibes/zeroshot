@@ -21,7 +21,6 @@ use crate::native_v2_cloud::CapsuleAllocationUnavailable;
 use crate::native_v2_contract::{
     ClaudeProvider, CodexProvider, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission,
 };
-use crate::native_v2_target_authority::TargetSetupDocument;
 use crate::worker_catalog::{self, ReasoningEffort};
 
 use super::super::ProductionHostingConfig;
@@ -99,13 +98,6 @@ pub(super) fn capsule_config(storage_root: PathBuf) -> ProductionCapsuleConfig {
         gh_program: config.gh_program,
         process_pool: allocator_process_pool(),
         claude_turn_timeout: config.claude_turn_timeout,
-    }
-}
-
-pub(super) fn setup(default_branch: Option<&str>) -> TargetSetupDocument {
-    TargetSetupDocument {
-        repository: "acme/project".to_owned(),
-        default_branch: default_branch.map(str::to_owned),
     }
 }
 

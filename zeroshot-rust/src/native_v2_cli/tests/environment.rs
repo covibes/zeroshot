@@ -134,13 +134,20 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
         .await
         .assert_value();
 
-    assert_eq!(requested.into_inner(), ["DECLARED", "SHARED"]);
+    assert_eq!(requested.into_inner(), ["DECLARED", "SHARED", "GH_TOKEN"]);
     let calls = backend.calls();
-    let environment = match calls.as_slice() {
-        [Call::Submit { environment, .. }] => Some(environment),
+    let (environment, github_token) = match calls.as_slice() {
+        [
+            Call::Submit {
+                environment,
+                github_token,
+                ..
+            },
+        ] => Some((environment, github_token)),
         _ => None,
     }
     .assert_value();
+    assert_eq!(github_token.as_deref(), Some("value-for-GH_TOKEN"));
     assert_eq!(
         environment
             .iter()

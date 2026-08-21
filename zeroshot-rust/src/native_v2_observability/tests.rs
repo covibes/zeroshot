@@ -32,7 +32,6 @@ async fn ledger_run(run: &str) -> (Arc<FakeRunLedger>, RunId) {
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key: IdempotencyKey::new(format!("submission-{run}")).assert_value(),
-            intent_digest: Sha256Digest::new("b".repeat(64)).assert_value(),
             submission_digest: Sha256Digest::new("a".repeat(64)).assert_value(),
             admitted: admitted_run(),
         })

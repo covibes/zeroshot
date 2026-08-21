@@ -6,10 +6,11 @@ use openengine_cluster_client::{
 };
 use openengine_cluster_protocol::{
     RequestId, RunForceParams, RunId, RunListParams, RunLogEventNotification, RunLogsParams,
-    RunStatusParams, RunSubmitResult, RunWatchParams, SourceBranchId, SubscriptionId,
+    ResolvedSource, RunStatusParams, RunSubmitResult, RunWatchParams, SourceBranchId,
+    SourceRepositoryId, SourceRevisionId, SubscriptionId, TargetOecpSessionRequest,
 };
 use serde_json::json;
-use zeroshot_engine::native_v2_target_authority::TargetRunIntent;
+use zeroshot_engine::native_v2_cli::{PreparedRunRequest, TargetRunIntent};
 
 use super::super::*;
 
@@ -28,9 +29,8 @@ pub(super) struct MemoryRegistry {
 pub(super) enum AuthorityCall {
     Discover(TargetRecord),
     Login(TargetRecord),
-    Install(TargetRecord, TargetSetupDocument),
     Submit(TargetRecord, Box<TargetRunRequest>),
-    Session(TargetRecord),
+    Session(TargetRecord, TargetOecpSessionRequest),
 }
 
 #[derive(Clone)]
@@ -63,6 +63,21 @@ impl TargetRegistry for MemoryRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| TargetConnectorError::NotFound(name.to_owned()))
+    }
+
+    fn setup(
+        &self,
+        name: &str,
+        repository: String,
+        default_branch: Option<String>,
+    ) -> Result<(), TargetConnectorError> {
+        let mut targets = self.targets.lock().assert_value();
+        let target = targets
+            .get_mut(name)
+            .ok_or_else(|| TargetConnectorError::NotFound(name.to_owned()))?;
+        target.repository = Some(repository);
+        target.default_branch = default_branch;
+        Ok(())
     }
 }
 
@@ -97,18 +112,6 @@ impl TargetControlAuthority for FakeAuthority {
         Ok(())
     }
 
-    async fn install(
-        &self,
-        target: &TargetRecord,
-        setup: &TargetSetupDocument,
-    ) -> Result<(), TargetAuthorityError> {
-        self.calls
-            .lock()
-            .assert_value()
-            .push(AuthorityCall::Install(target.clone(), setup.clone()));
-        Ok(())
-    }
-
     async fn submit(
         &self,
         target: &TargetRecord,
@@ -119,18 +122,19 @@ impl TargetControlAuthority for FakeAuthority {
             Box::new(request.clone()),
         ));
         Ok(RunSubmitResult {
-            run_id: RunId::new("run-hosted"),
+            run_id: request.run_id.clone(),
         })
     }
 
     async fn oecp_session(
         &self,
         target: &TargetRecord,
+        request: &TargetOecpSessionRequest,
     ) -> Result<TargetOecpAccess, TargetAuthorityError> {
         self.calls
             .lock()
             .assert_value()
-            .push(AuthorityCall::Session(target.clone()));
+            .push(AuthorityCall::Session(target.clone(), request.clone()));
         TargetOecpAccess::new(
             self.endpoint.clone(),
             Some("access-token".to_owned()),
@@ -249,6 +253,8 @@ pub(super) fn hosted_target(name: &str, origin: impl Into<String>) -> TargetReco
         access: TargetAccess::Hosted {
             device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
         },
+        repository: Some("open-engine/zeroshot".to_owned()),
+        default_branch: Some("main".to_owned()),
     }
 }
 
@@ -258,6 +264,8 @@ pub(super) fn direct_target(origin: impl Into<String>) -> TargetRecord {
         name: "vm".to_owned(),
         origin: origin.into(),
         access: TargetAccess::Direct,
+        repository: Some("open-engine/zeroshot".to_owned()),
+        default_branch: Some("main".to_owned()),
     }
 }
 
@@ -291,10 +299,56 @@ pub(super) fn run_intent() -> TargetRunIntent {
     .assert_value()
 }
 
-pub(super) fn run_request() -> TargetRunRequest {
-    TargetRunRequest {
+pub(super) fn run_request() -> PreparedRunRequest {
+    PreparedRunRequest {
+        run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
         intent: run_intent(),
         environment: BTreeMap::new(),
+        github_token: None,
+    }
+}
+
+pub(super) fn exact_run_request() -> TargetRunRequest {
+    let request = run_request();
+    TargetRunRequest {
+        run_id: request.run_id,
+        submission: openengine_cluster_protocol::RunSubmission {
+            title: request.intent.title,
+            graph: request.intent.graph,
+            initial_input: request.intent.initial_input,
+            runtime: request.intent.runtime,
+            source: ResolvedSource {
+                repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
+                branch: SourceBranchId::new("feature").assert_value(),
+                revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+                    .assert_value(),
+            },
+            submission_key: request.intent.submission_key,
+        },
+        environment: request.environment,
+        github_token: request.github_token,
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FakeSourceResolver;
+
+#[async_trait]
+impl TargetSourceResolver for FakeSourceResolver {
+    async fn resolve(
+        &self,
+        repository: &str,
+        branch: Option<&str>,
+        _github_token: Option<&str>,
+    ) -> Result<ResolvedSource, TargetConnectorError> {
+        Ok(ResolvedSource {
+            repository: SourceRepositoryId::new(repository)
+                .map_err(|_| TargetConnectorError::SourceResolution)?,
+            branch: SourceBranchId::new(branch.unwrap_or("remote-default"))
+                .map_err(|_| TargetConnectorError::SourceResolution)?,
+            revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+                .map_err(|_| TargetConnectorError::SourceResolution)?,
+        })
     }
 }
 

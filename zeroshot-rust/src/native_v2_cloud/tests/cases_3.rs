@@ -126,33 +126,34 @@ async fn exact_retry_dedupes_and_changed_retry_conflicts() {
 }
 
 #[tokio::test]
-async fn branch_override_participates_in_pre_resolution_retry_identity() {
+async fn exact_source_revision_participates_in_retry_identity() {
     let harness = harness(Behavior::Hang).await;
     let request = request_with_key(Value::Null, "cloud-branch");
-    let mut intent = crate::native_v2_contract::RunSubmissionIntent::from(&request.submission);
-    intent.branch = Some(SourceBranchId::new("feature").assert_value_with("branch"));
-    let digest = run_intent_digest(&intent).assert_value_with("branch intent digest");
+    let digest = submission_digest(&request.submission).assert_value_with("submission digest");
     let environment = exact_test_environment(&request).assert_value_with("branch test environment");
     let first = harness
         .controller
-        .submit_with_intent_digest_and_exact_environment(request, digest.clone(), environment)
+        .submit_with_exact_environment(request.clone(), environment)
         .await
         .assert_value_with("first branch submission");
 
     let exact = harness
         .controller
-        .resolve_intent(&intent.submission_key, &digest)
+        .resolve_submission(&request.submission.submission_key, &digest)
         .await
         .assert_value_with("exact retry lookup")
         .assert_value_with("exact retry receipt");
     assert_eq!(exact.run_id, first.run_id);
 
-    intent.branch = Some(SourceBranchId::new("release").assert_value_with("branch"));
-    let changed = run_intent_digest(&intent).assert_value_with("changed branch digest");
+    let mut changed_submission = request.submission.clone();
+    changed_submission.source.revision =
+        SourceRevisionId::new("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .assert_value_with("changed revision");
+    let changed = submission_digest(&changed_submission).assert_value_with("changed digest");
     assert!(matches!(
         harness
             .controller
-            .resolve_intent(&intent.submission_key, &changed)
+            .resolve_submission(&request.submission.submission_key, &changed)
             .await,
         Err(NativeV2CloudError::Ledger(
             RunLedgerError::SubmissionConflict { .. }

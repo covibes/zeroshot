@@ -57,15 +57,17 @@ impl NativeV2CliBackend for InProcessCliBackend {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         self.target(target)?;
-        let TargetRunRequest {
+        let PreparedRunRequest {
+            run_id,
             intent,
             environment,
+            ..
         } = request;
         let params = RunSubmitParams {
-            run_id: RunId::new("candidate-run"),
+            run_id,
             submission: RunSubmission {
                 title: intent.title,
                 graph: intent.graph,

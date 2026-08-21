@@ -5,7 +5,7 @@ use std::process::{Command as StdCommand, Output};
 use std::time::Duration;
 
 use openengine_cluster_testkit::TemporaryDirectory;
-use openengine_cluster_testkit::assertions::{AssertSlice, AssertValue, JsonAt};
+use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep, timeout};
@@ -319,15 +319,9 @@ pub(super) fn receipt_run_id(output: &Output) -> String {
 }
 
 pub(super) fn assert_local_run_id(run_id: &str) {
-    assert_eq!(run_id.len(), 36);
-    assert!(run_id.starts_with("run-"));
-    assert!(
-        run_id
-            .as_bytes()
-            .assert_slice_from(4)
-            .iter()
-            .all(u8::is_ascii_hexdigit)
-    );
+    assert!(uuid::Uuid::parse_str(run_id).is_ok_and(|value| {
+        value.get_version_num() == 7 && value.hyphenated().to_string() == run_id
+    }));
 }
 
 fn initialize_repository(repository: &Path) {

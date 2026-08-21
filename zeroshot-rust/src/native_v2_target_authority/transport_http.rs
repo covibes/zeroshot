@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use super::super::{TargetAuthorityError, TargetAuthorityErrorKind};
-use super::{MAX_HEADER_BYTES, MAX_SETUP_BYTES, valid_issued_bearer};
+use super::{MAX_HEADER_BYTES, MAX_PRIVATE_REQUEST_BYTES, valid_issued_bearer};
 
 #[derive(Clone)]
 pub(super) struct RequestHead {
@@ -127,7 +127,7 @@ pub(super) async fn read_http_request(
         Some(value) => value.parse::<usize>().map_err(invalid_http)?,
         None => 0,
     };
-    if content_length > MAX_SETUP_BYTES {
+    if content_length > MAX_PRIVATE_REQUEST_BYTES {
         return Err(invalid_http("request body exceeds limit"));
     }
     let mut encoded = vec![0_u8; head.encoded_len.saturating_add(content_length)];

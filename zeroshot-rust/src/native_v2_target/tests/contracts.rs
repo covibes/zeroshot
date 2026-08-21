@@ -1,4 +1,5 @@
 use super::super::*;
+use super::super::contract::PreparedTargetSetup;
 use super::fixtures::setup_request;
 
 #[test]
@@ -46,7 +47,7 @@ fn setup_carries_one_optional_default_branch() {
     let request = setup_request();
     assert_eq!(
         prepare_setup(&request).assert_value(),
-        TargetSetupDocument {
+        PreparedTargetSetup {
             repository: "open-engine/zeroshot".to_owned(),
             default_branch: Some("main".to_owned()),
         }

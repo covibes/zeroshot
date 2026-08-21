@@ -295,7 +295,6 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key,
-            intent_digest: Sha256Digest::new("1".repeat(64)).assert_value_with("intent digest"),
             submission_digest: Sha256Digest::new("0".repeat(64)).assert_value_with("digest"),
             admitted: admitted.clone(),
         })

@@ -1,38 +1,38 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use openengine_cluster_client::ClusterClient;
 use openengine_cluster_client::websocket::WebSocketTransport;
 use openengine_cluster_protocol::{
-    IdempotencyKey, RunId, RunListParams, RunSize, RunTitle, RuntimePlan,
+    IdempotencyKey, ResolvedSource, RunId, RunListParams, RunSize, RunSubmission, RunTitle,
+    RuntimePlan, SourceBranchId, SourceRepositoryId, SourceRevisionId,
+    TargetPrivateBootstrapRequest,
 };
-use openengine_cluster_testkit::assertions::AssertValue;
-use openengine_cluster_testkit::admission::graph_fixture;
-use serde_json::{json, Value};
 use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
 };
+use openengine_cluster_testkit::admission::graph_fixture;
+use openengine_cluster_testkit::assertions::AssertValue;
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
 
 use super::*;
+use super::private_access::encode_lower;
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanupUnavailable,
     CapsuleDestroyed, ControllerClaimUnavailable, ExclusiveControllerClaim,
 };
 use crate::native_v2_contract::{AdmittedRun, CodexProvider};
-use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
+use crate::native_v2_supervisor::RunRuntimeExit;
 use crate::v2_run_ledger::fake::FakeRunLedger;
 
-#[path = "tests/run_submission.rs"]
-mod run_submission;
-use run_submission::assert_run_submission;
 #[path = "tests/http.rs"]
 mod http_fixture;
-use http_fixture::{http, TestHttpRequest};
+use http_fixture::{TestHttpRequest, http};
 
 struct Claim;
 impl ExclusiveControllerClaim for Claim {}
@@ -52,7 +52,7 @@ impl CapsuleAllocator for NoAllocation {
         &self,
         _run_id: &RunId,
         _admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         Err(CapsuleAllocationUnavailable)
     }
@@ -68,7 +68,7 @@ impl CapsuleAllocator for NoAllocation {
 
 #[derive(Default)]
 struct FakeFactory {
-    calls: AtomicUsize,
+    controllers: AtomicUsize,
     submissions: AtomicUsize,
     active_submissions: AtomicUsize,
     max_active_submissions: AtomicUsize,
@@ -76,11 +76,8 @@ struct FakeFactory {
 
 #[async_trait]
 impl TargetControllerFactory for FakeFactory {
-    async fn create(
-        &self,
-        _setup: &TargetSetupDocument,
-    ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+    async fn create(&self) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+        self.controllers.fetch_add(1, Ordering::SeqCst);
         NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), Arc::new(NoAllocation))
             .await
             .map(Arc::new)
@@ -89,9 +86,8 @@ impl TargetControllerFactory for FakeFactory {
 
     async fn submit(
         &self,
-        _setup: &TargetSetupDocument,
         _controller: &NativeV2CloudController,
-        _request: TargetRunRequest,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
         let active = self.active_submissions.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active_submissions
@@ -100,7 +96,7 @@ impl TargetControllerFactory for FakeFactory {
         self.active_submissions.fetch_sub(1, Ordering::SeqCst);
         self.submissions.fetch_add(1, Ordering::SeqCst);
         Ok(TargetRunReceipt {
-            run_id: RunId::new("run-fake"),
+            run_id: request.run_id,
         })
     }
 }
@@ -113,29 +109,31 @@ impl TargetSessionAuthority for FakeSessions {
         &self,
         bearer_token: &str,
     ) -> Result<ConnectionIdentity, TargetAuthorityError> {
-        if bearer_token == "control-token" {
-            Ok(identity())
-        } else {
-            Err(TargetAuthorityError::unauthorized())
-        }
+        (bearer_token == "control-token")
+            .then(identity)
+            .ok_or_else(TargetAuthorityError::unauthorized)
     }
 
     async fn issue_oecp(
         &self,
         _identity: &ConnectionIdentity,
+        request: &TargetOecpSessionRequest,
     ) -> Result<String, TargetAuthorityError> {
-        Ok("oecp-token".to_owned())
+        request
+            .run_id
+            .as_ref()
+            .is_some_and(|candidate| candidate == &run_id())
+            .then(|| "oecp-token".to_owned())
+            .ok_or_else(|| TargetAuthorityError::invalid("run-scoped session required"))
     }
 
     async fn authenticate_oecp(
         &self,
         bearer_token: &str,
     ) -> Result<ConnectionIdentity, TargetAuthorityError> {
-        if bearer_token == "oecp-token" {
-            Ok(identity())
-        } else {
-            Err(TargetAuthorityError::unauthorized())
-        }
+        (bearer_token == "oecp-token")
+            .then(identity)
+            .ok_or_else(TargetAuthorityError::unauthorized)
     }
 }
 
@@ -149,134 +147,39 @@ fn identity() -> ConnectionIdentity {
     })
 }
 
-fn setup(repository: &str) -> TargetSetupDocument {
-    TargetSetupDocument {
-        repository: repository.to_owned(),
-        default_branch: None,
-    }
-}
-
-fn intent() -> TargetRunIntent {
-    TargetRunIntent {
-        title: RunTitle::new("Target authority test").assert_value(),
-        graph: graph_fixture("worker", json!({"kind": "null"})),
-        initial_input: Value::Null,
-        runtime: RuntimePlan::Codex {
-            provider: CodexProvider::OpenAi,
-            size: RunSize::Tiny,
-            nodes: BTreeMap::new(),
-        },
-        branch: None,
-        submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
-    }
+fn run_id() -> RunId {
+    RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991")
 }
 
 fn request() -> TargetRunRequest {
     TargetRunRequest {
-        intent: intent(),
+        run_id: run_id(),
+        submission: RunSubmission {
+            title: RunTitle::new("Target authority test").assert_value(),
+            graph: graph_fixture("worker", json!({"kind": "null"})),
+            initial_input: Value::Null,
+            runtime: RuntimePlan::Codex {
+                provider: CodexProvider::OpenAi,
+                size: RunSize::Tiny,
+                nodes: BTreeMap::new(),
+            },
+            source: ResolvedSource {
+                repository: SourceRepositoryId::new("owner/repo").assert_value(),
+                branch: SourceBranchId::new("main").assert_value(),
+                revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+                    .assert_value(),
+            },
+            submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
+        },
         environment: BTreeMap::new(),
-    }
-}
-
-struct TempSetupRoot(std::path::PathBuf);
-
-impl TempSetupRoot {
-    fn new() -> Self {
-        let mut random = [0_u8; 8];
-        getrandom::fill(&mut random).assert_value();
-        let path = std::env::temp_dir().join(format!(
-            "zeroshot-v2-target-setup-{}-{}",
-            std::process::id(),
-            encode_hex(&random)
-        ));
-        Self(path)
-    }
-}
-
-impl Drop for TempSetupRoot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        github_token: None,
     }
 }
 
 #[tokio::test]
-async fn file_setup_store_atomically_replaces_and_restores_one_document() {
-    let root = TempSetupRoot::new();
-    let store = Arc::new(FileTargetSetupStore::new(root.0.join("setup.json")));
-    let first_factory = Arc::new(FakeFactory::default());
-    let first = NativeV2TargetAuthority::with_setup_store(first_factory, store.clone())
-        .await
-        .assert_value();
-    first.install(setup("owner/first")).await.assert_value();
-    first.install(setup("owner/current")).await.assert_value();
-    drop(first);
-
-    let restored_factory = Arc::new(FakeFactory::default());
-    let restored =
-        NativeV2TargetAuthority::with_setup_store(restored_factory.clone(), store.clone())
-            .await
-            .assert_value();
-    restored.controller().await.assert_value();
-    assert_eq!(restored_factory.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        restored
-            .install(setup("owner/current"))
-            .await
-            .assert_value(),
-        TargetSetupOutcome::Unchanged
-    );
-    assert_eq!(
-        restored
-            .install(setup("owner/divergent"))
-            .await
-            .assert_value(),
-        TargetSetupOutcome::Installed
-    );
-    assert_eq!(
-        store.load().await.assert_value(),
-        Some(setup("owner/divergent"))
-    );
-}
-
-#[tokio::test]
-async fn setup_replacement_keeps_the_shared_controller_and_updates_later_submissions() {
+async fn concurrent_target_submissions_share_one_host_turn() {
     let factory = Arc::new(FakeFactory::default());
-    let authority = NativeV2TargetAuthority::new(factory.clone());
-    assert_eq!(
-        authority.install(setup("owner/first")).await.assert_value(),
-        TargetSetupOutcome::Installed
-    );
-    assert_eq!(
-        authority
-            .install(setup("owner/second"))
-            .await
-            .assert_value(),
-        TargetSetupOutcome::Installed
-    );
-    let first = authority.controller().await.assert_value();
-    let second = authority.controller().await.assert_value();
-    assert!(Arc::ptr_eq(&first, &second));
-    assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        authority
-            .install(setup("owner/second"))
-            .await
-            .assert_value(),
-        TargetSetupOutcome::Unchanged
-    );
-    assert_eq!(
-        authority.install(setup("owner/third")).await.assert_value(),
-        TargetSetupOutcome::Installed
-    );
-}
-
-#[tokio::test]
-async fn concurrent_target_submissions_share_one_host_submission_turn() {
-    let factory = Arc::new(FakeFactory::default());
-    let authority = Arc::new(
-        NativeV2TargetAuthority::with_installed_setup(factory.clone(), setup("owner/repo"))
-            .assert_value(),
-    );
+    let authority = Arc::new(NativeV2TargetAuthority::new(factory.clone()));
     let left = {
         let authority = authority.clone();
         tokio::spawn(async move { authority.submit(request()).await })
@@ -290,120 +193,205 @@ async fn concurrent_target_submissions_share_one_host_submission_turn() {
         left.assert_value().assert_value(),
         right.assert_value().assert_value()
     );
+    assert_eq!(factory.controllers.load(Ordering::SeqCst), 1);
     assert_eq!(factory.submissions.load(Ordering::SeqCst), 2);
     assert_eq!(factory.max_active_submissions.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn loopback_routes_setup_session_and_target_scoped_oecp() {
+async fn hosted_sessions_are_authenticated_and_run_scoped() {
     let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
     let address = listener.local_addr().assert_value();
     let factory = Arc::new(FakeFactory::default());
-    let authority = Arc::new(NativeV2TargetAuthority::new(factory.clone()));
     let endpoint = format!("ws://{address}{OECP_PATH}");
     let server = Arc::new(
-        NativeV2TargetServer::new_hosted(authority, Arc::new(FakeSessions), endpoint.clone())
-            .assert_value(),
+        NativeV2TargetServer::new_hosted(
+            Arc::new(NativeV2TargetAuthority::new(factory.clone())),
+            Arc::new(FakeSessions),
+            endpoint.clone(),
+        )
+        .assert_value(),
     );
-    let server_task = tokio::spawn(server.serve(listener));
+    let task = tokio::spawn(server.serve(listener));
 
     let discovery = http(address, TestHttpRequest::empty("GET", DISCOVERY_PATH, None)).await;
-    assert_eq!(discovery.status, 200);
     let document: TargetDiscoveryDocument = serde_json::from_slice(&discovery.body).assert_value();
-    assert_eq!(document, TargetDiscoveryDocument::default());
-    assert_pre_setup_routes(address, &factory).await;
-    let encoded_setup = serde_json::to_vec(&setup("owner/repo")).assert_value();
-    assert_setup_outcome(address, &encoded_setup, TargetSetupOutcome::Installed).await;
-    assert_run_submission(address, &factory).await;
+    assert_eq!(document.authentication, TargetAuthentication::HostedOauth);
+    assert_eq!(document.kind, DISCOVERY_KIND);
+
+    let encoded = serde_json::to_vec(&request()).assert_value();
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", RUN_PATH, None, &encoded)
+        )
+        .await
+        .status,
+        401
+    );
+    let accepted = http(
+        address,
+        TestHttpRequest::body("POST", RUN_PATH, Some("control-token"), &encoded),
+    )
+    .await;
+    assert_eq!(accepted.status, 200);
+    let receipt: TargetRunReceipt = serde_json::from_slice(&accepted.body).assert_value();
+    assert_eq!(receipt.run_id, run_id());
+
+    let session_body = serde_json::to_vec(&TargetOecpSessionRequest {
+        run_id: Some(run_id()),
+    })
+    .assert_value();
     let session = http(
         address,
-        TestHttpRequest::empty("POST", SESSION_PATH, Some("control-token")),
+        TestHttpRequest::body("POST", SESSION_PATH, Some("control-token"), &session_body),
     )
     .await;
     assert_eq!(session.status, 200);
     let session: TargetOecpSession = serde_json::from_slice(&session.body).assert_value();
     assert_eq!(session.endpoint, endpoint);
-    assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
+    connect_and_list(&session.endpoint, Some("oecp-token")).await;
 
-    let mut rejected_request = session
-        .endpoint
-        .clone()
-        .into_client_request()
-        .assert_value();
-    rejected_request.headers_mut().insert(
-        AUTHORIZATION,
-        HeaderValue::from_static("Bearer wrong-token"),
+    task.abort();
+}
+
+#[tokio::test]
+async fn direct_target_remains_auth_free_without_private_bootstrap() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let endpoint = format!("ws://{address}{OECP_PATH}");
+    let server = Arc::new(
+        NativeV2TargetServer::new_direct(
+            Arc::new(NativeV2TargetAuthority::new(Arc::new(
+                FakeFactory::default(),
+            ))),
+            identity(),
+            endpoint.clone(),
+        )
+        .assert_value(),
+    );
+    let task = tokio::spawn(server.serve(listener));
+    let session = http(
+        address,
+        TestHttpRequest::body("POST", SESSION_PATH, None, b"{}"),
+    )
+    .await;
+    assert_eq!(session.status, 200);
+    let session: TargetOecpSession = serde_json::from_slice(&session.body).assert_value();
+    assert_eq!(session.bearer_token, None);
+    connect_and_list(&endpoint, None).await;
+    task.abort();
+}
+
+#[tokio::test]
+async fn private_target_closes_bootstrap_and_rejects_unprivileged_children() {
+    use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+
+    let root = std::env::temp_dir().join(format!("zeroshot-target-key-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).assert_value();
+    let key_path = root.join("key");
+    std::fs::write(&key_path, "07".repeat(32)).assert_value();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).assert_value();
+    }
+    let bootstrap_key = TargetBootstrapKey::load_and_unlink(&key_path).assert_value();
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let endpoint = format!("ws://{address}{OECP_PATH}");
+    let server = Arc::new(
+        NativeV2TargetServer::new_private(
+            Arc::new(NativeV2TargetAuthority::new(Arc::new(
+                FakeFactory::default(),
+            ))),
+            identity(),
+            endpoint.clone(),
+            bootstrap_key,
+        )
+        .assert_value(),
+    );
+    let task = tokio::spawn(server.serve(listener));
+
+    let encoded = serde_json::to_vec(&request()).assert_value();
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", RUN_PATH, None, &encoded)
+        )
+        .await
+        .status,
+        401
+    );
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", SESSION_PATH, None, b"{}")
+        )
+        .await
+        .status,
+        401
     );
     assert!(
-        tokio_tungstenite::connect_async(rejected_request)
+        tokio_tungstenite::connect_async(endpoint.clone())
             .await
             .is_err()
     );
 
-    let mut request = session.endpoint.into_client_request().assert_value();
-    request
-        .headers_mut()
-        .insert(AUTHORIZATION, HeaderValue::from_static("Bearer oecp-token"));
-    let (websocket, _) = tokio_tungstenite::connect_async(request)
+    let token = "a".repeat(64);
+    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &[7; 32]).assert_value());
+    let mut ciphertext = token.as_bytes().to_vec();
+    let nonce = [11; 12];
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(nonce),
+        Aad::from(b"zeroshot-capsule-bootstrap-v1"),
+        &mut ciphertext,
+    )
+    .assert_value();
+    let bootstrap = serde_json::to_vec(&TargetPrivateBootstrapRequest {
+        nonce: encode_lower(&nonce),
+        ciphertext: encode_lower(&ciphertext),
+    })
+    .assert_value();
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", TARGET_PRIVATE_BOOTSTRAP_PATH, None, &bootstrap)
+        )
         .await
-        .assert_value();
-    let client = ClusterClient::new(WebSocketTransport::new(websocket));
-    client.initialize().await.assert_value();
-    let listed = client.run_list(RunListParams {}).await.assert_value();
-    assert!(listed.runs.is_empty());
-    assert_setup_outcome(address, &encoded_setup, TargetSetupOutcome::Unchanged).await;
-    let divergent = http(
+        .status,
+        204
+    );
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", TARGET_PRIVATE_BOOTSTRAP_PATH, None, &bootstrap)
+        )
+        .await
+        .status,
+        404
+    );
+    let session = http(
         address,
-        TestHttpRequest::body(
-            "PUT",
-            SETUP_PATH,
-            Some("control-token"),
-            &serde_json::to_vec(&setup("owner/other")).assert_value(),
-        ),
+        TestHttpRequest::body("POST", SESSION_PATH, Some(&token), b"{}"),
     )
     .await;
-    assert_eq!(divergent.status, 200);
-    assert_eq!(
-        serde_json::from_slice::<TargetSetupResult>(&divergent.body)
-            .assert_value()
-            .outcome,
-        TargetSetupOutcome::Installed
-    );
+    assert_eq!(session.status, 200);
+    connect_and_list(&endpoint, Some(&token)).await;
 
-    server_task.abort();
+    task.abort();
+    let _ = std::fs::remove_dir(&root);
 }
 
-#[tokio::test]
-async fn direct_loopback_routes_control_and_oecp_without_bearers() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
-    let address = listener.local_addr().assert_value();
-    let factory = Arc::new(FakeFactory::default());
-    let authority = Arc::new(NativeV2TargetAuthority::new(factory.clone()));
-    let endpoint = format!("ws://{address}{OECP_PATH}");
-    let server = Arc::new(
-        NativeV2TargetServer::new_direct(authority, identity(), endpoint.clone()).assert_value(),
-    );
-    let server_task = tokio::spawn(server.serve(listener));
-
-    let discovery = http(address, TestHttpRequest::empty("GET", DISCOVERY_PATH, None)).await;
-    let document: TargetDiscoveryDocument = serde_json::from_slice(&discovery.body).assert_value();
-    assert_eq!(document.authentication, TargetAuthentication::None);
-
-    let encoded_setup = serde_json::to_vec(&setup("owner/repo")).assert_value();
-    let installed = http(
-        address,
-        TestHttpRequest::body("PUT", SETUP_PATH, None, &encoded_setup),
-    )
-    .await;
-    assert_eq!(installed.status, 200);
-    let session = http(address, TestHttpRequest::empty("POST", SESSION_PATH, None)).await;
-    assert_eq!(session.status, 200);
-    let session: TargetOecpSession = serde_json::from_slice(&session.body).assert_value();
-    assert_eq!(session.endpoint, endpoint);
-    assert_eq!(session.bearer_token, None);
-
-    let request = session.endpoint.into_client_request().assert_value();
-    assert!(request.headers().get(AUTHORIZATION).is_none());
+async fn connect_and_list(endpoint: &str, bearer: Option<&str>) {
+    let mut request = endpoint.into_client_request().assert_value();
+    if let Some(bearer) = bearer {
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {bearer}")).assert_value(),
+        );
+    }
     let (websocket, _) = tokio_tungstenite::connect_async(request)
         .await
         .assert_value();
@@ -416,54 +404,5 @@ async fn direct_loopback_routes_control_and_oecp_without_bearers() {
             .assert_value()
             .runs
             .is_empty()
-    );
-    assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
-
-    server_task.abort();
-}
-
-async fn assert_pre_setup_routes(address: std::net::SocketAddr, factory: &FakeFactory) {
-    let unauthorized = http(
-        address,
-        TestHttpRequest::body(
-            "PUT",
-            SETUP_PATH,
-            None,
-            &serde_json::to_vec(&setup("owner/repo")).assert_value(),
-        ),
-    )
-    .await;
-    assert_eq!(unauthorized.status, 401);
-    let session = http(
-        address,
-        TestHttpRequest::empty("POST", SESSION_PATH, Some("control-token")),
-    )
-    .await;
-    assert_eq!(session.status, 409);
-    assert_eq!(factory.calls.load(Ordering::SeqCst), 0);
-    let cross_path = http(
-        address,
-        TestHttpRequest::empty("GET", OECP_PATH, Some("control-token")),
-    )
-    .await;
-    assert_eq!(cross_path.status, 404);
-}
-
-async fn assert_setup_outcome(
-    address: std::net::SocketAddr,
-    encoded_setup: &[u8],
-    expected: TargetSetupOutcome,
-) {
-    let response = http(
-        address,
-        TestHttpRequest::body("PUT", SETUP_PATH, Some("control-token"), encoded_setup),
-    )
-    .await;
-    assert_eq!(response.status, 200);
-    assert_eq!(
-        serde_json::from_slice::<TargetSetupResult>(&response.body)
-            .assert_value()
-            .outcome,
-        expected
     );
 }

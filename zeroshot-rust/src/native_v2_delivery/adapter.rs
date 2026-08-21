@@ -5,6 +5,7 @@ pub struct NativeV2DeliveryAdapter {
     config: Arc<NativeV2DeliveryConfig>,
     authority: Arc<dyn GitHubDeliveryAuthority>,
     git: SystemGit,
+    trusted_github_token: Option<Arc<str>>,
 }
 
 impl NativeV2DeliveryAdapter {
@@ -18,7 +19,15 @@ impl NativeV2DeliveryAdapter {
             config: Arc::new(config),
             authority,
             git,
+            trusted_github_token: None,
         }
+    }
+
+    /// Supplies target-owned checkout/delivery authority without adding it to provider children.
+    #[must_use]
+    pub fn with_trusted_github_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.trusted_github_token = token;
+        self
     }
 }
 
@@ -139,7 +148,7 @@ struct ReviewDrive<'a> {
 
 impl NativeV2DeliveryAdapter {
     fn authorize<'a>(
-        &self,
+        &'a self,
         invocation: &'a DriverInvocation,
     ) -> Result<(&'a DeliverySession, GitHubCredential<'a>, DeliveryMode), DeliveryStop> {
         if invocation.role != NodeRole::GitDelivery
@@ -153,8 +162,11 @@ impl NativeV2DeliveryAdapter {
         let mode = DeliveryMode::from_worker(&invocation.node.worker)
             .ok_or(DeliveryStop::Runner(NodeRunnerError::InvalidRole))?;
         validate_delivery_contract(mode, &invocation.response)?;
-        let credential = github_credential(&invocation.environment)
-            .ok_or_else(|| DeliveryStop::Outcome(WorkerOutcome::authentication_refusal()))?;
+        let credential = match self.trusted_github_token.as_deref() {
+            Some(token) => GitHubCredential(token),
+            None => github_credential(&invocation.environment)
+                .ok_or_else(|| DeliveryStop::Outcome(WorkerOutcome::authentication_refusal()))?,
+        };
         let session = invocation
             .session
             .as_any()

@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, watch};
 
 use crate::execution::process::HostedProcessPool;
 use crate::native_v2_candidate::{
-    NativeV2CandidateConfig, NativeV2HarnessConfig, build_native_v2_candidate,
+    NativeV2CandidateConfig, NativeV2HarnessConfig, build_native_v2_candidate_with_github_token,
 };
 use crate::native_v2_capsule::{
     CapsuleFilesystem, CapsuleFilesystemSpec, NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunner,
@@ -30,10 +30,10 @@ use crate::native_v2_codex::NativeV2CodexConfig;
 use crate::native_v2_contract::{AdmittedRun, RuntimePlan};
 use crate::native_v2_delivery::{GhCliAuthorityConfig, GhCliDeliveryAuthority, NativeV2DeliveryConfig};
 use crate::native_v2_portable_controller::WorkspaceIdentity;
-use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
+use crate::native_v2_supervisor::RunRuntimeExit;
 
 use super::ProductionHostingError;
-use super::repository::{RepositoryInstall, install_repository, production_source, repository_token};
+use super::repository::{RepositoryInstall, install_repository, production_source};
 use identity_leases::{ActiveRunProcessPool, ActiveRunProcessPools};
 
 pub(super) struct ProductionCapsuleConfig {
@@ -90,11 +90,11 @@ impl ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
-        environment: &RunEnvironment,
+        github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let run_root = run_directory(&self.config.storage_root, run_id);
         std::fs::create_dir(&run_root).map_err(|_| CapsuleAllocationUnavailable)?;
-        let allocation = self.build_capsule(run_id, admitted, environment).await;
+        let allocation = self.build_capsule(run_id, admitted, github_token).await;
         if allocation.is_err() {
             let _ = remove_run_directory(&run_root);
         }
@@ -105,7 +105,7 @@ impl ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
-        environment: &RunEnvironment,
+        github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let process_pool = self
             .process_pools
@@ -124,7 +124,7 @@ impl ProductionCapsuleAllocator {
             resolved: &admitted.source,
             workspace: &filesystem.workspace,
             process_pool: active_process_pool,
-            github_token: repository_token(environment),
+            github_token,
         })
         .await
         .map_err(|_| CapsuleAllocationUnavailable)?;
@@ -133,7 +133,7 @@ impl ProductionCapsuleAllocator {
             gh_program: self.config.gh_program.clone(),
             ..GhCliAuthorityConfig::hosted(runtime_home)
         };
-        let candidate = build_native_v2_candidate(
+        let candidate = build_native_v2_candidate_with_github_token(
             admitted,
             NativeV2CandidateConfig {
                 harness: self.harness(admitted, &filesystem, active_process_pool)?,
@@ -143,6 +143,7 @@ impl ProductionCapsuleAllocator {
                 ),
                 github: Arc::new(GhCliDeliveryAuthority::new(github_config)),
             },
+            github_token.map(Arc::<str>::from),
         )
         .map_err(|_| CapsuleAllocationUnavailable)?;
         let workspace_identity = WorkspaceIdentity::capture(&filesystem.workspace)
@@ -252,13 +253,13 @@ impl CapsuleAllocator for ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
-        environment: &RunEnvironment,
+        github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let _turn = self.allocation_turn.lock().await;
         if !self.allocated.lock().await.insert(run_id.clone()) {
             return Err(CapsuleAllocationUnavailable);
         }
-        self.allocate_one(run_id, admitted, environment).await
+        self.allocate_one(run_id, admitted, github_token).await
     }
 
     async fn destroy_or_confirm_absent(

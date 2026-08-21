@@ -1,19 +1,13 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use openengine_cluster_protocol::RunId;
+use openengine_cluster_protocol::{RunId, is_canonical_uuid_v7};
 use tokio::process::Command;
 
 use super::{NativeV2CliError, local_io, local_message};
 
 pub(super) fn validate_local_run_id(run_id: &RunId) -> Result<(), NativeV2CliError> {
-    let value = run_id.as_str();
-    let valid = value.len() == 36
-        && value.starts_with("run-")
-        && value[4..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    valid
+    is_canonical_uuid_v7(run_id)
         .then_some(())
         .ok_or_else(|| local_message("run ID is not a local controller identity"))
 }

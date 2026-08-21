@@ -15,7 +15,7 @@ use zeroshot_engine::native_v2_hosting::{
     ProductionHostingConfig, ProductionHostingError, build_production_target_authority,
 };
 use zeroshot_engine::native_v2_target_authority::{
-    NativeV2TargetServer, OECP_PATH, TargetAuthorityError,
+    NativeV2TargetServer, OECP_PATH, TargetAuthorityError, TargetBootstrapKey,
 };
 
 use super::contract::normalize_origin;
@@ -25,6 +25,7 @@ pub struct DirectTargetServeConfig {
     pub listen: SocketAddr,
     pub public_origin: String,
     pub storage: PathBuf,
+    pub bootstrap_key_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -55,6 +56,7 @@ pub fn parse_target_serve(
         listen,
         public_origin,
         storage,
+        bootstrap_key_file: options.get("--bootstrap-key-file").map(PathBuf::from),
     }))
 }
 
@@ -81,6 +83,11 @@ fn utf8_options(arguments: &[OsString]) -> Result<Vec<String>, NativeV2CliError>
 }
 
 pub async fn serve_direct_target(config: DirectTargetServeConfig) -> Result<(), TargetServeError> {
+    let bootstrap_key = config
+        .bootstrap_key_file
+        .as_deref()
+        .map(TargetBootstrapKey::load_and_unlink)
+        .transpose()?;
     let listener = TcpListener::bind(config.listen).await?;
     let endpoint = oecp_endpoint(&config.public_origin)?;
     let hosting = ProductionHostingConfig {
@@ -88,11 +95,10 @@ pub async fn serve_direct_target(config: DirectTargetServeConfig) -> Result<(), 
         ..ProductionHostingConfig::default()
     };
     let target = Arc::new(build_production_target_authority(hosting).await?);
-    let server = Arc::new(NativeV2TargetServer::new_direct(
-        target,
-        direct_identity(),
-        endpoint,
-    )?);
+    let server = Arc::new(match bootstrap_key {
+        Some(key) => NativeV2TargetServer::new_private(target, direct_identity(), endpoint, key)?,
+        None => NativeV2TargetServer::new_direct(target, direct_identity(), endpoint)?,
+    });
     eprintln!(
         "Zeroshot Rust direct target listening on {} as {}",
         config.listen, config.public_origin
@@ -109,7 +115,10 @@ fn exact_options(values: &[String]) -> Result<BTreeMap<String, String>, NativeV2
     for pair in values.chunks_exact(2) {
         let name = pair.first().ok_or_else(|| usage("missing option name"))?;
         let value = pair.get(1).ok_or_else(|| usage("missing option value"))?;
-        if !matches!(name.as_str(), "--listen" | "--public-origin" | "--storage") {
+        if !matches!(
+            name.as_str(),
+            "--listen" | "--public-origin" | "--storage" | "--bootstrap-key-file"
+        ) {
             return Err(usage(format!("unknown target serve option {name:?}")));
         }
         if value.is_empty() || options.insert(name.clone(), value.clone()).is_some() {
@@ -188,6 +197,7 @@ mod tests {
         assert_eq!(parsed.listen, "0.0.0.0:8080".parse().assert_value());
         assert_eq!(parsed.public_origin, "http://127.0.0.1:8080");
         assert_eq!(parsed.storage, PathBuf::from("/var/lib/zeroshot/native-v2"));
+        assert_eq!(parsed.bootstrap_key_file, None);
     }
 
     #[test]

@@ -29,7 +29,7 @@ use crate::native_v2_cli::{
     CliOutcome, CliRunForceResult, CliRunListResult, CliRunStatusResult,
     CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
     NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd,
-    TargetRunRequest, TargetSetup,
+    PreparedRunRequest, TargetSetup,
 };
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
@@ -258,7 +258,7 @@ impl CapsuleAllocator for CandidateAllocator {
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let delivery = Arc::new(NativeV2DeliveryAdapter::new(
             NativeV2DeliveryConfig {

@@ -1,8 +1,8 @@
 use tokio_tungstenite::tungstenite::http::Uri;
 use zeroshot_engine::native_v2_cli::{TargetAdd, TargetSetup};
-use zeroshot_engine::native_v2_target_authority::valid_target_repository;
+use openengine_cluster_protocol::SourceRepositoryId;
 
-use super::{TargetAccess, TargetConnectorError, TargetRecord, TargetSetupDocument};
+use super::{TargetAccess, TargetConnectorError, TargetRecord};
 
 const MAX_BEARER_TOKEN_BYTES: usize = 16 * 1024;
 
@@ -20,6 +20,8 @@ pub(super) fn prepare_target(request: TargetAdd) -> Result<TargetRecord, TargetC
         name: request.name,
         origin: normalize_origin(&request.url)?,
         access,
+        repository: None,
+        default_branch: None,
     })
 }
 
@@ -38,13 +40,19 @@ fn fresh_uuid() -> Result<String, TargetConnectorError> {
     ))
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct PreparedTargetSetup {
+    pub repository: String,
+    pub default_branch: Option<String>,
+}
+
 pub(super) fn prepare_setup(
     request: &TargetSetup,
-) -> Result<TargetSetupDocument, TargetConnectorError> {
-    if !valid_target_repository(&request.repository) {
+) -> Result<PreparedTargetSetup, TargetConnectorError> {
+    if SourceRepositoryId::new(&request.repository).is_err() {
         return Err(TargetConnectorError::InvalidRepository);
     }
-    Ok(TargetSetupDocument {
+    Ok(PreparedTargetSetup {
         repository: request.repository.clone(),
         default_branch: request
             .default_branch

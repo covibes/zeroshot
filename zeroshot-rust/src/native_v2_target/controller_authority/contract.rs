@@ -7,7 +7,7 @@ use zeroshot_engine::native_v2_target_authority::{
 
 mod hosted_runs;
 
-use hosted_runs::{HostedExtensionsWire, build_hosted_runs_descriptor};
+use hosted_runs::build_hosted_runs_descriptor;
 pub(super) use hosted_runs::HostedRunsDescriptor;
 
 use super::DEVICE_GRANT;
@@ -15,36 +15,6 @@ use crate::native_v2_target::TargetAuthorityError;
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_TOKEN_BYTES: usize = 16 * 1024;
-
-#[derive(Deserialize)]
-pub(super) struct HostedDiscoveryWire {
-    pub(super) kind: String,
-    pub(super) oauth: OAuthDiscoveryWire,
-    pub(super) session: SessionDiscoveryWire,
-    #[serde(default)]
-    extensions: HostedExtensionsWire,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OAuthDiscoveryWire {
-    pub(super) metadata_url: String,
-    pub(super) device_authorization_endpoint: String,
-    pub(super) token_endpoint: String,
-    pub(super) revocation_endpoint: String,
-    pub(super) client_id: String,
-    pub(super) device_grant_type: String,
-    pub(super) device_exchange_fields: Vec<String>,
-    pub(super) audience: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SessionDiscoveryWire {
-    pub(super) route_template: String,
-    pub(super) method: String,
-    pub(super) cache_policy: String,
-}
 
 #[derive(Deserialize)]
 pub(super) struct OAuthMetadataWire {
@@ -65,7 +35,6 @@ pub(super) struct HostedAuthDescriptor {
 }
 
 pub(super) struct ControllerDescriptor {
-    pub(super) setup_url: Url,
     pub(super) run_url: Url,
     pub(super) session_url: Url,
     pub(super) audience: String,
@@ -86,7 +55,6 @@ pub(super) fn build_controller_descriptor(
         ));
     }
     Ok(ControllerDescriptor {
-        setup_url: same_origin_path(origin, &wire.setup_path)?,
         run_url: same_origin_path(origin, &wire.run_path)?,
         session_url: same_origin_path(origin, &wire.session_path)?,
         audience: wire.audience,
@@ -214,13 +182,18 @@ pub(super) async fn read_json<T: DeserializeOwned>(
 }
 
 pub(super) fn validate_hosted_discovery(
-    wire: &HostedDiscoveryWire,
+    wire: &TargetDiscoveryDocument,
 ) -> Result<(), TargetAuthorityError> {
-    let valid = wire.kind == "openengine.hosted-target/v1"
-        && wire.oauth.device_grant_type == DEVICE_GRANT
-        && valid_device_exchange_fields(&wire.oauth.device_exchange_fields)
-        && wire.oauth.audience == "capsule"
-        && valid_session_discovery(&wire.session);
+    let valid = wire.kind == DISCOVERY_KIND
+        && wire.authentication == TargetAuthentication::HostedOauth
+        && wire.oauth.as_ref().is_some_and(|oauth| {
+            oauth.device_grant_type == DEVICE_GRANT
+                && valid_device_exchange_fields(&oauth.device_exchange_fields)
+        })
+        && wire
+            .login_session
+            .as_ref()
+            .is_some_and(valid_session_discovery);
     if !valid {
         return Err(authority_error("hosted target discovery is incompatible"));
     }
@@ -229,22 +202,42 @@ pub(super) fn validate_hosted_discovery(
 
 pub(super) fn build_auth_descriptor(
     origin: &Url,
-    wire: HostedDiscoveryWire,
+    wire: &TargetDiscoveryDocument,
 ) -> Result<HostedAuthDescriptor, TargetAuthorityError> {
+    validate_hosted_discovery(wire)?;
+    let oauth = wire
+        .oauth
+        .as_ref()
+        .ok_or_else(|| authority_error("hosted target discovery is incompatible"))?;
+    let session = wire
+        .login_session
+        .as_ref()
+        .ok_or_else(|| authority_error("hosted target discovery is incompatible"))?;
     let hosted_runs = build_hosted_runs_descriptor(origin, &wire.extensions)?;
+    let (metadata_url, device_authorization_endpoint, token_endpoint, revocation_endpoint) =
+        oauth_routes(origin, oauth)?;
     Ok(HostedAuthDescriptor {
-        metadata_url: same_origin_url(origin, &wire.oauth.metadata_url)?,
-        device_authorization_endpoint: same_origin_url(
-            origin,
-            &wire.oauth.device_authorization_endpoint,
-        )?,
-        token_endpoint: same_origin_url(origin, &wire.oauth.token_endpoint)?,
-        revocation_endpoint: same_origin_url(origin, &wire.oauth.revocation_endpoint)?,
-        client_id: bounded_value(&wire.oauth.client_id, 256, "OAuth client ID")?,
-        device_grant_type: wire.oauth.device_grant_type,
-        session_endpoint: same_origin_path(origin, &wire.session.route_template)?,
+        metadata_url,
+        device_authorization_endpoint,
+        token_endpoint,
+        revocation_endpoint,
+        client_id: bounded_value(&oauth.client_id, 256, "OAuth client ID")?,
+        device_grant_type: oauth.device_grant_type.clone(),
+        session_endpoint: same_origin_path(origin, &session.route_template)?,
         hosted_runs,
     })
+}
+
+fn oauth_routes(
+    origin: &Url,
+    oauth: &openengine_cluster_protocol::TargetOAuthDiscovery,
+) -> Result<(Url, Url, Url, Url), TargetAuthorityError> {
+    Ok((
+        same_origin_url(origin, &oauth.metadata_url)?,
+        same_origin_url(origin, &oauth.device_authorization_endpoint)?,
+        same_origin_url(origin, &oauth.token_endpoint)?,
+        same_origin_url(origin, &oauth.revocation_endpoint)?,
+    ))
 }
 
 pub(super) fn validate_metadata_routes(
@@ -276,7 +269,9 @@ fn valid_device_exchange_fields(fields: &[String]) -> bool {
         && fields.iter().any(|field| field == "device_label")
 }
 
-fn valid_session_discovery(session: &SessionDiscoveryWire) -> bool {
+fn valid_session_discovery(
+    session: &openengine_cluster_protocol::TargetLoginSessionDiscovery,
+) -> bool {
     session.method == "GET" && session.cache_policy == "no-store"
 }
 

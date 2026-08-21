@@ -1,4 +1,4 @@
-pub(crate) fn encode_basic_credential(token: &str) -> String {
+pub fn encode_basic_credential(token: &str) -> String {
     encode_base64(format!("x-access-token:{token}").as_bytes())
 }
 

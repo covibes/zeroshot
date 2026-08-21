@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::native_v2_candidate::test_support::{full_graph, success_node};
 use crate::native_v2_contract::{
-    CodexProvider, RunSize, RunSubmission, RunSubmissionIntent, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
+    CodexProvider, RunSize, RunSubmission, RunTitle, RuntimePlan, SourceBranchId,
+    SourceRepositoryId, SourceRevisionId, ResolvedSource,
 };
 use crate::native_v2_runner::{NodeHandle, NodeRunRequest, NodeRunnerError};
 use crate::v2_run_ledger::{CreateRun, CreateRunOutcome, RunLedger};
@@ -93,6 +93,7 @@ fn bootstrap(
         run_id,
         submission,
         environment,
+        github_token: None,
         workspace,
         workspace_lease: storage.join("workspace.lock"),
         storage,
@@ -245,9 +246,6 @@ async fn observer_reconciles_process_loss_without_constructing_or_dispatching_a_
         .admit_with_policy(submitted.clone(), DeliveryPolicy::Optional)
         .await
         .assert_value_with("admit durable run");
-    let intent_digest =
-        crate::native_v2_cloud::run_intent_digest(&RunSubmissionIntent::from(&submitted))
-            .assert_value_with("intent digest");
     let submission_digest = Sha256Digest::new(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&submitted).assert_value_with("encode submission"))
@@ -258,7 +256,6 @@ async fn observer_reconciles_process_loss_without_constructing_or_dispatching_a_
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key: submitted.submission_key.clone(),
-            intent_digest,
             submission_digest,
             admitted,
         })

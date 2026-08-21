@@ -62,7 +62,16 @@ pub fn build_native_v2_candidate(
     admitted: &AdmittedRun,
     config: NativeV2CandidateConfig,
 ) -> Result<NativeNodeRunner, NativeV2CandidateError> {
-    build_candidate(admitted, config, ProcessPlacement::Capsule)
+    build_candidate(admitted, config, ProcessPlacement::Capsule, None)
+}
+
+/// Hosted candidate with a trusted Git credential visible only to checkout and delivery.
+pub fn build_native_v2_candidate_with_github_token(
+    admitted: &AdmittedRun,
+    config: NativeV2CandidateConfig,
+    github_token: Option<Arc<str>>,
+) -> Result<NativeNodeRunner, NativeV2CandidateError> {
+    build_candidate(admitted, config, ProcessPlacement::Capsule, github_token)
 }
 
 /// Builds the same candidate with child processes running as the invoking local user.
@@ -70,16 +79,29 @@ pub fn build_local_native_v2_candidate(
     admitted: &AdmittedRun,
     config: NativeV2CandidateConfig,
 ) -> Result<NativeNodeRunner, NativeV2CandidateError> {
-    build_candidate(admitted, config, ProcessPlacement::Local)
+    build_candidate(admitted, config, ProcessPlacement::Local, None)
+}
+
+/// Local equivalent of [`build_native_v2_candidate_with_github_token`].
+pub fn build_local_native_v2_candidate_with_github_token(
+    admitted: &AdmittedRun,
+    config: NativeV2CandidateConfig,
+    github_token: Option<Arc<str>>,
+) -> Result<NativeNodeRunner, NativeV2CandidateError> {
+    build_candidate(admitted, config, ProcessPlacement::Local, github_token)
 }
 
 fn build_candidate(
     admitted: &AdmittedRun,
     config: NativeV2CandidateConfig,
     placement: ProcessPlacement,
+    github_token: Option<Arc<str>>,
 ) -> Result<NativeNodeRunner, NativeV2CandidateError> {
     validate_config(admitted, &config)?;
-    let delivery = Arc::new(NativeV2DeliveryAdapter::new(config.delivery, config.github));
+    let delivery = Arc::new(
+        NativeV2DeliveryAdapter::new(config.delivery, config.github)
+            .with_trusted_github_token(github_token),
+    );
     match config.harness {
         NativeV2HarnessConfig::Codex(config) => {
             let agent = Arc::new(match placement {

@@ -85,6 +85,7 @@ pub struct PortableControllerBootstrap {
     pub run_id: RunId,
     pub submission: RunSubmission,
     pub environment: RunEnvironment,
+    pub github_token: Option<String>,
     pub workspace: PathBuf,
     pub workspace_lease: PathBuf,
     pub storage: PathBuf,
@@ -98,6 +99,10 @@ impl fmt::Debug for PortableControllerBootstrap {
             .field("run_id", &self.run_id)
             .field("submission", &self.submission)
             .field("environment", &self.environment)
+            .field(
+                "github_token",
+                &self.github_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("workspace", &self.workspace)
             .field("workspace_lease", &self.workspace_lease)
             .field("storage", &self.storage)
