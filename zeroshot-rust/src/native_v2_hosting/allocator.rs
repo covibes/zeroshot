@@ -32,7 +32,7 @@ use crate::native_v2_delivery::{GhCliAuthorityConfig, GhCliDeliveryAuthority, Na
 use crate::native_v2_portable_controller::WorkspaceIdentity;
 use crate::native_v2_supervisor::RunRuntimeExit;
 
-use super::ProductionHostingError;
+use super::{ProductionHostingError, set_traversable_directory};
 use super::repository::{RepositoryInstall, install_repository, production_source};
 use identity_leases::{ActiveRunProcessPool, ActiveRunProcessPools};
 
@@ -94,6 +94,7 @@ impl ProductionCapsuleAllocator {
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let run_root = run_directory(&self.config.storage_root, run_id);
         std::fs::create_dir(&run_root).map_err(|_| CapsuleAllocationUnavailable)?;
+        set_traversable_directory(&run_root).map_err(|_| CapsuleAllocationUnavailable)?;
         let allocation = self.build_capsule(run_id, admitted, github_token).await;
         if allocation.is_err() {
             let _ = remove_run_directory(&run_root);

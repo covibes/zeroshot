@@ -196,11 +196,14 @@ pub enum ProductionHostingError {
 
 fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingError> {
     std::fs::create_dir_all(path).map_err(|_| ProductionHostingError::Storage)?;
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProductionHostingError::Storage)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(ProductionHostingError::Storage);
-    }
-    let root = std::fs::canonicalize(path).map_err(|_| ProductionHostingError::Storage)?;
+    let root = canonical_directory(path)?;
+    let runs = prepare_runs_directory(&root)?;
+    set_traversable_directory(&root).map_err(|_| ProductionHostingError::Storage)?;
+    set_traversable_directory(&runs).map_err(|_| ProductionHostingError::Storage)?;
+    Ok(root)
+}
+
+fn prepare_runs_directory(root: &std::path::Path) -> Result<PathBuf, ProductionHostingError> {
     let runs = root.join("runs");
     std::fs::create_dir(&runs)
         .or_else(|error| {
@@ -211,12 +214,28 @@ fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingErro
             }
         })
         .map_err(|_| ProductionHostingError::Storage)?;
-    let runs_metadata =
-        std::fs::symlink_metadata(&runs).map_err(|_| ProductionHostingError::Storage)?;
-    if !runs_metadata.is_dir() || runs_metadata.file_type().is_symlink() {
+    canonical_directory(&runs)?;
+    Ok(runs)
+}
+
+fn canonical_directory(path: &std::path::Path) -> Result<PathBuf, ProductionHostingError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProductionHostingError::Storage)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ProductionHostingError::Storage);
     }
-    Ok(root)
+    std::fs::canonicalize(path).map_err(|_| ProductionHostingError::Storage)
+}
+
+#[cfg(unix)]
+fn set_traversable_directory(path: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o711))
+}
+
+#[cfg(not(unix))]
+fn set_traversable_directory(_path: &std::path::Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 impl Default for ProductionHostingConfig {

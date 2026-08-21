@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -212,10 +213,35 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
     let run_id = RunId::new("run-hosting-one");
     let run_path = allocator.run_path(&run_id);
 
+    assert_eq!(
+        fs::metadata(root.path())
+            .assert_value_with("storage root metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
+    assert_eq!(
+        fs::metadata(root.path().join("runs"))
+            .assert_value_with("runs directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
+
     let capsule = allocator
         .allocate(&run_id, &admitted, None)
         .await
         .assert_value_with("allocate capsule");
+    assert_eq!(
+        fs::metadata(&run_path)
+            .assert_value_with("run root metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
     assert!(run_path.join("workspace/.git").is_dir());
     assert!(run_path.join("runtime").is_dir());
     assert!(allocator.allocate(&run_id, &admitted, None).await.is_err());
