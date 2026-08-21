@@ -243,7 +243,7 @@ jobs:
             exit 1
           fi
 
-          jq --exit-status '.kind == "zeroshot.native-v2-target/v1"' /tmp/zeroshot-rust-discovery.json
+          jq --exit-status '.kind == "zeroshot.native-v2-target/v2"' /tmp/zeroshot-rust-discovery.json
           docker exec "$container_id" codex --version
 
           docker build --tag zeroshot-rust-target:symlink-regression - <<'DOCKERFILE'
