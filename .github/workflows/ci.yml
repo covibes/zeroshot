@@ -218,8 +218,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          private_container_id=""
           container_id="$(docker run --detach --platform linux/amd64 --publish 127.0.0.1:18080:8080 zeroshot-rust-target:ci)"
-          trap 'docker rm --force "$container_id" >/dev/null 2>&1 || true' EXIT
+          cleanup() {
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+            if [[ -n "$private_container_id" ]]; then
+              docker rm --force "$private_container_id" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
 
           ready=false
           for _ in {1..30}; do
@@ -238,6 +245,32 @@ jobs:
 
           jq --exit-status '.kind == "zeroshot.native-v2-target/v1"' /tmp/zeroshot-rust-discovery.json
           docker exec "$container_id" codex --version
+
+          docker build --tag zeroshot-rust-target:symlink-regression - <<'DOCKERFILE'
+          FROM zeroshot-rust-target:ci
+          RUN ln -s /tmp/zeroshot-bootstrap-exfiltrated /tmp/zeroshot-target-bootstrap.key
+          DOCKERFILE
+          private_container_id="$(docker run --detach --platform linux/amd64 \
+            --env ZEROSHOT_TARGET_BOOTSTRAP_KEY=0707070707070707070707070707070707070707070707070707070707070707 \
+            --publish 127.0.0.1:18081:8080 \
+            zeroshot-rust-target:symlink-regression)"
+
+          private_ready=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18081/.well-known/zeroshot-native-v2 \
+              --output /tmp/zeroshot-rust-private-discovery.json; then
+              private_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$private_ready" != "true" ]]; then
+            docker logs "$private_container_id"
+            exit 1
+          fi
+
+          docker exec "$private_container_id" test ! -e /tmp/zeroshot-bootstrap-exfiltrated
           docker exec "$container_id" claude --version
 
   # Tier 2: worktree/container isolation e2e (real Docker). Non-blocking and

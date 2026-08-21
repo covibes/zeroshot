@@ -2,9 +2,10 @@
 set -eu
 
 if [ -n "${ZEROSHOT_TARGET_BOOTSTRAP_KEY:-}" ]; then
-  bootstrap_file=/tmp/zeroshot-target-bootstrap.key
   previous_umask=$(umask)
   umask 077
+  bootstrap_file=$(mktemp /run/zeroshot-target-bootstrap.XXXXXX)
+  trap 'rm -f "${bootstrap_file}"' EXIT HUP INT TERM
   printf '%s' "${ZEROSHOT_TARGET_BOOTSTRAP_KEY}" > "${bootstrap_file}"
   chmod 0600 "${bootstrap_file}"
   umask "${previous_umask}"
