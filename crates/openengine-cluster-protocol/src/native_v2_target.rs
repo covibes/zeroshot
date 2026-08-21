@@ -201,8 +201,10 @@ impl TargetDiscoveryDocument {
 pub fn is_canonical_uuid_v7(run_id: &RunId) -> bool {
     let bytes = run_id.as_str().as_bytes();
     bytes.len() == 36
-        && bytes[14] == b'7'
-        && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+        && bytes.get(14) == Some(&b'7')
+        && bytes
+            .get(19)
+            .is_some_and(|byte| matches!(byte, b'8' | b'9' | b'a' | b'b'))
         && bytes.iter().enumerate().all(|(index, byte)| {
             if matches!(index, 8 | 13 | 18 | 23) {
                 *byte == b'-'
@@ -232,31 +234,12 @@ mod tests {
 
     #[test]
     fn target_request_debug_redacts_ephemeral_values() {
-        let request = TargetRunRequest {
-            run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
-            submission: serde_json::from_value(serde_json::json!({
-                "title":"test",
-                "graph":{
-                    "profile":"openengine.graph.full/v1",
-                    "initialInput":{"kind":"null"},
-                    "policy":{"policy":"policy.native-v2@1","default":"deny"},
-                    "root":{"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]}
-                },
-                "initialInput":null,
-                "runtime":{"harness":"codex","provider":"openai","size":"tiny","nodes":{}},
-                "source":{
-                    "repository":"acme/project",
-                    "branch":"main",
-                    "revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                },
-                "submissionKey":"debug-fixture"
-            }))
-            .expect("fixture must decode"),
-            environment: BTreeMap::from([(
-                EnvironmentVariableName::new("OPENAI_API_KEY").expect("name"),
-                "environment-secret".to_owned(),
-            )]),
-            github_token: Some("github-secret".to_owned()),
+        let request = serde_json::from_str::<TargetRunRequest>(include_str!(
+            "../tests/fixtures/native-v2-target-request.json"
+        ));
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
         };
         let debug = format!("{request:?}");
         assert!(!debug.contains("environment-secret"));

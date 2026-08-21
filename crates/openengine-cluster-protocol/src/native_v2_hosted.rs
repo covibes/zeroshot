@@ -157,7 +157,11 @@ mod tests {
                 "terminalResult":{"status":"succeeded","output":null}
             }),
         ] {
-            let oecp = serde_json::from_value::<RunStatus>(value).expect("valid OECP status");
+            let oecp = serde_json::from_value::<RunStatus>(value);
+            assert!(oecp.is_ok());
+            let Ok(oecp) = oecp else {
+                return;
+            };
             assert!(!matches!(
                 HostedRunStatus::from(oecp),
                 HostedRunStatus::Queued {}
@@ -170,9 +174,11 @@ mod tests {
         let frame = HostedRunStreamFrame::<serde_json::Value>::Closed {
             reason: SubscriptionCloseReason::Done,
         };
-        assert_eq!(
-            serde_json::to_value(frame).expect("serialize frame"),
-            json!({"type":"closed","reason":"done"})
+        let serialized = serde_json::to_value(frame);
+        assert!(
+            serialized
+                .as_ref()
+                .is_ok_and(|value| value == &json!({"type":"closed","reason":"done"}))
         );
     }
 }

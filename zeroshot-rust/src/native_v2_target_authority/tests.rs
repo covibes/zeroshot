@@ -285,75 +285,10 @@ async fn direct_target_remains_auth_free_without_private_bootstrap() {
 
 #[tokio::test]
 async fn private_target_closes_bootstrap_and_rejects_unprivileged_children() {
-    use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
-
-    let root = std::env::temp_dir().join(format!("zeroshot-target-key-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir(&root).assert_value();
-    let key_path = root.join("key");
-    std::fs::write(&key_path, "07".repeat(32)).assert_value();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).assert_value();
-    }
-    let bootstrap_key = TargetBootstrapKey::load_and_unlink(&key_path).assert_value();
-    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
-    let address = listener.local_addr().assert_value();
-    let endpoint = format!("ws://{address}{OECP_PATH}");
-    let server = Arc::new(
-        NativeV2TargetServer::new_private(
-            Arc::new(NativeV2TargetAuthority::new(Arc::new(
-                FakeFactory::default(),
-            ))),
-            identity(),
-            endpoint.clone(),
-            bootstrap_key,
-        )
-        .assert_value(),
-    );
-    let task = tokio::spawn(server.serve(listener));
-
-    let encoded = serde_json::to_vec(&request()).assert_value();
-    assert_eq!(
-        http(
-            address,
-            TestHttpRequest::body("POST", RUN_PATH, None, &encoded)
-        )
-        .await
-        .status,
-        401
-    );
-    assert_eq!(
-        http(
-            address,
-            TestHttpRequest::body("POST", SESSION_PATH, None, b"{}")
-        )
-        .await
-        .status,
-        401
-    );
-    assert!(
-        tokio_tungstenite::connect_async(endpoint.clone())
-            .await
-            .is_err()
-    );
-
+    let (root, address, endpoint, task) = private_test_server().await;
+    assert_private_routes_require_capability(address, &endpoint).await;
     let token = "a".repeat(64);
-    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &[7; 32]).assert_value());
-    let mut ciphertext = token.as_bytes().to_vec();
-    let nonce = [11; 12];
-    key.seal_in_place_append_tag(
-        Nonce::assume_unique_for_key(nonce),
-        Aad::from(b"zeroshot-capsule-bootstrap-v1"),
-        &mut ciphertext,
-    )
-    .assert_value();
-    let bootstrap = serde_json::to_vec(&TargetPrivateBootstrapRequest {
-        nonce: encode_lower(&nonce),
-        ciphertext: encode_lower(&ciphertext),
-    })
-    .assert_value();
+    let bootstrap = private_bootstrap_payload(&token);
     assert_eq!(
         http(
             address,
@@ -382,6 +317,83 @@ async fn private_target_closes_bootstrap_and_rejects_unprivileged_children() {
 
     task.abort();
     let _ = std::fs::remove_dir(&root);
+}
+
+async fn private_test_server() -> (
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    String,
+    tokio::task::JoinHandle<Result<(), std::io::Error>>,
+) {
+    let root = std::env::temp_dir().join(format!("zeroshot-target-key-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).assert_value();
+    let key_path = root.join("key");
+    std::fs::write(&key_path, "07".repeat(32)).assert_value();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).assert_value();
+    }
+    let bootstrap_key = TargetBootstrapKey::load_and_unlink(&key_path).assert_value();
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let endpoint = format!("ws://{address}{OECP_PATH}");
+    let server = Arc::new(
+        NativeV2TargetServer::new_private(
+            Arc::new(NativeV2TargetAuthority::new(Arc::new(
+                FakeFactory::default(),
+            ))),
+            identity(),
+            endpoint.clone(),
+            bootstrap_key,
+        )
+        .assert_value(),
+    );
+    let task = tokio::spawn(server.serve(listener));
+    (root, address, endpoint, task)
+}
+
+async fn assert_private_routes_require_capability(address: std::net::SocketAddr, endpoint: &str) {
+    let encoded = serde_json::to_vec(&request()).assert_value();
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", RUN_PATH, None, &encoded)
+        )
+        .await
+        .status,
+        401
+    );
+    assert_eq!(
+        http(
+            address,
+            TestHttpRequest::body("POST", SESSION_PATH, None, b"{}")
+        )
+        .await
+        .status,
+        401
+    );
+    assert!(tokio_tungstenite::connect_async(endpoint).await.is_err());
+}
+
+fn private_bootstrap_payload(token: &str) -> Vec<u8> {
+    use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+
+    let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &[7; 32]).assert_value());
+    let mut ciphertext = token.as_bytes().to_vec();
+    let nonce = [11; 12];
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(nonce),
+        Aad::from(b"zeroshot-capsule-bootstrap-v1"),
+        &mut ciphertext,
+    )
+    .assert_value();
+    serde_json::to_vec(&TargetPrivateBootstrapRequest {
+        nonce: encode_lower(&nonce),
+        ciphertext: encode_lower(&ciphertext),
+    })
+    .assert_value()
 }
 
 async fn connect_and_list(endpoint: &str, bearer: Option<&str>) {

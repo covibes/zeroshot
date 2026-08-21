@@ -223,7 +223,12 @@ fn decode_lower_vec(value: &str) -> Result<Vec<u8>, TargetAuthorityError> {
     value
         .as_bytes()
         .chunks_exact(2)
-        .map(|pair| Ok((decode_nibble(pair[0])? << 4) | decode_nibble(pair[1])?))
+        .map(|pair| match pair {
+            [high, low] => Ok((decode_nibble(*high)? << 4) | decode_nibble(*low)?),
+            _ => Err(TargetAuthorityError::invalid(
+                "private bootstrap payload is invalid",
+            )),
+        })
         .collect()
 }
 
@@ -263,21 +268,29 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_is_authenticated_one_time_and_constant_shape() {
         let access = PrivateTargetAccess::new(TargetBootstrapKey([7; KEY_BYTES]));
-        let key = LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &[7; KEY_BYTES]).expect("key"));
+        let key = UnboundKey::new(&AES_256_GCM, &[7; KEY_BYTES]);
+        assert!(key.is_ok());
+        let Ok(key) = key else {
+            return;
+        };
+        let key = LessSafeKey::new(key);
         let mut ciphertext = TOKEN.as_bytes().to_vec();
         let nonce = [11; NONCE_BYTES];
-        key.seal_in_place_append_tag(
+        let sealed = key.seal_in_place_append_tag(
             Nonce::assume_unique_for_key(nonce),
             Aad::from(AAD),
             &mut ciphertext,
-        )
-        .expect("seal");
+        );
+        assert!(sealed.is_ok());
+        if sealed.is_err() {
+            return;
+        }
         let request = TargetPrivateBootstrapRequest {
             nonce: encode_lower(&nonce),
             ciphertext: encode_lower(&ciphertext),
         };
-        access.bootstrap(&request).await.expect("bootstrap");
-        access.authenticate(TOKEN).await.expect("authenticate");
+        assert!(access.bootstrap(&request).await.is_ok());
+        assert!(access.authenticate(TOKEN).await.is_ok());
         assert!(access.authenticate(&"b".repeat(TOKEN_BYTES)).await.is_err());
         assert!(access.bootstrap(&request).await.is_err());
     }
@@ -287,12 +300,11 @@ mod tests {
     fn bootstrap_file_is_private_and_unlinked() {
         let root = std::env::temp_dir().join(format!("zeroshot-private-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir(&root).expect("root");
+        assert!(std::fs::create_dir(&root).is_ok());
         let path = root.join("key");
-        std::fs::write(&path, "07".repeat(KEY_BYTES)).expect("write");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .expect("permissions");
-        let _key = TargetBootstrapKey::load_and_unlink(&path).expect("key");
+        assert!(std::fs::write(&path, "07".repeat(KEY_BYTES)).is_ok());
+        assert!(std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).is_ok());
+        assert!(TargetBootstrapKey::load_and_unlink(&path).is_ok());
         assert!(!path.exists());
         let _ = std::fs::remove_dir(&root);
     }

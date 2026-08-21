@@ -156,11 +156,11 @@ mod tests {
     #[test]
     fn parses_exact_remote_revision_without_accepting_ambiguity() {
         let revision = "0123456789abcdef0123456789abcdef01234567";
-        assert_eq!(
-            remote_revision(&format!("{revision}\trefs/heads/main\n"), "refs/heads/main")
-                .expect("revision")
-                .as_str(),
-            revision
+        let parsed = remote_revision(&format!("{revision}\trefs/heads/main\n"), "refs/heads/main");
+        assert!(
+            parsed
+                .as_ref()
+                .is_ok_and(|parsed| parsed.as_str() == revision)
         );
         assert!(
             remote_revision(
@@ -187,21 +187,22 @@ mod tests {
             std::process::id(),
             uuid::Uuid::now_v7()
         ));
-        std::fs::create_dir(&root).expect("root");
+        assert!(std::fs::create_dir(&root).is_ok());
         let program = root.join("git-fixture");
-        std::fs::write(
-            &program,
-            concat!(
-                "#!/bin/sh\n",
-                "case \" $* \" in *test-token*) exit 71;; esac\n",
-                "test \"$GIT_CONFIG_VALUE_1\" = ",
-                "'AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==' || exit 72\n",
-                "printf '0123456789abcdef0123456789abcdef01234567\\trefs/heads/main\\n'\n",
-            ),
-        )
-        .expect("fixture");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
-            .expect("permissions");
+        assert!(
+            std::fs::write(
+                &program,
+                concat!(
+                    "#!/bin/sh\n",
+                    "case \" $* \" in *test-token*) exit 71;; esac\n",
+                    "test \"$GIT_CONFIG_VALUE_1\" = ",
+                    "'AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg==' || exit 72\n",
+                    "printf '0123456789abcdef0123456789abcdef01234567\\trefs/heads/main\\n'\n",
+                ),
+            )
+            .is_ok()
+        );
+        assert!(std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).is_ok());
 
         let output = git_ls_remote(
             &program,
@@ -209,10 +210,14 @@ mod tests {
             Some("main"),
             Some("test-token"),
         )
-        .await
-        .expect("ls-remote");
+        .await;
+        assert!(output.is_ok());
+        let Ok(output) = output else {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        };
         assert!(output.ends_with("\trefs/heads/main\n"));
 
-        std::fs::remove_dir_all(root).expect("cleanup");
+        assert!(std::fs::remove_dir_all(root).is_ok());
     }
 }

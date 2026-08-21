@@ -240,21 +240,17 @@ where
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
         let target = require_named_target(target)?;
-        let location = self.run_location(target, &params.run_id).await?;
-        if location == RunLocation::Cloud {
-            return self
-                .connector
-                .hosted_run_watch(target, params)
-                .await?
-                .ok_or_else(|| {
-                    NativeV2CliError::Target(
-                        "hosted target did not provide its run watch".to_owned(),
-                    )
-                });
-        }
-        let params = match location {
+        let params = match self.run_location(target, &params.run_id).await? {
             RunLocation::Cloud => {
-                unreachable!("hosted watch returned above")
+                return self
+                    .connector
+                    .hosted_run_watch(target, params)
+                    .await?
+                    .ok_or_else(|| {
+                        NativeV2CliError::Target(
+                            "hosted target did not provide its run watch".to_owned(),
+                        )
+                    });
             }
             RunLocation::Task => RunWatchParams {
                 run_id: params.run_id,
@@ -275,21 +271,17 @@ where
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
         let target = require_named_target(target)?;
-        let location = self.run_location(target, &params.run_id).await?;
-        if location == RunLocation::Cloud {
-            return self
-                .connector
-                .hosted_run_logs(target, params)
-                .await?
-                .ok_or_else(|| {
-                    NativeV2CliError::Target(
-                        "hosted target did not provide its retained logs".to_owned(),
-                    )
-                });
-        }
-        let params = match location {
+        let params = match self.run_location(target, &params.run_id).await? {
             RunLocation::Cloud => {
-                unreachable!("hosted logs returned above")
+                return self
+                    .connector
+                    .hosted_run_logs(target, params)
+                    .await?
+                    .ok_or_else(|| {
+                        NativeV2CliError::Target(
+                            "hosted target did not provide its retained logs".to_owned(),
+                        )
+                    });
             }
             RunLocation::Task => RunLogsParams {
                 run_id: params.run_id,
