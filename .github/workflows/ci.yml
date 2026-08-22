@@ -274,8 +274,9 @@ jobs:
           fi
 
           docker exec "$private_container_id" test ! -e /tmp/zeroshot-bootstrap-exfiltrated
+          docker exec "$private_container_id" test -L /tmp/zeroshot-target-bootstrap.key
           docker exec "$private_container_id" sh -c \
-            '! find /tmp -maxdepth 1 -name "zeroshot-target-bootstrap.*" -print -quit | grep -q .'
+            '! find /tmp -maxdepth 1 -type f -name "zeroshot-target-bootstrap.*" -print -quit | grep -q .'
           docker exec "$container_id" claude --version
 
   # Tier 2: worktree/container isolation e2e (real Docker). Non-blocking and
