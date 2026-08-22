@@ -17,41 +17,34 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{RunId, RunSubmission, RunSubmitParams};
+use openengine_cluster_protocol::RunSubmitParams;
 use thiserror::Error;
 
 use crate::execution::process::HostedProcessPool;
-use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
+use crate::native_v2_admission::DeliveryPolicy;
 use crate::native_v2_claude::ClaudeProcessEnvironment;
-use crate::native_v2_cloud::{NativeV2CloudController, run_intent_digest};
-use crate::native_v2_contract::SourceBranchId;
+use crate::native_v2_cloud::{NativeV2CloudController, NativeV2CloudError};
+use crate::native_v2_cloud::submission_digest;
 use crate::native_v2_target_authority::{
-    FileTargetSetupStore, NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory,
-    TargetRunReceipt, TargetRunRequest, TargetSetupDocument,
+    NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory, TargetRunReceipt,
+    TargetRunRequest,
 };
 use crate::v2_run_ledger::RunLedger;
+use crate::v2_run_ledger::RunLedgerError;
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
 use crate::native_v2_supervisor::RunEnvironment;
 
 use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
-use repository::{production_source, repository_token, resolve_source, SourceResolution};
-
 const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const TARGET_SETUP_FILE: &str = "target-setup.json";
 
-/// Composes the production controller factory with the target's one durable setup document.
-/// Every process restart restores setup before it can mint an OECP session.
+/// Composes the production target around exact sourceful run requests.
 pub async fn build_production_target_authority(
     config: ProductionHostingConfig,
 ) -> Result<NativeV2TargetAuthority, ProductionHostingError> {
-    let root = prepare_storage_root(&config.storage_root)?;
-    let setup_store = Arc::new(FileTargetSetupStore::new(root.join(TARGET_SETUP_FILE)));
-    NativeV2TargetAuthority::with_setup_store(
-        Arc::new(ProductionTargetControllerFactory::new(config)),
-        setup_store,
-    )
-    .await
-    .map_err(|_| ProductionHostingError::SetupStore)
+    prepare_storage_root(&config.storage_root)?;
+    Ok(NativeV2TargetAuthority::new(Arc::new(
+        ProductionTargetControllerFactory::new(config),
+    )))
 }
 
 /// Host-owned non-secret capabilities used to compose one installed target.
@@ -98,11 +91,7 @@ impl ProductionTargetControllerFactory {
 
     pub async fn create_controller(
         &self,
-        setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, ProductionHostingError> {
-        setup
-            .validate()
-            .map_err(|_| ProductionHostingError::InvalidSetup)?;
         let root = prepare_storage_root(&self.config.storage_root)?;
         let ledger: Arc<dyn RunLedger> = Arc::new(
             SqliteRunLedger::open(root.join("runs.sqlite3"))
@@ -133,107 +122,70 @@ impl ProductionTargetControllerFactory {
 
 #[async_trait]
 impl TargetControllerFactory for ProductionTargetControllerFactory {
-    async fn create(
-        &self,
-        setup: &TargetSetupDocument,
-    ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-        self.create_controller(setup)
+    async fn create(&self) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+        self.create_controller()
             .await
             .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
     }
 
     async fn submit(
         &self,
-        setup: &TargetSetupDocument,
         controller: &NativeV2CloudController,
         request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
-        setup.validate()?;
         let TargetRunRequest {
-            intent,
+            run_id,
+            submission,
             environment,
+            github_token,
         } = request;
-        let intent_digest = run_intent_digest(&intent)
+        let digest = submission_digest(&submission)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
         if let Some(receipt) = controller
-            .resolve_intent(&intent.submission_key, &intent_digest)
+            .resolve_submission(&submission.submission_key, &digest)
             .await
-            .map_err(|error| TargetAuthorityError::conflict(error.to_string()))?
+            .map_err(project_cloud_error)?
         {
             return Ok(TargetRunReceipt {
                 run_id: receipt.run_id,
             });
         }
-        NativeV2Admission
-            .validate_intent(&intent, DeliveryPolicy::Optional)
-            .await
+        let environment = RunEnvironment::exact(&submission.runtime, environment)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
-        let environment = RunEnvironment::exact(&intent.runtime, environment)
-            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
-        let repository_source = production_source(&setup.repository);
-        let branch = effective_branch(intent.branch.as_ref(), setup.default_branch.as_deref());
-        let source = resolve_source(SourceResolution {
-            git_program: &self.config.git_program,
-            source: &repository_source,
-            repository: &setup.repository,
-            branch,
-            process_pool: self.config.process_pool,
-            github_token: repository_token(&environment),
-        })
-        .await
-        .map_err(|_| TargetAuthorityError::unavailable("source could not be resolved"))?;
-        let run_id = fresh_host_run_id()?;
         let receipt = controller
-            .submit_with_intent_digest_and_exact_environment(
-                RunSubmitParams {
-                    run_id,
-                    submission: RunSubmission {
-                        title: intent.title,
-                        graph: intent.graph,
-                        initial_input: intent.initial_input,
-                        runtime: intent.runtime,
-                        source,
-                        submission_key: intent.submission_key,
-                    },
-                },
-                intent_digest,
+            .submit_with_exact_environment_and_github_token(
+                RunSubmitParams { run_id, submission },
                 environment,
+                github_token,
             )
             .await
-            .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
+            .map_err(project_cloud_error)?;
         Ok(TargetRunReceipt {
             run_id: receipt.run_id,
         })
     }
 }
 
-fn effective_branch<'a>(
-    run_override: Option<&'a SourceBranchId>,
-    target_default: Option<&'a str>,
-) -> Option<&'a str> {
-    run_override.map(SourceBranchId::as_str).or(target_default)
-}
-
-fn fresh_host_run_id() -> Result<RunId, TargetAuthorityError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random)
-        .map_err(|_| TargetAuthorityError::unavailable("run identity could not be assigned"))?;
-    let mut id = String::from("run-");
-    for byte in random {
-        use std::fmt::Write as _;
-        let _ = write!(&mut id, "{byte:02x}");
+fn project_cloud_error(error: NativeV2CloudError) -> TargetAuthorityError {
+    let message = error.to_string();
+    match error {
+        NativeV2CloudError::Admission(_)
+        | NativeV2CloudError::Environment(_)
+        | NativeV2CloudError::SubmissionIdentity
+        | NativeV2CloudError::Ledger(RunLedgerError::AdmittedRunTooLarge) => {
+            TargetAuthorityError::invalid(message)
+        }
+        NativeV2CloudError::Ledger(
+            RunLedgerError::SubmissionConflict { .. } | RunLedgerError::RunIdConflict,
+        ) => TargetAuthorityError::conflict(message),
+        _ => TargetAuthorityError::unavailable(message),
     }
-    Ok(RunId::new(id))
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ProductionHostingError {
-    #[error("native-v2 target setup is invalid")]
-    InvalidSetup,
     #[error("native-v2 target storage could not be prepared")]
     Storage,
-    #[error("native-v2 target setup store could not be opened")]
-    SetupStore,
     #[error("native-v2 target ledger could not be opened")]
     Ledger,
     #[error("native-v2 capsule configuration is invalid")]
@@ -244,11 +196,14 @@ pub enum ProductionHostingError {
 
 fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingError> {
     std::fs::create_dir_all(path).map_err(|_| ProductionHostingError::Storage)?;
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProductionHostingError::Storage)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(ProductionHostingError::Storage);
-    }
-    let root = std::fs::canonicalize(path).map_err(|_| ProductionHostingError::Storage)?;
+    let root = canonical_directory(path)?;
+    let runs = prepare_runs_directory(&root)?;
+    set_traversable_directory(&root).map_err(|_| ProductionHostingError::Storage)?;
+    set_traversable_directory(&runs).map_err(|_| ProductionHostingError::Storage)?;
+    Ok(root)
+}
+
+fn prepare_runs_directory(root: &std::path::Path) -> Result<PathBuf, ProductionHostingError> {
     let runs = root.join("runs");
     std::fs::create_dir(&runs)
         .or_else(|error| {
@@ -259,12 +214,28 @@ fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingErro
             }
         })
         .map_err(|_| ProductionHostingError::Storage)?;
-    let runs_metadata =
-        std::fs::symlink_metadata(&runs).map_err(|_| ProductionHostingError::Storage)?;
-    if !runs_metadata.is_dir() || runs_metadata.file_type().is_symlink() {
+    canonical_directory(&runs)?;
+    Ok(runs)
+}
+
+fn canonical_directory(path: &std::path::Path) -> Result<PathBuf, ProductionHostingError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProductionHostingError::Storage)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ProductionHostingError::Storage);
     }
-    Ok(root)
+    std::fs::canonicalize(path).map_err(|_| ProductionHostingError::Storage)
+}
+
+#[cfg(unix)]
+fn set_traversable_directory(path: &std::path::Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o711))
+}
+
+#[cfg(not(unix))]
+fn set_traversable_directory(_path: &std::path::Path) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 impl Default for ProductionHostingConfig {

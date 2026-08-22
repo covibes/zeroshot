@@ -21,6 +21,7 @@ async fn shipped_cli_reaches_one_target_controller_over_http_and_websocket() {
             graph: &graph,
             input: &input,
             extra: None,
+            source_revision: Some(TEST_SOURCE_REVISION),
         }),
         Duration::from_secs(60),
         "shipped CLI acceptance",
@@ -64,7 +65,7 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
     ] {
         let root = temp_root();
         let fixture = DeliveryFixture::new(&root, name);
-        let resolved_base_revision = fixture.base_revision.clone();
+        let source_revision = fixture.base_revision.clone();
         let authority = Arc::new(DeliveryAuthority::new(fixture.remote.clone(), scenario));
         let repairs = Arc::new(AtomicUsize::new(0));
         let allocator = Arc::new(DeliveryAllocator {
@@ -75,7 +76,6 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
         });
         let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
             allocator,
-            resolved_base_revision,
             delivery_policy: DeliveryPolicy::Required,
         }))
         .await;
@@ -93,6 +93,7 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
             graph: &graph,
             input: &input,
             extra: Some(&submission_key),
+            source_revision: Some(&source_revision),
         });
         command.env(GITHUB_TOKEN_ENV, "test-token");
         let (stdout, stderr) = run_cli_command(
@@ -124,7 +125,6 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
     let allocator = Arc::new(ImmediateAllocator::default());
     let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
         allocator: allocator.clone(),
-        resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         delivery_policy: DeliveryPolicy::Required,
     }))
     .await;
@@ -142,6 +142,7 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
         graph: &graph,
         input: &input,
         extra: None,
+        source_revision: Some(TEST_SOURCE_REVISION),
     });
     let acceptance = tokio::spawn(run_cli_command(
         command,
@@ -186,6 +187,7 @@ async fn shipped_cli_runs_one_real_production_provider_lane() {
         graph: &graph,
         input: &input,
         extra: Some(lane.sentinel()),
+        source_revision: None,
     });
     for name in [
         "OPENAI_API_KEY",

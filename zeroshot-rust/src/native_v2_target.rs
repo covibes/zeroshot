@@ -1,9 +1,8 @@
 //! Native-v2 named-target connector.
 //!
-//! The CLI owns only a small local name-to-origin registry. A target control authority owns
-//! discovery, explicit hosted/direct access, atomic source-selection installation, and issuance
-//! of one target-scoped OECP session. Runtime plans belong to run submissions; environment values
-//! cross only in the ephemeral per-run request and are never stored locally.
+//! The CLI owns the local name/origin/repository profile. A target control authority owns
+//! discovery, explicit hosted/direct access, submission, and run-scoped OECP sessions. Runtime
+//! values cross only in the ephemeral per-run request and are never stored locally.
 
 use std::fmt;
 use std::sync::Arc;
@@ -14,23 +13,24 @@ use thiserror::Error;
 use zeroshot_engine::native_v2_cli::oecp::{BoxedSubscription, TargetConnector};
 use zeroshot_engine::native_v2_cli::{
     CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
-    NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup,
+    NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
 };
 use openengine_cluster_protocol::{
     RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunSubmitResult, RunWatchParams,
+    RunSubmission, RunSubmitResult, RunWatchParams, TargetOecpSessionRequest, TargetRunRequest,
 };
-pub use zeroshot_engine::native_v2_target_authority::TargetSetupDocument;
 
 mod contract;
 mod controller_authority;
 mod oecp;
 mod registry;
 mod serve;
+mod source;
 
 use contract::{prepare_setup, prepare_target, validate_bearer_token, validate_target_name};
 pub use oecp::{TargetOecpDialer, TargetOecpWebSocketDialer};
 pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_path};
+pub use source::{GitHubTargetSourceResolver, TargetSourceResolver};
 pub use controller_authority::TargetHttpControlAuthority;
 pub use serve::{TargetServeError, parse_target_serve, serve_direct_target};
 
@@ -42,18 +42,11 @@ mod tests;
 
 /// The external contract which hosting must implement before the native-v2 CLI can reach cloud.
 ///
-/// `install` is one atomic target-side operation: either both repository selection and the
-/// companion runtime plan become current, or neither does. `oecp_session` returns one same-origin
-/// endpoint and the hosted bearer, if that target uses OAuth.
+/// `oecp_session` returns one same-origin endpoint and hosted bearer, if OAuth is enabled.
 #[async_trait]
 pub trait TargetControlAuthority: Send + Sync {
     async fn discover(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
     async fn login(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
-    async fn install(
-        &self,
-        target: &TargetRecord,
-        setup: &TargetSetupDocument,
-    ) -> Result<(), TargetAuthorityError>;
     async fn submit(
         &self,
         target: &TargetRecord,
@@ -62,6 +55,7 @@ pub trait TargetControlAuthority: Send + Sync {
     async fn oecp_session(
         &self,
         target: &TargetRecord,
+        request: &TargetOecpSessionRequest,
     ) -> Result<TargetOecpAccess, TargetAuthorityError>;
 
     async fn hosted_run_list(
@@ -130,6 +124,10 @@ pub struct TargetRecord {
     pub name: String,
     pub origin: String,
     pub access: TargetAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -234,6 +232,10 @@ pub enum TargetConnectorError {
     Randomness,
     #[error("repository must have the form owner/name")]
     InvalidRepository,
+    #[error("target {0:?} has no repository setup")]
+    SetupRequired(String),
+    #[error("target source could not be resolved")]
+    SourceResolution,
     #[error("target control authority failed: {0}")]
     Authority(#[from] TargetAuthorityError),
     #[error("target OECP endpoint is invalid")]
@@ -244,29 +246,32 @@ pub enum TargetConnectorError {
     OecpConnection(String),
 }
 
-pub struct NativeV2TargetConnector<R, A, D> {
+pub struct NativeV2TargetConnector<R, A, D, S> {
     registry: R,
     authority: A,
     dialer: D,
+    source: S,
 }
 
-impl<R, A, D> NativeV2TargetConnector<R, A, D> {
+impl<R, A, D, S> NativeV2TargetConnector<R, A, D, S> {
     #[must_use]
-    pub const fn new(registry: R, authority: A, dialer: D) -> Self {
+    pub const fn new(registry: R, authority: A, dialer: D, source: S) -> Self {
         Self {
             registry,
             authority,
             dialer,
+            source,
         }
     }
 }
 
 #[async_trait]
-impl<R, A, D> TargetConnector for NativeV2TargetConnector<R, A, D>
+impl<R, A, D, S> TargetConnector for NativeV2TargetConnector<R, A, D, S>
 where
     R: TargetRegistry,
     A: TargetControlAuthority,
     D: TargetOecpDialer,
+    S: TargetSourceResolver,
 {
     type Transport = D::Transport;
 
@@ -289,34 +294,66 @@ where
     }
 
     async fn setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError> {
-        let document = prepare_setup(&request).map_err(cli_target_error)?;
+        let setup = prepare_setup(&request).map_err(cli_target_error)?;
         validate_target_name(&request.name).map_err(cli_target_error)?;
-        let target = self.registry.get(&request.name).map_err(cli_target_error)?;
-        self.authority
-            .install(&target, &document)
-            .await
+        self.registry
+            .setup(&request.name, setup.repository, setup.default_branch)
             .map_err(cli_target_error)
     }
 
     async fn submit(
         &self,
         name: &str,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         validate_target_name(name).map_err(cli_target_error)?;
         let target = self.registry.get(name).map_err(cli_target_error)?;
+        let repository = target.repository.as_deref().ok_or_else(|| {
+            cli_target_error(TargetConnectorError::SetupRequired(name.to_owned()))
+        })?;
+        let source = self
+            .source
+            .resolve(
+                repository,
+                request
+                    .intent
+                    .branch
+                    .as_ref()
+                    .map(openengine_cluster_protocol::SourceBranchId::as_str)
+                    .or(target.default_branch.as_deref()),
+                request.github_token.as_deref(),
+            )
+            .await
+            .map_err(cli_target_error)?;
+        let request = TargetRunRequest {
+            run_id: request.run_id,
+            submission: RunSubmission {
+                title: request.intent.title,
+                graph: request.intent.graph,
+                initial_input: request.intent.initial_input,
+                runtime: request.intent.runtime,
+                source,
+                submission_key: request.intent.submission_key,
+            },
+            environment: request.environment,
+            github_token: request.github_token,
+        };
         self.authority
             .submit(&target, &request)
             .await
             .map_err(cli_target_error)
     }
 
-    async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError> {
+    async fn connect(
+        &self,
+        name: &str,
+        run_id: Option<openengine_cluster_protocol::RunId>,
+    ) -> Result<Arc<Self::Transport>, NativeV2CliError> {
         validate_target_name(name).map_err(cli_target_error)?;
         let target = self.registry.get(name).map_err(cli_target_error)?;
         let session = self
             .authority
-            .oecp_session(&target)
+            .oecp_session(&target, &TargetOecpSessionRequest { run_id })
             .await
             .map_err(cli_authority_error)?;
         self.dialer
@@ -406,7 +443,7 @@ where
     }
 }
 
-impl<R, A, D> NativeV2TargetConnector<R, A, D>
+impl<R, A, D, S> NativeV2TargetConnector<R, A, D, S>
 where
     R: TargetRegistry,
 {

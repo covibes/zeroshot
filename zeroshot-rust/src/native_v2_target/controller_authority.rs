@@ -14,10 +14,9 @@ use zeroshot_engine::native_v2_target_authority::{DISCOVERY_PATH, TargetDiscover
 
 use self::contract::{
     build_auth_descriptor, build_controller_descriptor, validate_metadata_routes,
-    ControllerDescriptor, DeviceCodeWire, DevicePoll, HostedAuthDescriptor, HostedDiscoveryWire,
-    OAuthErrorWire, OAuthMetadataWire, TargetSessionWire, TokenWire, authority_error, parse_origin,
-    read_json, require_response_route, validate_device_code, validate_hosted_discovery,
-    validate_secret, validate_token,
+    ControllerDescriptor, DeviceCodeWire, DevicePoll, HostedAuthDescriptor, OAuthErrorWire,
+    OAuthMetadataWire, TargetSessionWire, TokenWire, authority_error, parse_origin, read_json,
+    require_response_route, validate_device_code, validate_secret, validate_token,
 };
 use self::credentials::{
     DeviceCodeNotifier, KeyringTargetCredentialStore, StderrDeviceCodeNotifier, TargetRefreshGuard,
@@ -26,7 +25,6 @@ use self::credentials::{
 use super::registry::default_target_registry_path;
 use super::{TargetAccess, TargetAuthorityError, TargetRecord};
 
-const HOSTED_DISCOVERY_PATH: &str = "/.well-known/openengine-hosted-target";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const SESSION_KIND: &str = "openengine.target-session/v1";
 const DEVICE_LABEL: &str = "zeroshot-cli";
@@ -116,40 +114,35 @@ impl TargetHttpControlAuthority {
         &self,
         target: &TargetRecord,
     ) -> Result<(HostedAuthDescriptor, ControllerDescriptor), TargetAuthorityError> {
-        let auth = self.auth_descriptor(target).await?;
-        let controller = self.controller_descriptor(target).await?;
+        let (origin, wire) = self.discovery(target).await?;
+        let auth = build_auth_descriptor(&origin, &wire)?;
+        let controller =
+            build_controller_descriptor(&origin, wire, target.access.authentication())?;
+        let metadata: OAuthMetadataWire =
+            self.get_json(&auth.metadata_url, "OAuth metadata").await?;
+        validate_metadata_routes(&origin, &auth, &metadata)?;
         Ok((auth, controller))
     }
 
-    async fn auth_descriptor(
+    async fn discovery(
         &self,
         target: &TargetRecord,
-    ) -> Result<HostedAuthDescriptor, TargetAuthorityError> {
+    ) -> Result<(Url, TargetDiscoveryDocument), TargetAuthorityError> {
         let origin = parse_origin(&target.origin)?;
         let discovery_url = origin
-            .join(HOSTED_DISCOVERY_PATH)
+            .join(DISCOVERY_PATH)
             .map_err(|_| authority_error("hosted target discovery URL is invalid"))?;
-        let wire: HostedDiscoveryWire = self.get_json(&discovery_url, "hosted discovery").await?;
-        validate_hosted_discovery(&wire)?;
-        let descriptor = build_auth_descriptor(&origin, wire)?;
-        let metadata: OAuthMetadataWire = self
-            .get_json(&descriptor.metadata_url, "OAuth metadata")
+        let wire: TargetDiscoveryDocument = self
+            .get_json(&discovery_url, "native-v2 target discovery")
             .await?;
-        validate_metadata_routes(&origin, &descriptor, &metadata)?;
-        Ok(descriptor)
+        Ok((origin, wire))
     }
 
     async fn controller_descriptor(
         &self,
         target: &TargetRecord,
     ) -> Result<ControllerDescriptor, TargetAuthorityError> {
-        let origin = parse_origin(&target.origin)?;
-        let discovery_url = origin
-            .join(DISCOVERY_PATH)
-            .map_err(|_| authority_error("controller discovery URL is invalid"))?;
-        let wire: TargetDiscoveryDocument = self
-            .get_json(&discovery_url, "native-v2 controller discovery")
-            .await?;
+        let (origin, wire) = self.discovery(target).await?;
         build_controller_descriptor(&origin, wire, target.access.authentication())
     }
 

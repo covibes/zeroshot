@@ -240,33 +240,38 @@ Portable external conformance is the immutable public catalog in the testkit and
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
 The existing integration binaries remain the richer reference regression suite; their
 implementation-specific vectors are not represented as portable external certification.
-`zeroshot-rust/` ships one portable, auth-free native-v2 engine/library for exactly one run and a
-private controller-process mode around the same engine. A host assigns the `RunId`, resolves the
-selected repository branch to one exact immutable revision, and passes only the exact bounded
-run-scoped environment declared by its runtime plan. Run branch selection overrides the target
-default branch; otherwise the remote default branch is used. The CLI collects declared values only
-after template materialization and carries them beside the secret-free intent in one private,
-ephemeral target request. The target validates the exact map; source provisioning may consume that
-run's declared `GH_TOKEN`, while setup, admission, the ledger, observations, and target configuration
-never retain values. Exact submission retry identity covers the intent only and never replaces a
-created run's environment. The controller does not allocate
-identity, authenticate users, inspect
-target-wide inventory, queue work, or choose another run. Local and hosted compositions reuse this
-same engine and differ only in their host adapters.
+`zeroshot-rust/` ships one portable native-v2 engine/library for exactly one run and a private
+controller-process mode around the same engine. The CLI assigns a canonical lowercase UUIDv7
+`RunId`, resolves the selected repository branch to one exact immutable revision, and submits the
+exact sourceful run plus its bounded run-scoped environment. Run branch selection overrides the
+local target-profile default; otherwise the remote default branch is used. `target setup` mutates
+only the local named-target registry and never calls a remote setup route. The target validates the
+exact environment map. Its separate ephemeral `githubToken` is trusted only for source checkout and
+Git delivery; a provider receives `GH_TOKEN` only when the materialized runtime declares it.
+Admission, the ledger, observations, and target configuration never retain secret values. Exact
+submission retry identity covers the sourceful submission (including the resolved revision) while
+excluding `runId` and all secrets; an exact replay keeps the original run and its first secret
+envelope. The controller does not allocate identity, authenticate users, inspect target-wide
+inventory, queue work, or choose another run. Local and hosted compositions reuse this same engine
+and differ only in their host adapters.
 
-The target-wide object owns routing, access policy, durable submission lookup, source setup, and
-observation before or after a controller exists; it is not an executing controller and does not
-own a runtime plan. Named-target records have one closed access mode. Hosted remains the default,
-reuses OAuth discovery, stores only the rotating refresh family in the OS credential store, and
-keeps access/OECP tokens memory-only. Direct access requires `target add --direct`, must match the
-target discovery authentication mode, and sends no HTTP or OECP Authorization. `target login`
-rejects direct targets locally. `target serve` is the raw, auth-free multi-run composition for one
-private VM; it accepts only HTTPS public origins or literal-loopback HTTP, uses one static target
-identity, and adds no queue, scheduler, TLS, or per-user isolation layer.
+The native-v2 target HTTP contract is the shared `zeroshot.native-v2-target/v2` discovery document,
+sourceful run request, run-scoped OECP-session request, and optional generic private bootstrap
+capability. Hosted remains the default named-target access, stores only the rotating refresh family
+in the OS credential store, and keeps access/OECP tokens memory-only. Cloud owns organization-scoped
+inventory plus queued and retained-terminal REST observation; active status/watch/logs/force and
+attach route directly to the run task over OECP. Cloud and task cursors have distinct `cloud:` and
+`v2:` domains, and the CLI restarts from `None` exactly when crossing that boundary. Direct access
+requires `target add --direct`, must match discovery authentication, and sends no Authorization;
+`target login` rejects it locally. Ordinary `target serve` remains the auth-free, long-lived
+multi-run composition for a trusted private VM. Supplying `--bootstrap-key-file` only enables the
+one-use private capability needed by an orchestrated task; it does not select a managed run mode or
+change controller semantics. Cloud enforces one task per run through routing, outside the target.
 The self-hosted image packages that server with the pinned Codex and Claude harnesses plus Git and
 GitHub CLI. Its root supervisor owns persistent target state and isolated per-run identities; the
-state root must remain traversable by those identities. It retains the direct target contract: no
-login, queue, scheduler, TLS, or tenant isolation is added by the container.
+state root must remain traversable by those identities. Without the opt-in bootstrap key it retains
+the direct target contract: no login, queue, scheduler, TLS, or tenant isolation is added by the
+container.
 The production target reserves its configured writer UID for serialized source resolution and
 leases one fixed, disjoint UID block per active run. The lease covers its writer and every bounded
 verifier identity and is released only after capsule process and workspace cleanup.

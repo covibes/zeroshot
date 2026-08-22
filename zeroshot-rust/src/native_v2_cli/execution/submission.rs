@@ -8,23 +8,45 @@ use openengine_cluster_protocol::{
     RuntimePlan,
 };
 
-use super::super::{NativeV2CliError, RunCommand, RunGraph, TargetRunIntent, TargetRunRequest};
+use super::super::{NativeV2CliError, PreparedRunRequest, RunCommand, RunGraph, TargetRunIntent};
 use crate::native_v2_supervisor::RunEnvironment;
 
 pub(super) fn prepare_submission_with_environment<F>(
     run: &RunCommand,
     available: F,
-) -> Result<TargetRunRequest, NativeV2CliError>
+) -> Result<PreparedRunRequest, NativeV2CliError>
 where
     F: Fn(&str) -> Option<OsString>,
 {
     let intent = prepare_intent(run)?;
-    let environment = select_environment(&intent.runtime, available)?;
+    let environment = select_environment(&intent.runtime, &available)?;
     let environment = RunEnvironment::exact(&intent.runtime, environment)?.bootstrap_values();
-    Ok(TargetRunRequest {
+    let github_token = run
+        .target
+        .as_ref()
+        .and_then(|_| available("GH_TOKEN"))
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| NativeV2CliError::GitHubToken)
+        })
+        .transpose()?
+        .map(validate_github_token)
+        .transpose()?;
+    Ok(PreparedRunRequest {
+        run_id: openengine_cluster_protocol::RunId::new(uuid::Uuid::now_v7().to_string()),
         intent,
         environment,
+        github_token,
     })
+}
+
+fn validate_github_token(value: String) -> Result<String, NativeV2CliError> {
+    if value.is_empty() || value.len() > 4_096 || value.contains('\0') {
+        Err(NativeV2CliError::GitHubToken)
+    } else {
+        Ok(value)
+    }
 }
 
 fn prepare_intent(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {

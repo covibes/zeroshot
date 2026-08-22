@@ -84,7 +84,6 @@ async fn create_delivery_run(
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key: IdempotencyKey::new("delivery-supervisor").assert_value(),
-            intent_digest: Sha256Digest::new("c".repeat(64)).assert_value(),
             submission_digest: Sha256Digest::new("d".repeat(64)).assert_value(),
             admitted,
         })

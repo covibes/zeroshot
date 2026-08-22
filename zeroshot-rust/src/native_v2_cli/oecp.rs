@@ -7,15 +7,15 @@ use openengine_cluster_client::{
     ClientError, ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
 };
 use openengine_cluster_protocol::{
-    RunAttachEventNotification, RunAttachParams, RunForceParams, RunListParams,
+    Cursor, RunAttachEventNotification, RunAttachParams, RunForceParams, RunListParams,
     RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult, RunWatchParams,
 };
 use tokio::sync::mpsc;
 
 use super::{
-    CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
-    CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliError, TargetAdd,
-    TargetRunRequest, TargetSetup,
+    CliRunForceResult, CliRunListResult, CliRunStatus, CliRunStatusResult,
+    CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
+    NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
 };
 
 pub struct BoxedSubscription<E> {
@@ -51,9 +51,13 @@ pub trait TargetConnector: Send + Sync {
     async fn submit(
         &self,
         name: &str,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError>;
-    async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError>;
+    async fn connect(
+        &self,
+        name: &str,
+        run_id: Option<openengine_cluster_protocol::RunId>,
+    ) -> Result<Arc<Self::Transport>, NativeV2CliError>;
 
     async fn hosted_run_list(
         &self,
@@ -94,6 +98,39 @@ impl<C> NamedTargetCliBackend<C> {
     #[must_use]
     pub const fn new(connector: C) -> Self {
         Self { connector }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunLocation {
+    Direct,
+    Cloud,
+    Task,
+}
+
+impl<C> NamedTargetCliBackend<C>
+where
+    C: TargetConnector,
+{
+    async fn run_location(
+        &self,
+        target: &str,
+        run_id: &openengine_cluster_protocol::RunId,
+    ) -> Result<RunLocation, NativeV2CliError> {
+        let status = self
+            .connector
+            .hosted_run_status(
+                target,
+                RunStatusParams {
+                    run_id: run_id.clone(),
+                },
+            )
+            .await?;
+        Ok(match status {
+            None => RunLocation::Direct,
+            Some(status) if task_is_active(&status.status) => RunLocation::Task,
+            Some(_) => RunLocation::Cloud,
+        })
     }
 }
 
@@ -143,7 +180,7 @@ where
     async fn run_submit(
         &self,
         target: Option<&str>,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         self.connector
             .submit(require_named_target(target)?, request)
@@ -163,7 +200,7 @@ where
         {
             return Ok(result);
         }
-        let transport = self.connector.connect(target).await?;
+        let transport = self.connector.connect(target, None).await?;
         ClusterClient::new(transport.as_ref())
             .run_list(params)
             .await
@@ -182,9 +219,14 @@ where
             .hosted_run_status(target, params.clone())
             .await?
         {
-            return Ok(result);
+            if !task_is_active(&result.status) {
+                return Ok(result);
+            }
         }
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(target, Some(params.run_id.clone()))
+            .await?;
         ClusterClient::new(transport.as_ref())
             .run_status(params)
             .await
@@ -198,14 +240,28 @@ where
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
         let target = require_named_target(target)?;
-        if let Some(subscription) = self
+        let params = match self.run_location(target, &params.run_id).await? {
+            RunLocation::Cloud => {
+                return self
+                    .connector
+                    .hosted_run_watch(target, params)
+                    .await?
+                    .ok_or_else(|| {
+                        NativeV2CliError::Target(
+                            "hosted target did not provide its run watch".to_owned(),
+                        )
+                    });
+            }
+            RunLocation::Task => RunWatchParams {
+                run_id: params.run_id,
+                from_cursor: task_cursor(params.from_cursor),
+            },
+            RunLocation::Direct => params,
+        };
+        let transport = self
             .connector
-            .hosted_run_watch(target, params.clone())
-            .await?
-        {
-            return Ok(subscription);
-        }
-        let transport = self.connector.connect(target).await?;
+            .connect(target, Some(params.run_id.clone()))
+            .await?;
         Ok(BoxedSubscription::new(spawn_watch(transport, params)))
     }
 
@@ -215,14 +271,29 @@ where
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
         let target = require_named_target(target)?;
-        if let Some(subscription) = self
+        let params = match self.run_location(target, &params.run_id).await? {
+            RunLocation::Cloud => {
+                return self
+                    .connector
+                    .hosted_run_logs(target, params)
+                    .await?
+                    .ok_or_else(|| {
+                        NativeV2CliError::Target(
+                            "hosted target did not provide its retained logs".to_owned(),
+                        )
+                    });
+            }
+            RunLocation::Task => RunLogsParams {
+                run_id: params.run_id,
+                from_cursor: task_cursor(params.from_cursor),
+                execution: params.execution,
+            },
+            RunLocation::Direct => params,
+        };
+        let transport = self
             .connector
-            .hosted_run_logs(target, params.clone())
-            .await?
-        {
-            return Ok(subscription);
-        }
-        let transport = self.connector.connect(target).await?;
+            .connect(target, Some(params.run_id.clone()))
+            .await?;
         Ok(BoxedSubscription::new(spawn_logs(transport, params)))
     }
 
@@ -233,7 +304,7 @@ where
     ) -> Result<Self::Attach, NativeV2CliError> {
         let transport = self
             .connector
-            .connect(require_named_target(target)?)
+            .connect(require_named_target(target)?, Some(params.run_id.clone()))
             .await?;
         Ok(BoxedSubscription::new(spawn_attach(transport, params)))
     }
@@ -244,20 +315,41 @@ where
         params: RunForceParams,
     ) -> Result<CliRunForceResult, NativeV2CliError> {
         let target = require_named_target(target)?;
-        if let Some(result) = self
-            .connector
-            .hosted_run_force(target, params.clone())
-            .await?
-        {
-            return Ok(result);
+        match self.run_location(target, &params.run_id).await? {
+            RunLocation::Cloud => {
+                return self
+                    .connector
+                    .hosted_run_force(target, params)
+                    .await?
+                    .ok_or_else(|| {
+                        NativeV2CliError::Target(
+                            "hosted target did not provide its force operation".to_owned(),
+                        )
+                    });
+            }
+            RunLocation::Task | RunLocation::Direct => {}
         }
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(target, Some(params.run_id.clone()))
+            .await?;
         ClusterClient::new(transport.as_ref())
             .run_force(params)
             .await
             .map(Into::into)
             .map_err(protocol_error)
     }
+}
+
+fn task_is_active(status: &CliRunStatus) -> bool {
+    matches!(
+        status,
+        CliRunStatus::Admitted {} | CliRunStatus::Running { .. } | CliRunStatus::Stopping { .. }
+    )
+}
+
+fn task_cursor(cursor: Option<Cursor>) -> Option<Cursor> {
+    cursor.filter(|cursor| cursor.as_str().starts_with("v2:"))
 }
 
 pub(super) fn spawn_watch<T>(

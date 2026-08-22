@@ -2,7 +2,7 @@ use super::*;
 
 mod hosted_runs;
 
-use hosted_runs::serve_hosted_run;
+use hosted_runs::{HostedRunState, serve_hosted_run};
 
 struct TestSessions;
 
@@ -20,6 +20,7 @@ impl TargetSessionAuthority for TestSessions {
     async fn issue_oecp(
         &self,
         _identity: &ConnectionIdentity,
+        _request: &TargetOecpSessionRequest,
     ) -> Result<String, TargetAuthorityError> {
         Ok("oecp-token".to_owned())
     }
@@ -67,12 +68,14 @@ impl LoopbackHost {
             )
             .assert_value(),
         );
+        let hosted_runs = Arc::new(HostedRunState::default());
         let hosted_origin = origin.clone();
         let task = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.assert_value();
                 let native = native.clone();
                 let authority = authority.clone();
+                let hosted_runs = hosted_runs.clone();
                 let hosted_origin = hosted_origin.clone();
                 tokio::spawn(async move {
                     let path = peek_path(&stream).await.assert_value();
@@ -81,7 +84,7 @@ impl LoopbackHost {
                             .await
                             .assert_value();
                     } else if path.starts_with("/native-v2/runs") {
-                        if let Err(error) = serve_hosted_run(stream, authority).await {
+                        if let Err(error) = serve_hosted_run(stream, authority, hosted_runs).await {
                             assert!(
                                 matches!(
                                     error.kind(),
@@ -211,21 +214,25 @@ async fn serve_hosted_auth(mut stream: TcpStream, origin: &str) -> io::Result<()
     let request = read_request(&mut stream).await?;
     let body = match (request.method.as_str(), request.path.as_str()) {
         ("GET", HOSTED_DISCOVERY_PATH) => json!({
-            "kind":"openengine.hosted-target/v1",
+            "kind":"zeroshot.native-v2-target/v2",
+            "authentication":"hosted_oauth",
+            "runPath":"/native-v2/run",
+            "sessionPath":"/native-v2/oecp-session",
+            "oecpPath":"/native-v2/oecp",
+            "audience":"controller",
             "oauth":{
-                "metadata_url":format!("{origin}/oauth/metadata"),
-                "device_authorization_endpoint":format!("{origin}/oauth/device"),
-                "token_endpoint":format!("{origin}/oauth/token"),
-                "revocation_endpoint":format!("{origin}/oauth/revoke"),
-                "client_id":"zeroshot-cli",
-                "device_grant_type":"urn:ietf:params:oauth:grant-type:device_code",
-                "device_exchange_fields":["device_token","device_label"],
-                "audience":"capsule"
+                "metadataUrl":format!("{origin}/oauth/metadata"),
+                "deviceAuthorizationEndpoint":format!("{origin}/oauth/device"),
+                "tokenEndpoint":format!("{origin}/oauth/token"),
+                "revocationEndpoint":format!("{origin}/oauth/revoke"),
+                "clientId":"zeroshot-cli",
+                "deviceGrantType":"urn:ietf:params:oauth:grant-type:device_code",
+                "deviceExchangeFields":["device_token","device_label"]
             },
-            "session":{
-                "route_template":"/session",
+            "loginSession":{
+                "routeTemplate":"/session",
                 "method":"GET",
-                "cache_policy":"no-store"
+                "cachePolicy":"no-store"
             },
             "extensions":{
                 "hosted_runs":{

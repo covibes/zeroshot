@@ -34,6 +34,8 @@ struct PortableBootstrapDocument {
     run_id: RunId,
     submission: RunSubmission,
     environment: BTreeMap<EnvironmentVariableName, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    github_token: Option<String>,
     workspace: PathBuf,
     workspace_lease: PathBuf,
     storage: PathBuf,
@@ -50,6 +52,7 @@ impl PortableBootstrapDocument {
             run_id: self.run_id,
             submission: self.submission,
             environment,
+            github_token: self.github_token,
             workspace: self.workspace,
             workspace_lease: self.workspace_lease,
             storage: self.storage,
@@ -112,10 +115,16 @@ pub async fn run_controller_process(bootstrap_path: &Path) -> Result<(), Portabl
     let bootstrap = load_bootstrap_file(bootstrap_path)?;
     let workspace = bootstrap.workspace.clone();
     let storage = bootstrap.storage.clone();
+    let github_token = bootstrap.github_token.clone();
     let controller = Arc::new(
         PortableRunController::start(bootstrap, move |admitted| {
-            crate::native_v2_local::build_local_process_candidate(admitted, &workspace, &storage)
-                .map(PortableRuntime::new)
+            crate::native_v2_local::build_local_process_candidate(
+                admitted,
+                &workspace,
+                &storage,
+                github_token,
+            )
+            .map(PortableRuntime::new)
         })
         .await?,
     );
@@ -156,6 +165,7 @@ fn encode_bootstrap(
         run_id: bootstrap.run_id.clone(),
         submission: bootstrap.submission.clone(),
         environment: environment.bootstrap_values(),
+        github_token: bootstrap.github_token.clone(),
         workspace: bootstrap.workspace.clone(),
         workspace_lease: bootstrap.workspace_lease.clone(),
         storage: bootstrap.storage.clone(),

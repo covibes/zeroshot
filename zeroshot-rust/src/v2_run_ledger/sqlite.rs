@@ -292,10 +292,7 @@ fn existing_submission(
         require_unused_run_id(transaction, &request.run_id)?;
         return Ok(None);
     };
-    if existing.intent_digest == request.intent_digest
-        && digest == request.submission_digest.as_str()
-        && existing.admitted == request.admitted
-    {
+    if digest == request.submission_digest.as_str() && existing.admitted == request.admitted {
         Ok(Some(existing))
     } else {
         Err(RunLedgerError::SubmissionConflict {
@@ -322,7 +319,6 @@ fn insert_new_run(
     let snapshot = super::RunSnapshot::admitted(request.run_id.clone(), &request.admitted);
     let stored = StoredRun {
         submission_key: request.submission_key,
-        intent_digest: request.intent_digest,
         submission_digest: request.submission_digest,
         admitted: request.admitted,
         snapshot,

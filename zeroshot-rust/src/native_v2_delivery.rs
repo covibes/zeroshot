@@ -8,7 +8,8 @@
 mod adapter;
 pub(crate) mod contract;
 mod git;
-pub(crate) mod git_auth;
+#[doc(hidden)]
+pub mod git_auth;
 mod github;
 
 #[cfg(test)]

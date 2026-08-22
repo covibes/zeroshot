@@ -1,20 +1,22 @@
 //! Lean native-v2 command contract.
 //!
 //! Parsing and local file validation happen before a local controller or named target is
-//! contacted. Named-target submissions carry only a mutable branch selector; the host resolves it
-//! once before the controller receives the immutable source and runtime plan.
+//! contacted. The named-target connector resolves a mutable branch selector before sending the
+//! immutable sourceful submission to the target.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
-    RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
+    RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunId,
     RunStatusParams, RunTitle, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
-pub use crate::native_v2_target_authority::{TargetRunIntent, TargetRunRequest};
+pub use crate::native_v2_contract::RunSubmissionIntent as TargetRunIntent;
 use crate::native_v2_supervisor::RunEnvironmentError;
 
 #[path = "native_v2_templates.rs"]
@@ -56,6 +58,7 @@ zeroshot-rust
   target login <name>
   target setup <name> --repository <owner/name> [--branch <branch>]
   target serve --listen <address> --public-origin <origin> --storage <directory>
+      [--bootstrap-key-file <path>]
   template list
   template show <single-worker|software-change> [--pr|--ship]
   run --title <title> (--graph <file>|--template <name>) --input <file>
@@ -96,6 +99,37 @@ pub struct RunCommand {
     pub branch: Option<SourceBranchId>,
     pub detach: bool,
     pub submission_key: Option<IdempotencyKey>,
+}
+
+/// CLI-materialized input before a named target resolves its exact source revision.
+///
+/// This is not a wire value. Named targets convert it to the shared sourceful
+/// [`openengine_cluster_protocol::TargetRunRequest`]; local runs snapshot the current workspace.
+#[derive(Clone, PartialEq)]
+pub struct PreparedRunRequest {
+    pub run_id: RunId,
+    pub intent: TargetRunIntent,
+    pub environment: BTreeMap<EnvironmentVariableName, String>,
+    pub github_token: Option<String>,
+}
+
+impl fmt::Debug for PreparedRunRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedRunRequest")
+            .field("run_id", &self.run_id)
+            .field("intent", &self.intent)
+            .field(
+                "environment_names",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("environment_values", &"[REDACTED]")
+            .field(
+                "github_token",
+                &self.github_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,6 +223,8 @@ pub enum NativeV2CliError {
     RunEnvironment(#[from] RunEnvironmentError),
     #[error("submission identity randomness is unavailable")]
     Randomness,
+    #[error("GH_TOKEN is not a valid bounded GitHub credential")]
+    GitHubToken,
     #[error("target operation failed: {0}")]
     Target(String),
     #[error("local controller operation failed: {0}")]
@@ -246,7 +282,7 @@ pub trait NativeV2CliBackend: Send + Sync {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<openengine_cluster_protocol::RunSubmitResult, NativeV2CliError>;
     async fn run_list(
         &self,

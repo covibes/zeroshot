@@ -1,7 +1,5 @@
-use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use serde::Serialize;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -25,33 +23,6 @@ pub(super) struct CapturedHttpRequest {
     pub(super) path: String,
     pub(super) authorization: Option<String>,
     pub(super) body: String,
-}
-
-#[derive(Serialize)]
-struct HostedDiscoveryFixture {
-    kind: &'static str,
-    oauth: OAuthDiscoveryFixture,
-    session: SessionDiscoveryFixture,
-    extensions: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct OAuthDiscoveryFixture {
-    metadata_url: String,
-    device_authorization_endpoint: String,
-    token_endpoint: String,
-    revocation_endpoint: String,
-    client_id: &'static str,
-    device_grant_type: &'static str,
-    device_exchange_fields: [&'static str; 2],
-    audience: &'static str,
-}
-
-#[derive(Serialize)]
-struct SessionDiscoveryFixture {
-    route_template: &'static str,
-    method: &'static str,
-    cache_policy: &'static str,
 }
 
 pub(super) async fn spawn_target_authority(
@@ -83,16 +54,17 @@ pub(super) async fn spawn_direct_target_authority(
             let request = read_http_request(&mut stream).await;
             let body = match (request.method.as_str(), request.path.as_str()) {
                 ("GET", "/.well-known/zeroshot-native-v2") => json!({
-                    "kind": "zeroshot.native-v2-target/v1",
+                    "kind": "zeroshot.native-v2-target/v2",
                     "authentication": "none",
-                    "setupPath": "/native-v2/setup",
                     "runPath": "/native-v2/run",
                     "sessionPath": "/native-v2/oecp-session",
+                    "oecpPath": "/native-v2/oecp",
                     "audience": "controller",
                 })
                 .to_string(),
-                ("PUT", "/native-v2/setup") => r#"{"outcome":"installed"}"#.to_owned(),
-                ("POST", "/native-v2/run") => r#"{"runId":"run-direct"}"#.to_owned(),
+                ("POST", "/native-v2/run") => {
+                    r#"{"runId":"018f5e78-7f95-7c22-8d98-3f15af20c991"}"#.to_owned()
+                }
                 ("POST", "/native-v2/oecp-session") => {
                     format!(r#"{{"endpoint":"ws://{address}/native-v2/oecp"}}"#)
                 }
@@ -138,17 +110,8 @@ fn authority_response(
         return response;
     }
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/.well-known/openengine-hosted-target") => hosted_discovery(origin),
         ("GET", "/oauth/metadata") => oauth_metadata(origin),
-        ("GET", "/.well-known/zeroshot-native-v2") => json!({
-            "kind": "zeroshot.native-v2-target/v1",
-            "authentication": "hosted_oauth",
-            "setupPath": "/native-v2/setup",
-            "runPath": "/native-v2/run",
-            "sessionPath": "/native-v2/oecp-session",
-            "audience": "controller",
-        })
-        .to_string(),
+        ("GET", "/.well-known/zeroshot-native-v2") => hosted_discovery(origin),
         ("POST", "/oauth/device") => json!({
             "device_code": "device-code",
             "user_code": "ABCD-EFGH",
@@ -208,7 +171,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "title": "Hosted queue test",
                     "source": source(),
                     "size": "standard",
-                    "cursor": "cloud:2",
+                    "cursor": "v2:3",
                     "status": {
                         "phase": "finished",
                         "terminalResult": {"status": "succeeded", "output": null}
@@ -217,7 +180,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
             }),
             json!({"type": "closed", "reason": "done"})
         )),
-        ("GET", "/native-v2/runs/run-hosted/logs?from_cursor=cloud%3A2&execution=worker%2F1") => {
+        ("GET", "/native-v2/runs/run-hosted/logs?from_cursor=v2%3A2&execution=worker%2F1") => {
             Some(format!(
                 "{}\n{}\n",
                 json!({
@@ -225,7 +188,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "event": {
                         "subscriptionId": "logs-1",
                         "runId": "run-hosted",
-                        "cursor": "cloud:3",
+                        "cursor": "v2:4",
                         "execution": "worker/1",
                         "record": {
                             "level": "info",
@@ -255,8 +218,9 @@ fn controller_response(
     address: std::net::SocketAddr,
 ) -> Option<String> {
     match (request.method.as_str(), request.path.as_str()) {
-        ("PUT", "/native-v2/setup") => Some(r#"{"outcome":"installed"}"#.to_owned()),
-        ("POST", "/native-v2/run") => Some(r#"{"runId":"run-hosted"}"#.to_owned()),
+        ("POST", "/native-v2/run") => {
+            Some(r#"{"runId":"018f5e78-7f95-7c22-8d98-3f15af20c991"}"#.to_owned())
+        }
         ("POST", "/native-v2/oecp-session") => Some(format!(
             r#"{{"endpoint":"ws://{address}/native-v2/oecp","bearerToken":"oecp-session-token"}}"#
         )),
@@ -265,45 +229,46 @@ fn controller_response(
 }
 
 fn hosted_discovery(origin: &str) -> String {
-    let fixture = HostedDiscoveryFixture {
-        kind: "openengine.hosted-target/v1",
-        oauth: OAuthDiscoveryFixture {
-            metadata_url: format!("{origin}/oauth/metadata"),
-            device_authorization_endpoint: format!("{origin}/oauth/device"),
-            token_endpoint: format!("{origin}/oauth/token"),
-            revocation_endpoint: format!("{origin}/oauth/revoke"),
-            client_id: "zeroshot-cli",
-            device_grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-            device_exchange_fields: ["device_token", "device_label"],
-            audience: "capsule",
+    json!({
+        "kind": "zeroshot.native-v2-target/v2",
+        "authentication": "hosted_oauth",
+        "runPath": "/native-v2/run",
+        "sessionPath": "/native-v2/oecp-session",
+        "oecpPath": "/native-v2/oecp",
+        "audience": "controller",
+        "oauth": {
+            "metadataUrl": format!("{origin}/oauth/metadata"),
+            "deviceAuthorizationEndpoint": format!("{origin}/oauth/device"),
+            "tokenEndpoint": format!("{origin}/oauth/token"),
+            "revocationEndpoint": format!("{origin}/oauth/revoke"),
+            "clientId": "zeroshot-cli",
+            "deviceGrantType": "urn:ietf:params:oauth:grant-type:device_code",
+            "deviceExchangeFields": ["device_token", "device_label"]
         },
-        session: SessionDiscoveryFixture {
-            route_template: "/session",
-            method: "GET",
-            cache_policy: "no-store",
+        "loginSession": {
+            "routeTemplate": "/session",
+            "method": "GET",
+            "cachePolicy": "no-store"
         },
-        extensions: json!({
+        "extensions": {
             "hosted_runs": {
                 "kind": "zeroshot.hosted-runs/v1",
                 "base_url": origin,
                 "route_templates": hosted_run_routes()
             }
-        }),
-    };
-    serde_json::to_string(&fixture).unwrap_or_else(|_| std::process::abort())
+        }
+    })
+    .to_string()
 }
 
-fn hosted_run_routes() -> BTreeMap<&'static str, &'static str> {
-    BTreeMap::from([
-        ("force", "/native-v2/runs/{run_id}/force"),
-        ("list", "/native-v2/runs"),
-        (
-            "logs",
-            "/native-v2/runs/{run_id}/logs{?from_cursor,execution}",
-        ),
-        ("status", "/native-v2/runs/{run_id}"),
-        ("watch", "/native-v2/runs/{run_id}/watch{?from_cursor}"),
-    ])
+fn hosted_run_routes() -> serde_json::Value {
+    json!({
+        "force": "/native-v2/runs/{run_id}/force",
+        "list": "/native-v2/runs",
+        "logs": "/native-v2/runs/{run_id}/logs{?from_cursor,execution}",
+        "status": "/native-v2/runs/{run_id}",
+        "watch": "/native-v2/runs/{run_id}/watch{?from_cursor}"
+    })
 }
 
 fn oauth_metadata(origin: &str) -> String {

@@ -13,10 +13,10 @@ fn local_claude_user_reuses_home_without_moving_session_state() {
         workspace: directory.path().to_owned(),
         runtime_home,
         local_user_home: Some(local_home.clone()),
-        base_environment: ClaudeProcessEnvironment::new(BTreeMap::from([(
-            "PATH".to_owned(),
-            "/usr/bin:/bin".to_owned(),
-        )]))
+        base_environment: ClaudeProcessEnvironment::new(BTreeMap::from([
+            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+            ("TMPDIR".to_owned(), "/shared/tmp".to_owned()),
+        ]))
         .assert_value(),
         turn_timeout: Duration::from_secs(1),
         process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value(),
@@ -34,4 +34,8 @@ fn local_claude_user_reuses_home_without_moving_session_state() {
         .assert_value();
 
     assert_eq!(values.get("HOME").map(String::as_str), local_home.to_str());
+    assert_eq!(
+        values.get("TMPDIR").map(String::as_str),
+        Some("/private/session")
+    );
 }

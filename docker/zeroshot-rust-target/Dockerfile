@@ -8,7 +8,7 @@ COPY zeroshot-rust ./zeroshot-rust
 
 RUN cargo build --locked --release --package zeroshot-rust --bin zeroshot-rust
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS runtime
 
 ARG CODEX_VERSION=0.148.0
 ARG CLAUDE_CODE_VERSION=2.1.237
@@ -35,13 +35,15 @@ RUN npm install --global --no-audit --no-fund \
     && npm cache clean --force
 
 COPY --from=builder /src/target/release/zeroshot-rust /usr/local/bin/zeroshot-rust
+COPY docker/zeroshot-rust-target/entrypoint.sh /usr/local/bin/zeroshot-target-entrypoint
 
 # The native runtime deliberately retains root so it can isolate node processes.
 # Root owns target state; execute-only access lets isolated run UIDs reach their own workspaces.
-RUN install -d -m 0711 /var/lib/zeroshot/native-v2
+RUN install -d -m 0711 /var/lib/zeroshot/native-v2 \
+    && chmod 0755 /usr/local/bin/zeroshot-target-entrypoint
 
 VOLUME ["/var/lib/zeroshot/native-v2"]
 EXPOSE 8080
 
-ENTRYPOINT ["zeroshot-rust"]
+ENTRYPOINT ["zeroshot-target-entrypoint"]
 CMD ["target", "serve", "--listen", "0.0.0.0:8080", "--public-origin", "http://127.0.0.1:8080", "--storage", "/var/lib/zeroshot/native-v2"]

@@ -42,6 +42,7 @@ pub(super) enum Call {
         runtime: RuntimePlan,
         input: Value,
         environment: BTreeMap<EnvironmentVariableName, String>,
+        github_token: Option<String>,
         branch: Option<String>,
         submission_key: String,
     },
@@ -253,11 +254,13 @@ impl NativeV2CliBackend for FakeBackend {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
-        let TargetRunRequest {
+        let PreparedRunRequest {
             intent,
             environment,
+            github_token,
+            run_id: _,
         } = request;
         self.calls.lock().assert_value().push(Call::Submit {
             target: target.map(str::to_owned),
@@ -265,6 +268,7 @@ impl NativeV2CliBackend for FakeBackend {
             runtime: intent.runtime,
             input: intent.initial_input,
             environment,
+            github_token,
             branch: intent.branch.map(|branch| branch.as_str().to_owned()),
             submission_key: intent.submission_key.as_str().to_owned(),
         });

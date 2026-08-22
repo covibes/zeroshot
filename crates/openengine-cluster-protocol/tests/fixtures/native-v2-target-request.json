@@ -1,0 +1,32 @@
+{
+  "runId": "018f5e78-7f95-7c22-8d98-3f15af20c991",
+  "submission": {
+    "title": "test",
+    "graph": {
+      "profile": "openengine.graph.full/v1",
+      "initialInput": { "kind": "null" },
+      "policy": { "policy": "policy.native-v2@1", "default": "deny" },
+      "root": {
+        "kind": "succeed",
+        "name": "done",
+        "output": { "kind": "null" },
+        "bindings": []
+      }
+    },
+    "initialInput": null,
+    "runtime": {
+      "harness": "codex",
+      "provider": "openai",
+      "size": "tiny",
+      "nodes": {}
+    },
+    "source": {
+      "repository": "acme/project",
+      "branch": "main",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "submissionKey": "debug-fixture"
+  },
+  "environment": { "OPENAI_API_KEY": "environment-secret" },
+  "githubToken": "github-secret"
+}

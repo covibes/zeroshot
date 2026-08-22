@@ -169,7 +169,7 @@ where
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         self.core.allocations.fetch_add(1, Ordering::SeqCst);
         self.gate.enter().await?;
@@ -299,8 +299,6 @@ pub(super) async fn seed_controller_reconstructed_run(
             .create_or_get(CreateRun {
                 run_id: run_id.clone(),
                 submission_key: submission.submission_key.clone(),
-                intent_digest: run_intent_digest(&RunSubmissionIntent::from(&submission))
-                    .assert_value_with("intent digest"),
                 submission_digest: submission_digest(&submission).assert_value_with("digest"),
                 admitted,
             })

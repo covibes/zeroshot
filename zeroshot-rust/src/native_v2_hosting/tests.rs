@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -11,29 +12,18 @@ use serde_json::Value;
 use super::*;
 use crate::native_v2_candidate::test_support::{TestDirectory, admit, environment_name};
 use crate::native_v2_cloud::CapsuleAllocator;
-use crate::native_v2_contract::{self, ExecutionRef, NodeInvocation, RunSubmissionIntent};
+use crate::native_v2_contract::{self, ExecutionRef, NodeInvocation};
 use crate::native_v2_runner::{NodeRunRequest, ResolvedEnvironment};
 use crate::native_v2_portable_controller::WorkspaceIdentity;
 use crate::native_v2_supervisor::{RunEnvironment, RunEnvironmentError, RunRuntimeExit};
-use crate::native_v2_target_authority::{TargetAuthorityErrorKind, TargetSetupOutcome};
+use crate::native_v2_target_authority::TargetAuthorityErrorKind;
 
 use super::allocator::{ProductionCapsuleAllocator, monitor_workspace_identity};
-use super::repository::{
-    RepositoryInstall, SourceResolution, install_repository, path_source, repository_token,
-    resolve_source,
-};
+use super::repository::{RepositoryInstall, install_repository, path_source};
 
 mod fixtures;
 
 use fixtures::*;
-
-#[test]
-fn run_branch_override_wins_over_target_default() {
-    let run = SourceBranchId::new("feature").assert_value_with("run branch");
-    assert_eq!(effective_branch(Some(&run), Some("main")), Some("feature"));
-    assert_eq!(effective_branch(None, Some("main")), Some("main"));
-    assert_eq!(effective_branch(None, None), None);
-}
 
 #[test]
 fn run_environment_is_exact_and_request_debug_is_redacted() {
@@ -55,49 +45,35 @@ fn run_environment_is_exact_and_request_debug_is_redacted() {
     assert!(!selected_debug.contains("unused-secret"));
 
     let request = crate::native_v2_target_authority::TargetRunRequest {
-        intent: RunSubmissionIntent::from(&submission(
+        run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
+        submission: submission(
             runtime,
             "0123456789abcdef0123456789abcdef01234567",
             "redacted-request",
-        )),
+        ),
         environment: available,
+        github_token: Some("github-secret".to_owned()),
     };
     let debug = format!("{request:?}");
     assert!(debug.contains("OPENAI_API_KEY"));
     assert!(debug.contains("UNUSED_SECRET"));
     assert!(!debug.contains("openai-secret"));
     assert!(!debug.contains("unused-secret"));
-}
-
-#[test]
-fn repository_provisioning_reads_github_token_from_the_current_run_only() {
-    let name = environment_name(crate::native_v2_delivery::GITHUB_TOKEN_ENV);
-    let declared_runtime = runtime(BTreeSet::from([name.clone()]));
-    let environment = RunEnvironment::exact(
-        &declared_runtime,
-        BTreeMap::from([(name, "run-scoped-token".to_owned())]),
-    )
-    .assert_value_with("run environment");
-    assert_eq!(repository_token(&environment), Some("run-scoped-token"));
-
-    let empty = RunEnvironment::exact(&runtime(BTreeSet::new()), BTreeMap::new())
-        .assert_value_with("empty run environment");
-    assert_eq!(repository_token(&empty), None);
+    assert!(!debug.contains("github-secret"));
 }
 
 #[tokio::test]
 async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_claim() {
     let root = TestDirectory::new("hosting-controller");
-    let setup = setup(None);
     let first = ProductionTargetControllerFactory::new(hosting_config(root.path().to_owned()));
     let second = first.clone();
 
     let first_controller = first
-        .create_controller(&setup)
+        .create_controller()
         .await
         .assert_value_with("first controller");
     let second_controller = second
-        .create_controller(&setup)
+        .create_controller()
         .await
         .assert_value_with("second controller");
     assert!(first_controller.list().await.assert_value().is_empty());
@@ -106,47 +82,13 @@ async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_cl
 }
 
 #[tokio::test]
-async fn production_authority_restores_setup_from_target_storage() {
-    let root = TestDirectory::new("hosting-authority-setup");
-    let setup = setup(None);
-    let first = build_production_target_authority(hosting_config(root.path().to_owned()))
-        .await
-        .assert_value_with("first authority");
-    assert_eq!(
-        first
-            .install(setup.clone())
-            .await
-            .assert_value_with("install setup"),
-        TargetSetupOutcome::Installed
-    );
-    drop(first);
-    assert!(root.path().join(TARGET_SETUP_FILE).is_file());
-
-    let restored = build_production_target_authority(hosting_config(root.path().to_owned()))
-        .await
-        .assert_value_with("restored authority");
-    assert_eq!(
-        restored
-            .install(setup)
-            .await
-            .assert_value_with("exact reinstall"),
-        TargetSetupOutcome::Unchanged
-    );
-    restored
-        .controller()
-        .await
-        .assert_value_with("restored controller");
-}
-
-#[tokio::test]
-async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
+async fn invalid_submission_fails_before_run_allocation() {
     let root = TestDirectory::new("hosting-invalid-intent");
     let mut config = hosting_config(root.path().to_owned());
     config.git_program = root.path().join("git-must-not-run");
     let factory = ProductionTargetControllerFactory::new(config);
-    let setup = setup(None);
     let controller = factory
-        .create_controller(&setup)
+        .create_controller()
         .await
         .assert_value_with("controller");
     let mut sourceful = submission(
@@ -162,11 +104,12 @@ async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
 
     let error = factory
         .submit(
-            &setup,
             &controller,
             crate::native_v2_target_authority::TargetRunRequest {
-                intent: RunSubmissionIntent::from(&sourceful),
+                run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
+                submission: sourceful,
                 environment: BTreeMap::new(),
+                github_token: None,
             },
         )
         .await
@@ -182,14 +125,13 @@ async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
 }
 
 #[tokio::test]
-async fn invalid_run_environment_fails_before_source_resolution_or_allocation() {
+async fn invalid_run_environment_fails_before_allocation() {
     let root = TestDirectory::new("hosting-invalid-environment");
     let mut config = hosting_config(root.path().to_owned());
     config.git_program = root.path().join("git-must-not-run");
     let factory = ProductionTargetControllerFactory::new(config);
-    let setup = setup(None);
     let controller = factory
-        .create_controller(&setup)
+        .create_controller()
         .await
         .assert_value_with("controller");
     let declared = environment_name("NODE_TOKEN");
@@ -201,11 +143,12 @@ async fn invalid_run_environment_fails_before_source_resolution_or_allocation() 
 
     let error = factory
         .submit(
-            &setup,
             &controller,
             crate::native_v2_target_authority::TargetRunRequest {
-                intent: RunSubmissionIntent::from(&sourceful),
+                run_id: RunId::new("018f5e78-7f96-7c22-8d98-3f15af20c991"),
+                submission: sourceful,
                 environment: BTreeMap::new(),
+                github_token: None,
             },
         )
         .await
@@ -226,31 +169,14 @@ async fn repository_resolution_and_installation_preserve_the_exact_revision() {
     let root = TestDirectory::new("hosting-installs");
     let pool = test_process_pool();
     let source = path_source(&repository.remote);
-    let default = resolve_source(SourceResolution {
-        git_program: Path::new("/usr/bin/git"),
-        source: &source,
-        repository: "acme/project",
-        branch: None,
-        process_pool: pool,
-        github_token: None,
-    })
-    .await
-    .assert_value_with("resolve remote default");
-    assert_eq!(default.branch.as_str(), "main");
-    assert_eq!(default.revision.as_str(), repository.main_revision);
-
-    let feature = resolve_source(SourceResolution {
-        git_program: Path::new("/usr/bin/git"),
-        source: &source,
-        repository: "acme/project",
-        branch: Some("feature"),
-        process_pool: pool,
-        github_token: None,
-    })
-    .await
-    .assert_value_with("resolve named branch");
-    assert_eq!(feature.branch.as_str(), "feature");
-    assert_eq!(feature.revision.as_str(), repository.feature_revision);
+    let feature = openengine_cluster_protocol::ResolvedSource {
+        repository: openengine_cluster_protocol::SourceRepositoryId::new("acme/project")
+            .assert_value_with("repository"),
+        branch: openengine_cluster_protocol::SourceBranchId::new("feature")
+            .assert_value_with("branch"),
+        revision: openengine_cluster_protocol::SourceRevisionId::new(&repository.feature_revision)
+            .assert_value_with("revision"),
+    };
 
     repository.move_feature_to(&repository.main_revision);
     let workspace = root.path().join("workspace");
@@ -285,22 +211,40 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
         .assert_value_with("allocator")
         .with_test_filesystem_and_source(repository.remote, portable_filesystem);
     let run_id = RunId::new("run-hosting-one");
-    let environment = RunEnvironment::exact(&admitted.runtime, BTreeMap::new())
-        .assert_value_with("empty environment");
     let run_path = allocator.run_path(&run_id);
 
+    assert_eq!(
+        fs::metadata(root.path())
+            .assert_value_with("storage root metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
+    assert_eq!(
+        fs::metadata(root.path().join("runs"))
+            .assert_value_with("runs directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
+
     let capsule = allocator
-        .allocate(&run_id, &admitted, &environment)
+        .allocate(&run_id, &admitted, None)
         .await
         .assert_value_with("allocate capsule");
+    assert_eq!(
+        fs::metadata(&run_path)
+            .assert_value_with("run root metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o711
+    );
     assert!(run_path.join("workspace/.git").is_dir());
     assert!(run_path.join("runtime").is_dir());
-    assert!(
-        allocator
-            .allocate(&run_id, &admitted, &environment)
-            .await
-            .is_err()
-    );
+    assert!(allocator.allocate(&run_id, &admitted, None).await.is_err());
 
     capsule
         .cleanup
@@ -312,12 +256,7 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
         .destroy_or_confirm_absent(&run_id, RunRuntimeExit::RuntimeLost)
         .await
         .assert_value_with("confirm absent");
-    assert!(
-        allocator
-            .allocate(&run_id, &admitted, &environment)
-            .await
-            .is_err()
-    );
+    assert!(allocator.allocate(&run_id, &admitted, None).await.is_err());
 }
 
 #[tokio::test]
@@ -361,11 +300,9 @@ async fn default_claude_environment_prepares_capsule_session_home() {
         .assert_value_with("allocator")
         .with_test_filesystem_and_source(repository.remote, portable_filesystem);
     let run_id = RunId::new("run-hosting-claude-environment");
-    let environment = RunEnvironment::exact(&admitted.runtime, BTreeMap::new())
-        .assert_value_with("empty environment");
     let run_path = allocator.run_path(&run_id);
     let capsule = allocator
-        .allocate(&run_id, &admitted, &environment)
+        .allocate(&run_id, &admitted, None)
         .await
         .assert_value_with("allocate Claude capsule");
     let node = NodeName::new("work").assert_value_with("node");

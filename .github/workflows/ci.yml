@@ -218,8 +218,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          private_container_id=""
           container_id="$(docker run --detach --platform linux/amd64 --publish 127.0.0.1:18080:8080 zeroshot-rust-target:ci)"
-          trap 'docker rm --force "$container_id" >/dev/null 2>&1 || true' EXIT
+          cleanup() {
+            docker rm --force --volumes "$container_id" >/dev/null 2>&1 || true
+            if [[ -n "$private_container_id" ]]; then
+              docker rm --force --volumes "$private_container_id" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
 
           ready=false
           for _ in {1..30}; do
@@ -236,8 +243,40 @@ jobs:
             exit 1
           fi
 
-          jq --exit-status '.kind == "zeroshot.native-v2-target/v1"' /tmp/zeroshot-rust-discovery.json
+          jq --exit-status '.kind == "zeroshot.native-v2-target/v2"' /tmp/zeroshot-rust-discovery.json
           docker exec "$container_id" codex --version
+
+          private_container_id="$(docker run --detach --platform linux/amd64 \
+            --read-only \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,size=268435456,mode=1777 \
+            --env ZEROSHOT_TARGET_BOOTSTRAP_KEY=0707070707070707070707070707070707070707070707070707070707070707 \
+            --publish 127.0.0.1:18081:8080 \
+            --entrypoint /bin/sh \
+            zeroshot-rust-target:ci \
+            -c 'ln -s /tmp/zeroshot-bootstrap-exfiltrated /tmp/zeroshot-target-bootstrap.key; \
+              exec /usr/local/bin/zeroshot-target-entrypoint "$@"' \
+            sh target serve --listen 0.0.0.0:8080 --public-origin http://127.0.0.1:8080 \
+              --storage /var/lib/zeroshot/native-v2)"
+
+          private_ready=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18081/.well-known/zeroshot-native-v2 \
+              --output /tmp/zeroshot-rust-private-discovery.json; then
+              private_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$private_ready" != "true" ]]; then
+            docker logs "$private_container_id"
+            exit 1
+          fi
+
+          docker exec "$private_container_id" test ! -e /tmp/zeroshot-bootstrap-exfiltrated
+          docker exec "$private_container_id" test -L /tmp/zeroshot-target-bootstrap.key
+          docker exec "$private_container_id" sh -c \
+            '! find /tmp -maxdepth 1 -type f -name "zeroshot-target-bootstrap.*" -print -quit | grep -q .'
           docker exec "$container_id" claude --version
 
   # Tier 2: worktree/container isolation e2e (real Docker). Non-blocking and

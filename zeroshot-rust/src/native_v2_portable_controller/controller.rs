@@ -331,7 +331,7 @@ impl CapsuleAllocator for SingleRunAllocator {
         &self,
         run_id: &RunId,
         _admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         self.require_run(run_id)?;
         let runtime = self

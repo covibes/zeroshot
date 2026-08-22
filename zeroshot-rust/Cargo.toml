@@ -26,6 +26,7 @@ openengine_cluster_client.workspace = true
 openengine-cluster-server.workspace = true
 rusqlite.workspace = true
 reqwest.workspace = true
+ring.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
@@ -33,6 +34,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 url.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

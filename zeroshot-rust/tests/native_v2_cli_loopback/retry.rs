@@ -82,7 +82,7 @@ impl CapsuleAllocator for RetryAllocator {
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
-        _environment: &RunEnvironment,
+        _github_token: Option<&str>,
     ) -> AllocationResult {
         let runner = match self.lane {
             RetryLane::Codex => self.codex_runner(admitted)?,
@@ -173,7 +173,6 @@ async fn shipped_cli_observes_one_bounded_provider_continuation_for_both_harness
         let allocator = Arc::new(RetryAllocator::new(&root, lane));
         let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
             allocator: allocator.clone(),
-            resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             delivery_policy: DeliveryPolicy::Optional,
         }))
         .await;
@@ -190,6 +189,7 @@ async fn shipped_cli_observes_one_bounded_provider_continuation_for_both_harness
             graph: &graph,
             input: &input,
             extra: Some(lane.label()),
+            source_revision: Some(TEST_SOURCE_REVISION),
         });
         command.env(lane.credential(), "sentinel-secret");
         let (stdout, stderr) = run_cli_command(

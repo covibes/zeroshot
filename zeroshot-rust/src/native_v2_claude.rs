@@ -220,6 +220,9 @@ impl ClaudeAdapter {
             .filter(|value| !value.is_empty())
             .unwrap_or(runtime_home);
         environment.insert("HOME".to_owned(), provider_home.to_owned());
+        // Hosted targets may expose a read-only or root-owned shared `/tmp`. Keep Claude's
+        // sockets and temporary files inside the same provider-private session home instead.
+        environment.insert("TMPDIR".to_owned(), runtime_home.to_owned());
         extend_declared_environment(&mut environment, resolved)?;
         reject_provider_controls(&environment)?;
         if self.provider == ClaudeProvider::OpenRouter {

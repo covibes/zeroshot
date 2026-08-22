@@ -27,7 +27,7 @@ impl NativeV2CliBackend for LocalCliBackend {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        request: TargetRunRequest,
+        request: PreparedRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         require_local(target)?;
         let run_id = self.start_controller(request).await?;

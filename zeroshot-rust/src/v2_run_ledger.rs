@@ -39,8 +39,6 @@ pub const MAX_SAFE_LOG_BYTES: usize = 16 * 1024;
 pub struct CreateRun {
     pub run_id: RunId,
     pub submission_key: IdempotencyKey,
-    /// Digest of title/graph/input/runtime/key before mutable source resolution.
-    pub intent_digest: Sha256Digest,
     pub submission_digest: Sha256Digest,
     pub admitted: AdmittedRun,
 }
@@ -65,7 +63,6 @@ impl CreateRunOutcome {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StoredRun {
     pub submission_key: IdempotencyKey,
-    pub intent_digest: Sha256Digest,
     pub submission_digest: Sha256Digest,
     pub admitted: AdmittedRun,
     pub snapshot: RunSnapshot,

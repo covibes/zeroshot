@@ -248,6 +248,7 @@ async fn run_follows_by_default_and_forwards_per_run_intent_unchanged() {
                 runtime: runtime(),
                 input: json!({"task":"ship it"}),
                 environment: BTreeMap::new(),
+                github_token: None,
                 branch: Some("feature".to_owned()),
                 submission_key: "stable-key".to_owned(),
             },

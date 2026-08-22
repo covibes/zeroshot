@@ -21,10 +21,10 @@ use url::Url;
 use crate::execution::process::HostedProcessPool;
 use crate::native_v2_candidate::{
     NativeV2CandidateConfig, NativeV2CandidateError, NativeV2HarnessConfig,
-    build_local_native_v2_candidate,
+    build_local_native_v2_candidate_with_github_token,
 };
 use crate::native_v2_claude::{ClaudeAdapterConfig, ClaudeAdapterConfigError, ClaudeProcessEnvironment};
-use crate::native_v2_cli::TargetRunRequest;
+use crate::native_v2_cli::PreparedRunRequest;
 use crate::native_v2_codex::{NativeV2CodexConfig, NativeV2CodexUser};
 use crate::native_v2_contract::AdmittedRun;
 use crate::native_v2_delivery::{
@@ -64,22 +64,24 @@ pub struct PreparedLocalRun {
     pub run_id: RunId,
     pub submission: RunSubmission,
     pub environment: RunEnvironment,
+    pub github_token: Option<String>,
     pub workspace: PathBuf,
 }
 
 /// Snapshots local source and revalidates the request's exact runtime environment.
 pub fn prepare_local_run(
-    request: TargetRunRequest,
+    request: PreparedRunRequest,
     current_directory: &Path,
     git_program: &Path,
 ) -> Result<PreparedLocalRun, LocalCompositionError> {
-    let TargetRunRequest {
+    let PreparedRunRequest {
+        run_id,
         intent,
         environment,
+        github_token,
     } = request;
     let environment = RunEnvironment::exact(&intent.runtime, environment)?;
     let (workspace, source) = local_resolved_source(current_directory, git_program)?;
-    let run_id = fresh_local_run_id()?;
     Ok(PreparedLocalRun {
         run_id,
         submission: RunSubmission {
@@ -91,6 +93,7 @@ pub fn prepare_local_run(
             submission_key: intent.submission_key,
         },
         environment,
+        github_token,
         workspace,
     })
 }
@@ -191,17 +194,6 @@ fn github_remote_path(origin: &str) -> Option<String> {
     }
 }
 
-fn fresh_local_run_id() -> Result<RunId, LocalCompositionError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| LocalCompositionError::RunIdentity)?;
-    let mut value = String::from("run-");
-    for byte in random {
-        use std::fmt::Write as _;
-        let _ = write!(&mut value, "{byte:02x}");
-    }
-    Ok(RunId::new(value))
-}
-
 /// Builds a local-user process candidate rooted in the existing workspace.
 ///
 /// `storage` owns only provider session homes and controller state. No cleanup object is returned
@@ -210,6 +202,7 @@ pub fn build_local_process_candidate(
     admitted: &AdmittedRun,
     workspace: &Path,
     storage: &Path,
+    github_token: Option<String>,
 ) -> Result<Arc<dyn NodeRunner>, LocalCompositionError> {
     let runtime_home = storage.join("runtime");
     prepare_private_directory(&runtime_home)?;
@@ -254,7 +247,7 @@ pub fn build_local_process_candidate(
     let mut github_config = GhCliAuthorityConfig::hosted(runtime_home);
     github_config.git_program = PathBuf::from("git");
     github_config.gh_program = PathBuf::from("gh");
-    let candidate = build_local_native_v2_candidate(
+    let candidate = build_local_native_v2_candidate_with_github_token(
         admitted,
         NativeV2CandidateConfig {
             harness,
@@ -266,6 +259,7 @@ pub fn build_local_process_candidate(
             },
             github: Arc::new(GhCliDeliveryAuthority::new(github_config)),
         },
+        github_token.map(Arc::<str>::from),
     )?;
     Ok(Arc::new(candidate))
 }

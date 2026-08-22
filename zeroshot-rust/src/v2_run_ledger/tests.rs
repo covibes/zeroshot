@@ -47,7 +47,6 @@ fn create(run: &str, key: &str, digest_byte: char) -> CreateRun {
     CreateRun {
         run_id: RunId::new(run),
         submission_key: IdempotencyKey::new(key).assert_value(),
-        intent_digest: Sha256Digest::new('f'.to_string().repeat(64)).assert_value(),
         submission_digest: Sha256Digest::new(digest_byte.to_string().repeat(64)).assert_value(),
         admitted: admitted_run(),
     }

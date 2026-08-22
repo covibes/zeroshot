@@ -200,7 +200,7 @@ async fn dead_controller_reconciles_runtime_loss_and_keeps_durable_observation()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn stable_submission_key_reuses_the_run_before_source_resolution() {
+async fn stable_submission_key_reuses_only_the_same_exact_source_revision() {
     let fixture = LocalFixture::new();
     let first = fixture
         .run_with_key("Idempotent local run", "block", "stable-local-key")
@@ -209,25 +209,20 @@ async fn stable_submission_key_reuses_the_run_before_source_resolution() {
     let first_run_id = receipt_run_id(&first);
     fixture.wait_running(&first_run_id).await;
 
-    git(
-        &fixture.repository,
-        &[
-            "remote",
-            "set-url",
-            "origin",
-            "https://example.invalid/not-a-github-repository.git",
-        ],
-    );
     let retry = fixture
         .run_with_key("Idempotent local run", "block", "stable-local-key")
         .await;
     assert_success(&retry, "idempotent local retry");
     assert_eq!(receipt_run_id(&retry), first_run_id);
 
+    std::fs::write(fixture.repository.join("source-moved.txt"), "moved\n")
+        .assert_value_with("write moved source");
+    git(&fixture.repository, &["add", "source-moved.txt"]);
+    git(&fixture.repository, &["commit", "-m", "move source"]);
     let conflict = fixture
-        .run_with_key("Different local intent", "block", "stable-local-key")
+        .run_with_key("Idempotent local run", "block", "stable-local-key")
         .await;
-    assert!(!conflict.status.success(), "conflicting intent succeeded");
+    assert!(!conflict.status.success(), "moved source retry succeeded");
     assert!(
         String::from_utf8_lossy(&conflict.stderr)
             .contains("submission key already identifies a different admitted run")

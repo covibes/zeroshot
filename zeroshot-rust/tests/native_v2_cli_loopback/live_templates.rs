@@ -121,6 +121,7 @@ async fn run_live_software_change(
         graph: input,
         input,
         extra: None,
+        source_revision: None,
     });
     for name in [
         "OPENAI_API_KEY",

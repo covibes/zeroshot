@@ -9,14 +9,13 @@ use zeroshot_engine::native_v2_cli::{
     CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
 };
 use zeroshot_engine::native_v2_target_authority::{
-    TargetOecpSession, TargetRunReceipt, TargetRunRequest, TargetSetupOutcome, TargetSetupResult,
+    TargetOecpSession, TargetRunReceipt, TargetRunRequest,
 };
 
 use super::contract::{authority_error, read_json, require_response_route};
 use super::{HostedLogin, TargetHttpControlAuthority};
 use crate::native_v2_target::{
     TargetAccess, TargetAuthorityError, TargetControlAuthority, TargetOecpAccess, TargetRecord,
-    TargetSetupDocument,
 };
 
 #[async_trait]
@@ -41,36 +40,6 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
             audience: &controller.audience,
         })
         .await
-    }
-
-    async fn install(
-        &self,
-        target: &TargetRecord,
-        setup: &TargetSetupDocument,
-    ) -> Result<(), TargetAuthorityError> {
-        let (controller, access) = self.controller_access(target).await?;
-        let response = self
-            .with_access(
-                self.client.put(controller.setup_url.clone()),
-                access.as_deref(),
-            )?
-            .header(ACCEPT, "application/json")
-            .json(setup)
-            .send()
-            .await
-            .map_err(|_| TargetAuthorityError::disconnected("target setup request failed"))?;
-        require_response_route(&response, &controller.setup_url)?;
-        if !response.status().is_success() {
-            return Err(authority_error(format!(
-                "target setup request failed with status {}",
-                response.status().as_u16()
-            )));
-        }
-        let receipt: TargetSetupResult = read_json(response, "target setup").await?;
-        match receipt.outcome {
-            TargetSetupOutcome::Installed | TargetSetupOutcome::Unchanged => {}
-        }
-        Ok(())
     }
 
     async fn submit(
@@ -105,6 +74,7 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
     async fn oecp_session(
         &self,
         target: &TargetRecord,
+        request: &openengine_cluster_protocol::TargetOecpSessionRequest,
     ) -> Result<TargetOecpAccess, TargetAuthorityError> {
         let (controller, access) = self.controller_access(target).await?;
         let response = self
@@ -113,6 +83,7 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
                 access.as_deref(),
             )?
             .header(ACCEPT, "application/json")
+            .json(request)
             .send()
             .await
             .map_err(|_| {
