@@ -265,7 +265,12 @@ function createProviderDiagnosticCapture() {
   return { capture, select };
 }
 
-function formatProviderExitError(providerName, resolvedCode, capturedDiagnostic) {
+function formatProviderExitError(
+  providerName,
+  resolvedCode,
+  capturedDiagnostic,
+  persistProviderDiagnostic
+) {
   const diagnostic = capturedDiagnostic?.diagnostic || 'No provider diagnostic was captured';
   const providerClassification = classifyWatcherProviderError(providerName, diagnostic);
   const classification =
@@ -274,9 +279,10 @@ function formatProviderExitError(providerName, resolvedCode, capturedDiagnostic)
       : fallbackProviderErrorClassification();
   const disposition = classification.retryable ? 'retryable' : 'permanent';
   const exitCode = resolvedCode === null || resolvedCode === undefined ? 'unknown' : resolvedCode;
+  const diagnosticSuffix = persistProviderDiagnostic ? `: ${diagnostic}` : '';
   return truncateUtf8(
     `Provider ${providerName} exited with code ${exitCode} ` +
-      `(${disposition}; ${classification.kind}): ${diagnostic}`,
+      `(${disposition}; ${classification.kind})${diagnosticSuffix}`,
     MAX_PERSISTED_PROVIDER_ERROR_BYTES
   );
 }
@@ -288,12 +294,18 @@ function resolveWatcherCompletionError({
   signal,
   providerName,
   providerDiagnostics,
+  persistProviderDiagnostic,
 }) {
   if (fatalError) return fatalError;
   if (sessionIdentityError) return sessionIdentityError;
   if (resolvedCode === 0) return null;
   if (signal) return `Killed by ${signal}`;
-  return formatProviderExitError(providerName, resolvedCode, providerDiagnostics.select());
+  return formatProviderExitError(
+    providerName,
+    resolvedCode,
+    providerDiagnostics.select(),
+    persistProviderDiagnostic
+  );
 }
 
 export function spawnWatcherProvider(command, finalArgs, options) {
@@ -789,6 +801,7 @@ export function createWatcherOutputRuntime({
         signal,
         providerName,
         providerDiagnostics,
+        persistProviderDiagnostic: config.persistProviderDiagnostic !== false,
       }),
       terminalUpdates: providerSessionCapture?.getCompletionUpdate(resolvedCode) || {},
     };

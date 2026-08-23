@@ -91,6 +91,20 @@ describe('provider exit diagnostic sanitization', function () {
     assert(Buffer.byteLength(completion.error) <= 4096);
     assert(logged.join('').includes(secret));
     assert.match(logged.join(''), /tail/);
+
+    const { runtime: clusterRuntime } = await createRuntime('codex', {
+      config: { outputFormat: 'text', persistProviderDiagnostic: false },
+    });
+    clusterRuntime.consumeStderr('', Buffer.from(`${diagnostic}\n`));
+    const clusterCompletion = clusterRuntime.complete({
+      code: 1,
+      signal: null,
+      stderrBuffer: '',
+    });
+    assert.strictEqual(
+      clusterCompletion.error,
+      'Provider codex exited with code 1 (retryable; retryable-pattern)'
+    );
   });
 
   it('redacts AWS, URL, bearer, and JWT credentials and removes C0/C1 ANSI controls', async function () {
