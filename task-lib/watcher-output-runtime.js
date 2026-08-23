@@ -5,6 +5,7 @@ import {
   classifyProviderError,
   detectProviderFatalError,
   detectProviderStreamingModeError,
+  redactObject,
   recoverProviderStructuredOutput,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
@@ -17,7 +18,6 @@ const {
   formatTaskLogMarker,
   formatTaskLogStdout,
 } = require('../src/task-log-line.js');
-const { redactObject } = require('../lib/agent-cli-provider/redaction.js');
 
 export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
 
