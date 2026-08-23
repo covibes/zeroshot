@@ -39,7 +39,9 @@ Requires **Node ≥ 22** and one supported provider. Guided setup detects instal
 
 This repository also contains **Zeroshot Rust**, the independent native product and `zeroshot-rust`
 CLI. It has its own releases and self-hosted target image; see the
-[distribution contract](docs/zeroshot-rust-distribution.md) and
+[Markdown CLI reference](docs/zeroshot-rust-cli.md),
+[standalone HTML CLI reference](docs/zeroshot-rust-cli.html),
+[distribution contract](docs/zeroshot-rust-distribution.md), and
 [target image guide](docker/zeroshot-rust-target/README.md). The remainder of this README describes
 the established Node product.
 

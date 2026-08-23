@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait.workspace = true
+clap.workspace = true
 fs2.workspace = true
 getrandom.workspace = true
 httparse.workspace = true

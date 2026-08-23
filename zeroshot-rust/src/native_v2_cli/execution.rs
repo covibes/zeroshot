@@ -1,5 +1,4 @@
-use std::io::Write;
-use std::time::Duration;
+use std::{io::Write, time::Duration};
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
     RunLogsParams, RunStatusParams, RunWatchParams, SubscriptionCloseReason, TerminalResult,
@@ -55,6 +54,7 @@ where
         command @ (NativeV2CliCommand::TargetAdd(_)
         | NativeV2CliCommand::TargetLogin { .. }
         | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, context.backend).await,
+        NativeV2CliCommand::TargetServe(_) => Err(NativeV2CliError::ProcessCommand),
         command => execute_run_operation(command, context.backend, signal, output).await,
     }
 }

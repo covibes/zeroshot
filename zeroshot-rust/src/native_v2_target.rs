@@ -32,7 +32,7 @@ pub use oecp::{TargetOecpDialer, TargetOecpWebSocketDialer};
 pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_path};
 pub use source::{GitHubTargetSourceResolver, TargetSourceResolver};
 pub use controller_authority::TargetHttpControlAuthority;
-pub use serve::{TargetServeError, parse_target_serve, serve_direct_target};
+pub use serve::{TargetServeError, serve_direct_target};
 
 #[cfg(test)]
 use contract::normalize_origin;

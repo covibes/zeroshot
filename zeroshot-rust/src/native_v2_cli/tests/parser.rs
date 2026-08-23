@@ -266,6 +266,30 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
     );
 }
 
+#[tokio::test]
+async fn target_serve_stops_at_the_process_execution_boundary() {
+    let command = parse_native_v2_args(args(&[
+        "target",
+        "serve",
+        "--listen",
+        "127.0.0.1:8080",
+        "--public-origin",
+        "http://127.0.0.1:8080",
+        "--storage",
+        "/tmp/zeroshot-target",
+    ]))
+    .assert_value();
+    let error = execute_native_v2_cli(
+        command,
+        &FakeBackend::default(),
+        &mut NeverDetach,
+        &mut Vec::new(),
+    )
+    .await
+    .assert_error();
+    assert!(matches!(error, NativeV2CliError::ProcessCommand));
+}
+
 #[test]
 fn target_add_requires_an_explicit_direct_flag() {
     let direct = parse_native_v2_args(args(&[
