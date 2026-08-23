@@ -77,6 +77,9 @@ function printTaskSection(task, indent = '') {
   console.log(
     `${indent}  log=${task.logFile || 'N/A'} (${task.logFileExists ? 'present' : 'missing'})`
   );
+  if (task.error) {
+    console.log(`${indent}  ${chalk.red(`error=${task.error}`)}`);
+  }
   if (task.socketPath) {
     console.log(
       `${indent}  socket=${task.socketPath} (${task.socketPathExists ? 'present' : 'missing'})`

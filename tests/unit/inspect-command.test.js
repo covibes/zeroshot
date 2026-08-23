@@ -6,6 +6,7 @@ const {
   inferActivity,
   summarizeTaskRecord,
 } = require('../../cli/commands/inspect');
+const { printTaskSection } = require('../../cli/commands/inspect-render');
 
 describe('inspect command helpers', function () {
   it('should flag stale running task records and missing logs', function () {
@@ -148,5 +149,30 @@ describe('inspect command helpers', function () {
     assert.strictEqual(inspection.type, 'task');
     assert.strictEqual(inspection.task.id, 'task-7');
     assert.strictEqual(inspection.process, null);
+  });
+
+  it('should print a persisted task error in human inspections', function () {
+    const output = [];
+    const originalLog = console.log;
+    console.log = (line) => output.push(line);
+    try {
+      printTaskSection({
+        id: 'task-failed',
+        status: 'failed',
+        updatedAgeHuman: '1s',
+        pid: null,
+        exitCode: 1,
+        attachable: false,
+        logFile: '/tmp/task-failed.log',
+        logFileExists: true,
+        error: 'Provider gemini exited with code 1 (permanent; permanent-pattern)',
+        socketPath: null,
+        warnings: [],
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert(output.some((line) => line.includes('error=Provider gemini exited with code 1')));
   });
 });
