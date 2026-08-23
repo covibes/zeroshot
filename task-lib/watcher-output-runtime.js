@@ -84,9 +84,10 @@ function unquotedAssignmentValueEnd(value, offset) {
 function assignmentValueEnd(value, offset) {
   const quote = value[offset];
   if (quote !== '"' && quote !== "'") return unquotedAssignmentValueEnd(value, offset);
-  for (let index = offset + 1; index < value.length; index += 1) {
-    if (value[index] === '\\') index += 1;
-    else if (value[index] === quote) return index + 1;
+  let cursor = offset + 1;
+  while (cursor < value.length) {
+    if (value[cursor] === quote) return cursor + 1;
+    cursor += value[cursor] === '\\' ? 2 : 1;
   }
   return value.length;
 }
