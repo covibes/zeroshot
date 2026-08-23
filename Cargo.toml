@@ -17,6 +17,7 @@ repository = "https://github.com/the-open-engine/zeroshot"
 
 [workspace.dependencies]
 async-trait = "0.1.89"
+clap = { version = "4.5", features = ["derive"] }
 dbus = { version = "0.9.7", features = ["vendored"] }
 fs2 = "0.4.3"
 getrandom = "0.3.4"

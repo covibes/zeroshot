@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -44,34 +45,11 @@ pub(crate) mod execution;
 mod parser;
 
 pub use execution::{execute_native_v2_cli, try_execute_native_v2_static};
-pub use parser::parse_native_v2_args;
+pub use parser::{Cli, parse_native_v2_args};
 
 #[cfg(test)]
 #[path = "native_v2_cli/tests.rs"]
 mod tests;
-
-pub const HELP: &str = "\
-zeroshot-rust
-
-  --version
-  target add <name> --url <origin> [--direct]
-  target login <name>
-  target setup <name> --repository <owner/name> [--branch <branch>]
-  target serve --listen <address> --public-origin <origin> --storage <directory>
-      [--bootstrap-key-file <path>]
-  template list
-  template show <single-worker|software-change> [--pr|--ship]
-  run --title <title> (--graph <file>|--template <name>) --input <file>
-      --runtime-config <file> [--target <name>]
-      [--branch <branch>] [--submission-key <key>] [-d]
-      (--pr|--ship are valid only with --template software-change)
-  list [--target <name>]
-  status <run-id> [--target <name>]
-  watch <run-id> [--target <name>]
-  logs <run-id> [--target <name>]
-  attach <run-id> <execution-ref> [--target <name>]
-  force-stop <run-id> [--target <name>]
-";
 
 pub const VERSION: &str = concat!("zeroshot-rust ", env!("CARGO_PKG_VERSION"), "\n");
 
@@ -87,6 +65,14 @@ pub struct TargetSetup {
     pub name: String,
     pub repository: String,
     pub default_branch: Option<SourceBranchId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetServe {
+    pub listen: SocketAddr,
+    pub public_origin: String,
+    pub storage: PathBuf,
+    pub bootstrap_key_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,13 +135,14 @@ pub struct RunSelector {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeV2CliCommand {
-    Help,
+    Help(String),
     Version,
     TargetAdd(TargetAdd),
     TargetLogin {
         name: String,
     },
     TargetSetup(TargetSetup),
+    TargetServe(TargetServe),
     TemplateList,
     TemplateShow {
         template: BuiltinGraphTemplate,
@@ -176,9 +163,9 @@ pub enum NativeV2CliCommand {
 }
 
 impl NativeV2CliCommand {
-    fn product_info(&self) -> Option<&'static str> {
+    fn product_info(&self) -> Option<&str> {
         match self {
-            Self::Help => Some(HELP),
+            Self::Help(help) => Some(help),
             Self::Version => Some(VERSION),
             _ => None,
         }
@@ -203,6 +190,8 @@ pub enum CliSubscriptionItem<E> {
 pub enum NativeV2CliError {
     #[error("{0}")]
     Usage(String),
+    #[error("target serve is owned by the zeroshot-rust process entrypoint")]
+    ProcessCommand,
     #[error("could not read {kind} file {path}: {source}")]
     Read {
         kind: &'static str,
