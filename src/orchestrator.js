@@ -2449,11 +2449,15 @@ class Orchestrator {
 
     const watchdogPause = this._pauseConductorWatchdog(clusterId);
     try {
-      await this._signalRemoteCluster(cluster, { action: 'stop' });
+      return await this._stopClusterLifecycle(clusterId, cluster, options);
     } catch (error) {
       this._resumeConductorWatchdog(clusterId, watchdogPause);
       throw error;
     }
+  }
+
+  async _stopClusterLifecycle(clusterId, cluster, options) {
+    await this._signalRemoteCluster(cluster, { action: 'stop' });
 
     // CRITICAL: Wait for initialization to complete before stopping
     // This ensures ISSUE_OPENED is published, preventing 0-message clusters
@@ -2562,18 +2566,22 @@ class Orchestrator {
     }
 
     const watchdogPause = this._pauseConductorWatchdog(clusterId);
+    try {
+      return await this._killClusterLifecycle(clusterId, cluster);
+    } catch (error) {
+      this._resumeConductorWatchdog(clusterId, watchdogPause);
+      throw error;
+    }
+  }
+
+  async _killClusterLifecycle(clusterId, cluster) {
     if (this._isSetupCluster(cluster)) {
       await this._killSetupCluster(clusterId, cluster);
       this._disposeConductorWatchdog(clusterId);
       return;
     }
 
-    try {
-      await this._signalRemoteCluster(cluster, { action: 'kill' });
-    } catch (error) {
-      this._resumeConductorWatchdog(clusterId, watchdogPause);
-      throw error;
-    }
+    await this._signalRemoteCluster(cluster, { action: 'kill' });
 
     cluster.state = 'stopping';
 
