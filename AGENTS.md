@@ -27,6 +27,8 @@ Operational rules and references for automated agents working on this repo. Inst
   npm version or GitHub Release.
 - Provider output-silence liveness checks are opt-in (`enableLivenessCheck: true`). Recovery tests
   that exercise stale-agent termination must enable the watchdog explicitly.
+- Conductor hook watchdogs are cluster-owned and keyed by cluster ID: repeated completion replaces
+  the active timer, stop pauses and clears it until resume, and message-bus teardown disposes it first.
 - Isolation copies must reuse the shared pinned-root boundary in `src/copy-containment.ts` for
   traversal, directory creation, synchronous copies, and worker copies. Revalidate the source and
   destination immediately before every filesystem effect; never reconstruct unchecked effect paths.
@@ -1012,11 +1014,11 @@ Docker: fresh git clone in container, credentials mounted, auto-cleanup.
 
 Configurable credential mounts for `--docker` mode. See `lib/docker-config.js`.
 
-| Setting                | Type          | Default  | Description                                           |
+| Setting | Type | Default | Description |
 | ---------------------- | ------------- | -------- | ----------------------------------------------------- | ---------------------------------------- |
-| `dockerMounts`         | `Array<string | object>` | `['gh','git','ssh']`                                  | Presets or `{host, container, readonly}` |
-| `dockerEnvPassthrough` | `string[]`    | `[]`     | Extra env vars (supports `VAR`, `VAR_*`, `VAR=value`) |
-| `dockerContainerHome`  | `string`      | `/root`  | Container home for `$HOME` expansion                  |
+| `dockerMounts` | `Array<string | object>` | `['gh','git','ssh']` | Presets or `{host, container, readonly}` |
+| `dockerEnvPassthrough` | `string[]` | `[]` | Extra env vars (supports `VAR`, `VAR_*`, `VAR=value`) |
+| `dockerContainerHome` | `string` | `/root` | Container home for `$HOME` expansion |
 
 Mount presets: infrastructure presets plus provider ids from `src/agent-cli-provider/provider-registry.ts`.
 
