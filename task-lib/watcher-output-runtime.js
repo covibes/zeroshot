@@ -63,9 +63,15 @@ const SENSITIVE_ASSIGNMENT_KEYS = new Set([
   'auth',
   'authorization',
   'aws_secret_access_key',
+  'cookie',
   'password',
   'secret',
+  'session',
+  'session_id',
+  'session_key',
+  'sessionid',
   'signature',
+  'set_cookie',
   'token',
 ]);
 
@@ -113,6 +119,12 @@ function redactStandaloneBearerCredentials(value) {
   return `${redacted}${value.slice(retainedOffset)}`;
 }
 
+function redactCookieHeaders(value) {
+  const header = /\b(?:set-cookie|cookie)\s*:\s*/i.exec(value);
+  if (!header) return value;
+  return `${value.slice(0, header.index + header[0].length)}[REDACTED]`;
+}
+
 function redactSensitiveAssignments(value) {
   const assignmentPattern = /\b(api key|access token|[a-z][a-z0-9_-]*)\s*[:=]\s*/gi;
   let redacted = '';
@@ -134,7 +146,9 @@ function redactProviderDiagnostic(value) {
   const providerRedacted = redactObject({ diagnostic: value }).value;
   const knownSecretRedacted =
     typeof providerRedacted?.diagnostic === 'string' ? providerRedacted.diagnostic : value;
-  return redactStandaloneBearerCredentials(redactSensitiveAssignments(knownSecretRedacted))
+  return redactCookieHeaders(
+    redactStandaloneBearerCredentials(redactSensitiveAssignments(knownSecretRedacted))
+  )
     .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, '[REDACTED]')
     .replace(/([?&](?:token|api[_-]?key|key|signature|x-amz-signature)=)[^&#\s]*/gi, '$1[REDACTED]')
     .replace(/:\/\/[^\s/:@]+:[^\s/@]+@/g, '://[REDACTED]@');
@@ -182,7 +196,7 @@ function diagnosticCharacter(value, index) {
 
 function stripAnsiAndControlCharacters(value) {
   let stripped = '';
-  for (let index = 0; index < value.length;) {
+  for (let index = 0; index < value.length; ) {
     const code = value.charCodeAt(index);
     if (code === 0x1b && value.charCodeAt(index + 1) === 0x5b) {
       index = skipAnsiCsi(value, index + 2);

@@ -146,6 +146,36 @@ describe('provider exit diagnostic sanitization', function () {
     assert.match(logged.join(''), /\u009b32m/);
   });
 
+  it('redacts Cookie headers and common session credential assignments', async function () {
+    const { sanitizeProviderDiagnostic } = await import('../task-lib/watcher-output-runtime.js');
+    const cases = [
+      {
+        value: 'Error: request failed Cookie: session=cookie-session-secret; theme=dark',
+        secrets: ['cookie-session-secret'],
+        ordinary: 'request failed',
+      },
+      {
+        value:
+          'Error: upstream unauthorized Set-Cookie: sessionid=set-cookie-secret; Path=/; HttpOnly',
+        secrets: ['set-cookie-secret'],
+        ordinary: 'upstream unauthorized',
+      },
+      {
+        value:
+          'Error: session=session-secret session_id=session-id-secret sessionId=session-camel-secret retry_after=30',
+        secrets: ['session-secret', 'session-id-secret', 'session-camel-secret'],
+        ordinary: 'retry_after=30',
+      },
+    ];
+
+    for (const { value, secrets, ordinary } of cases) {
+      const sanitized = sanitizeProviderDiagnostic(value);
+      for (const secret of secrets) assert(!sanitized.includes(secret));
+      assert(sanitized.includes('[REDACTED]'));
+      assert(sanitized.includes(ordinary));
+    }
+  });
+
   it('fails closed on unterminated assignment and authorization quotes per record', async function () {
     const { sanitizeProviderDiagnostic } = await import('../task-lib/watcher-output-runtime.js');
     const cases = [
