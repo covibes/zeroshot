@@ -8,5 +8,7 @@ lib/agent-cli-provider
 lib/cluster
 src/cluster/generated
 protocol/openengine-cluster/v1
+docs/zeroshot-rust-cli.md
+docs/zeroshot-rust-cli.html
 
 tests/fixtures/zero-cloud-44/contracts/http

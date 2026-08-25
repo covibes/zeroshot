@@ -17,9 +17,9 @@ use zeroshot_engine::native_v2_cli::{
 use zeroshot_engine::native_v2_portable_controller::{PortableControllerError, run_controller_process};
 
 use native_v2_target::{
-    default_target_registry_path, parse_target_serve, serve_direct_target, FileTargetRegistry,
-    NativeV2TargetConnector, TargetConnectorError, TargetHttpControlAuthority,
-    TargetOecpWebSocketDialer, TargetServeError, GitHubTargetSourceResolver,
+    default_target_registry_path, serve_direct_target, FileTargetRegistry,
+    GitHubTargetSourceResolver, NativeV2TargetConnector, TargetConnectorError,
+    TargetHttpControlAuthority, TargetOecpWebSocketDialer, TargetServeError,
 };
 
 #[derive(Debug, Error)]
@@ -43,11 +43,14 @@ async fn run() -> Result<(), ProcessError> {
     if run_private_controller(&arguments).await? {
         return Ok(());
     }
-    if let Some(config) = parse_target_serve(&arguments)? {
-        serve_direct_target(config).await?;
-        return Ok(());
+    let command = parse_native_v2_args(arguments)?;
+    match command {
+        NativeV2CliCommand::TargetServe(config) => {
+            serve_direct_target(config).await?;
+            Ok(())
+        }
+        command => run_public_command(command).await,
     }
-    run_public_command(arguments).await
 }
 
 #[cfg(unix)]
@@ -59,8 +62,7 @@ async fn run_private_controller(arguments: &[std::ffi::OsString]) -> Result<bool
     Ok(true)
 }
 
-async fn run_public_command(arguments: Vec<std::ffi::OsString>) -> Result<(), ProcessError> {
-    let command = parse_native_v2_args(arguments)?;
+async fn run_public_command(command: NativeV2CliCommand) -> Result<(), ProcessError> {
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     if try_execute_native_v2_static(&command, &mut output)?.is_some() {
@@ -123,13 +125,14 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
         | NativeV2CliCommand::Logs(run)
         | NativeV2CliCommand::ForceStop(run) => run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
-        NativeV2CliCommand::Help
+        NativeV2CliCommand::Help(_)
         | NativeV2CliCommand::Version
         | NativeV2CliCommand::TemplateList
         | NativeV2CliCommand::TemplateShow { .. }
         | NativeV2CliCommand::TargetAdd(_)
         | NativeV2CliCommand::TargetLogin { .. }
-        | NativeV2CliCommand::TargetSetup(_) => false,
+        | NativeV2CliCommand::TargetSetup(_)
+        | NativeV2CliCommand::TargetServe(_) => false,
     }
 }
 
@@ -168,7 +171,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_serve_is_intercepted_as_a_process_command() {
+    fn target_serve_is_part_of_the_public_command_schema() {
         let arguments = [
             "target",
             "serve",
@@ -182,7 +185,7 @@ mod tests {
         .into_iter()
         .map(OsString::from)
         .collect::<Vec<_>>();
-        assert!(parse_target_serve(&arguments).assert_value().is_some());
-        assert!(parse_native_v2_args(arguments).is_err());
+        let command = parse_native_v2_args(arguments).assert_value();
+        assert!(matches!(command, NativeV2CliCommand::TargetServe(_)));
     }
 }

@@ -119,6 +119,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 node-executor/capsule adapters  | `zeroshot-rust/src/native_v2_runner.rs`, `native_v2_runner/`, `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`     |
 | Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
+| Native v2 CLI grammar/help source         | `zeroshot-rust/src/native_v2_cli/parser.rs`                                                                                      |
+| Generated native v2 CLI reference         | `docs/zeroshot-rust-cli.{md,html}`, `zeroshot-rust/examples/{generate_cli_docs.rs,cli_docs/}`                                    |
 | Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
 | Native v2 target connector/server command | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
 | Native self-hosted target image           | `docker/zeroshot-rust-target/`                                                                                                   |
@@ -256,6 +258,10 @@ excluding `runId` and all secrets; an exact replay keeps the original run and it
 envelope. The controller does not allocate identity, authenticate users, inspect target-wide
 inventory, queue work, or choose another run. Local and hosted compositions reuse this same engine
 and differ only in their host adapters.
+
+The native CLI grammar and help text come from the derived Clap `Cli` tree and its Rust doc comments.
+Do not hand-edit the generated Markdown or HTML references; regenerate and verify them with
+`cargo run -p zeroshot-rust --example generate_cli_docs -- --write` and `--check`.
 
 The native-v2 target HTTP contract is the shared `zeroshot.native-v2-target/v2` discovery document,
 sourceful run request, run-scoped OECP-session request, and optional generic private bootstrap
