@@ -193,6 +193,37 @@ struct TemplateShowArgs {
 #[derive(Debug, Args)]
 #[command(group = ArgGroup::new("graph_source").args(["graph", "template"]).required(true).multiple(false))]
 #[command(group = ArgGroup::new("delivery").args(["pr", "ship"]).multiple(false))]
+#[command(after_long_help = r#"RUNTIME CONFIGURATION
+    The file is secret-free JSON. For example:
+
+      {
+        "harness": "codex",
+        "provider": "openrouter",
+        "size": "standard",
+        "nodes": {
+          "worker": {
+            "kind": "agent",
+            "model": "gpt-5.6-sol",
+            "env": ["OPENROUTER_API_KEY"]
+          }
+        }
+      }
+
+    Harness/provider pairs:
+      codex: openai or openrouter
+      claude: anthropic or openrouter
+
+    Sizes are tiny, small, standard, and large. Codex models are gpt-5.6, gpt-5.6-sol,
+    gpt-5.6-terra, and gpt-5.6-luna. Claude models are claude-haiku-4-5, claude-sonnet-5,
+    claude-opus-5, and claude-fable-5.
+
+    Every executable graph node needs a same-named binding. Agent bindings require kind and model.
+    Optional fields are effort (low, medium, high, xhigh, or max when supported), sessionScope
+    (execution or node_instance), and env. env lists variable names copied from the submitting
+    process; never put values in this file.
+
+    Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
+    template-owned delivery binding."#)]
 struct RunArgs {
     /// Human-readable title recorded with the run.
     #[arg(long, value_name = "TITLE")]
@@ -210,7 +241,7 @@ struct RunArgs {
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
 
-    /// Load provider, harness, model-size, and node bindings from this JSON file.
+    /// Load the secret-free runtime plan from this JSON file.
     #[arg(long, value_name = "FILE")]
     runtime_config: PathBuf,
 

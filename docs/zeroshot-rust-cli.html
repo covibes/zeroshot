@@ -247,7 +247,7 @@ Options:
           Load the graph&#39;s initial input from this JSON file
 
       --runtime-config &lt;FILE&gt;
-          Load provider, harness, model-size, and node bindings from this JSON file
+          Load the secret-free runtime plan from this JSON file
 
       --target &lt;NAME&gt;
           Run on this named target; if omitted, run locally. Named targets receive GH_TOKEN when set.
@@ -270,7 +270,39 @@ Options:
           Materialize merge delivery for the software-change template
 
   -h, --help
-          Print help (see a summary with &#39;-h&#39;)</code></pre></section>
+          Print help (see a summary with &#39;-h&#39;)
+
+RUNTIME CONFIGURATION
+    The file is secret-free JSON. For example:
+
+      {
+        &quot;harness&quot;: &quot;codex&quot;,
+        &quot;provider&quot;: &quot;openrouter&quot;,
+        &quot;size&quot;: &quot;standard&quot;,
+        &quot;nodes&quot;: {
+          &quot;worker&quot;: {
+            &quot;kind&quot;: &quot;agent&quot;,
+            &quot;model&quot;: &quot;gpt-5.6-sol&quot;,
+            &quot;env&quot;: [&quot;OPENROUTER_API_KEY&quot;]
+          }
+        }
+      }
+
+    Harness/provider pairs:
+      codex: openai or openrouter
+      claude: anthropic or openrouter
+
+    Sizes are tiny, small, standard, and large. Codex models are gpt-5.6, gpt-5.6-sol,
+    gpt-5.6-terra, and gpt-5.6-luna. Claude models are claude-haiku-4-5, claude-sonnet-5,
+    claude-opus-5, and claude-fable-5.
+
+    Every executable graph node needs a same-named binding. Agent bindings require kind and model.
+    Optional fields are effort (low, medium, high, xhigh, or max when supported), sessionScope
+    (execution or node_instance), and env. env lists variable names copied from the submitting
+    process; never put values in this file.
+
+    Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
+    template-owned delivery binding.</code></pre></section>
 <section id="zeroshot-rust-list"><h3><code>zeroshot-rust list</code></h3>
 <pre><code>List runs as JSON
 

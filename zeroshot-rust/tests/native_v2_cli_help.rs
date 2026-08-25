@@ -1,6 +1,23 @@
 use std::process::{Command, Output};
 
 use openengine_cluster_testkit::assertions::AssertValue;
+use zeroshot_engine::native_v2_admission::{CLAUDE_MODELS, CODEX_MODELS};
+use zeroshot_engine::native_v2_contract::{
+    ClaudeProvider, CodexProvider, ReasoningEffort, RunSize, SessionScope,
+};
+
+macro_rules! exhaustive_values {
+    ($type:ty => [$($variant:path),+ $(,)?]) => {{
+        let values = [$($variant),+];
+        let exhaustive = |value: $type| match value {
+            $($variant => ()),+
+        };
+        for value in values {
+            exhaustive(value);
+        }
+        values
+    }};
+}
 
 const HELP_PATHS: &[&[&str]] = &[
     &[],
@@ -39,6 +56,71 @@ fn help_subcommand_reaches_every_group_and_operational_command() {
             .chain(path.iter().copied())
             .collect::<Vec<_>>();
         assert_help(&arguments, path);
+    }
+}
+
+#[test]
+fn help_explains_runtime_configuration() {
+    let run = successful_stdout(&["run", "--help"]);
+    assert_prose(
+        &run,
+        &[
+            "runtime configuration",
+            r#""harness": "codex""#,
+            r#""provider": "openrouter""#,
+            r#""env": ["openrouter_api_key"]"#,
+            "env lists variable names copied from the submitting process",
+            "never put values in this file",
+            "zeroshot-rust template show template",
+            "omit the template-owned delivery binding",
+        ],
+    );
+
+    let codex_providers = serialized_names(&exhaustive_values!(CodexProvider => [
+        CodexProvider::OpenAi,
+        CodexProvider::OpenRouter,
+    ]));
+    let claude_providers = serialized_names(&exhaustive_values!(ClaudeProvider => [
+        ClaudeProvider::Anthropic,
+        ClaudeProvider::OpenRouter,
+    ]));
+    let sizes = serialized_names(&exhaustive_values!(RunSize => [
+        RunSize::Tiny,
+        RunSize::Small,
+        RunSize::Standard,
+        RunSize::Large,
+    ]));
+    let efforts = serialized_names(&exhaustive_values!(ReasoningEffort => [
+        ReasoningEffort::Low,
+        ReasoningEffort::Medium,
+        ReasoningEffort::High,
+        ReasoningEffort::Xhigh,
+        ReasoningEffort::Max,
+    ]));
+    let session_scopes = serialized_names(&exhaustive_values!(SessionScope => [
+        SessionScope::Execution,
+        SessionScope::NodeInstance,
+    ]));
+    let contract_prose = [
+        format!(
+            "harness/provider pairs: codex: {} claude: {} sizes are {}.",
+            prose_list(codex_providers, "or"),
+            prose_list(claude_providers, "or"),
+            prose_list(sizes, "and")
+        ),
+        format!(
+            "codex models are {}. claude models are {}.",
+            prose_list(CODEX_MODELS.iter().map(|model| model.id.to_owned()), "and"),
+            prose_list(CLAUDE_MODELS.iter().map(|model| model.id.to_owned()), "and")
+        ),
+        format!(
+            "optional fields are effort ({} when supported), sessionscope ({}), and env.",
+            prose_list(efforts, "or"),
+            prose_list(session_scopes, "or")
+        ),
+    ];
+    for expected in &contract_prose {
+        assert_prose(&run, &[expected]);
     }
 }
 
@@ -243,4 +325,27 @@ fn normalized(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+fn serialized_names<T: serde::Serialize>(values: &[T]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| {
+            serde_json::to_value(value)
+                .assert_value()
+                .as_str()
+                .assert_value()
+                .to_owned()
+        })
+        .collect()
+}
+
+fn prose_list(values: impl IntoIterator<Item = String>, conjunction: &str) -> String {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    let last = values.pop().assert_value();
+    match values.as_slice() {
+        [] => last,
+        [only] => format!("{only} {conjunction} {last}"),
+        _ => format!("{}, {conjunction} {last}", values.join(", ")),
+    }
 }
