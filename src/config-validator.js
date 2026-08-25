@@ -835,17 +835,792 @@ function validateOrchestratorTriggers(agent, warnings) {
   }
 }
 
+const VALIDATOR_GIT_CLAUSE_BOUNDARIES = new Set(['but', 'however', 'yet', 'then']);
+const VALIDATOR_GIT_COMMAND_NAMES = new Set(['diff', 'status', 'log', 'show']);
+const VALIDATOR_GIT_NEGATED_WORDS = new Set([
+  "don't",
+  'never',
+  "mustn't",
+  "shouldn't",
+  "can't",
+  'cannot',
+]);
+const VALIDATOR_GIT_NEGATABLE_MODALS = new Set(['do', 'must', 'should', 'may', 'can']);
+const VALIDATOR_GIT_ACTIONS = new Set([
+  'use',
+  'run',
+  'execute',
+  'invoke',
+  'call',
+  'inspect',
+  'check',
+]);
+const VALIDATOR_GIT_ACTION_GERUNDS = new Set([
+  'using',
+  'running',
+  'executing',
+  'invoking',
+  'calling',
+  'inspecting',
+  'checking',
+]);
+const VALIDATOR_GIT_BENIGN_POSTFIX_PREFIXES = new Set([
+  'both',
+  'the',
+  'command',
+  'commands',
+  'use',
+  'usage',
+  'of',
+  ...VALIDATOR_GIT_ACTION_GERUNDS,
+]);
+const VALIDATOR_GIT_POSTFIX_PARTICIPLES = new Set([
+  'used',
+  'run',
+  'executed',
+  'invoked',
+  'called',
+  'inspected',
+  'checked',
+]);
+const VALIDATOR_GIT_COREFERENCE_DEMONSTRATIVES = new Set(['this', 'that', 'these', 'those']);
+function validatorGitWordSet(words) {
+  return new Set(words.split(' '));
+}
+
+const VALIDATOR_GIT_QUALIFIER_INTRODUCERS = validatorGitWordSet(
+  'as by during in throughout under when whenever while within'
+);
+const VALIDATOR_GIT_WEAKENING_QUALIFIER_WORDS = validatorGitWordSet(
+  'almost assigned assuming barring certain chosen designated exception exceptions except excepting excluding few friday generally hours last largely limited monday mainly many most nearly no not occasional occasionally once only outside partly particular practically primarily provided roughly saturday scheduled selected some sometimes specific sunday temporarily thursday tuesday unless until usually virtually wednesday weekday weekdays weekend weekends'
+);
+const VALIDATOR_GIT_NESTED_SCOPE_WORDS = validatorGitWordSet(
+  'after as before by during except from if on provided throughout under unless until when whenever where while within'
+);
+const VALIDATOR_GIT_SCOPE_PREPOSITIONS = validatorGitWordSet(
+  'at by during for from if in on throughout under when while within'
+);
+const VALIDATOR_GIT_CONDITIONAL_VALUES = validatorGitWordSet(
+  'acceptable allowed appropriate available convenient needed necessary optional permitted possible required useful'
+);
+const VALIDATOR_GIT_CONDITIONAL_LINKERS = validatorGitWordSet(
+  'appear appeared appears are be became become becomes being considered deemed is remain remained remains seem seemed seems was were'
+);
+const VALIDATOR_GIT_UNIVERSAL_DETERMINERS = validatorGitWordSet('all any every');
+const VALIDATOR_GIT_UNIVERSAL_INTRODUCERS = validatorGitWordSet('at for in under');
+const VALIDATOR_GIT_UNIVERSAL_TAIL_STARTS = validatorGitWordSet(
+  'at for in regardless under with without'
+);
+const VALIDATOR_GIT_UNIVERSAL_MODIFIERS = validatorGitWordSet(
+  'absolutely categorically completely entirely literally strictly truly unconditionally universally'
+);
+const VALIDATOR_GIT_UNIVERSAL_NOMINAL_MODIFIERS = validatorGitWordSet('conceivable possible');
+const VALIDATOR_GIT_UNIVERSAL_SCOPE_NOUNS = validatorGitWordSet(
+  'case cases circumstance circumstances condition conditions context contexts occasion occasions reason reasons scenario scenarios situation situations time times'
+);
+const VALIDATOR_GIT_EXCEPTION_MODIFIERS = validatorGitWordSet('a any possible single');
+const VALIDATOR_GIT_HARD_LIMITER_WORDS = validatorGitWordSet(
+  'assuming barring except excepting excluding only provided unless until'
+);
+const VALIDATOR_GIT_COMPLEMENT_INTRODUCERS = validatorGitWordSet('at for in with');
+const VALIDATOR_GIT_RELATIVE_PRONOUNS = validatorGitWordSet('that which who whom whose');
+const VALIDATOR_GIT_PREDICATE_MODIFIERS = validatorGitWordSet(
+  'less longer more quite rather really still very'
+);
+const VALIDATOR_GIT_RUNTIME_SCOPE_WORDS = validatorGitWordSet(
+  'deploy deployed deploying deployment deployments production release releases stage staged stages staging'
+);
+const VALIDATOR_GIT_CONTEXT_PROCESS_WORDS = validatorGitWordSet(
+  'analyses analysis analyst analysts analyze analyzed analyzes analyzing assess assessed assesses assessing assessment assessments assessor assessors audit audited auditing audits auditor auditors check checked checking checks evaluate evaluated evaluates evaluating evaluation evaluations evaluator evaluators examination examinations examine examined examines examining inspect inspected inspecting inspection inspections inspector inspectors review reviewed reviewer reviewers reviewing reviews test tested tester testers testing tests validate validated validates validating validation validations verification verifications verified verifier verifiers verifies verify verifying'
+);
+const VALIDATOR_GIT_DOMAIN_ANCHORS = validatorGitWordSet(
+  'change changes code codes config configs configuration configurations file files implementation implementations prompt prompts quality task tasks test tests validator validators workflow workflows'
+);
+const VALIDATOR_GIT_RESTRICTIVE_COUNT_PATTERN = /^\d+(?:st|nd|rd|th)?$/;
+const VALIDATOR_GIT_RESTRICTIVE_COUNT_WORDS = validatorGitWordSet(
+  'eight eighth eleven eleventh fifth five first four fourth nine ninth one second seven seventh single six sixth ten tenth third three twelve twelfth two'
+);
+
+function normalizeValidatorGitToken(rawToken) {
+  let value = rawToken.toLowerCase().replaceAll('’', "'");
+  while (value.startsWith("'")) value = value.slice(1);
+  while (value.endsWith("'")) value = value.slice(0, -1);
+  return value;
+}
+
+function validatorGitTokenType(rawToken) {
+  if (rawToken === ',') return 'comma';
+  return /[,.;:!?\r\n]/.test(rawToken) ? 'boundary' : 'word';
+}
+
+function scanValidatorGitTokens(prompt) {
+  const tokens = [];
+  const tokenPattern = /[a-z'’]+|\d+(?:st|nd|rd|th)?|[,.;:!?\r\n]/gi;
+  for (const match of prompt.matchAll(tokenPattern)) {
+    const value = normalizeValidatorGitToken(match[0]);
+    if (!value) continue;
+    tokens.push({
+      type: validatorGitTokenType(match[0]),
+      value,
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return tokens;
+}
+
+function validatorGitCommandEnd(prompt, tokens, index) {
+  const token = tokens[index];
+  let nextIndex = index + 1;
+  while (tokens[nextIndex]?.value === '\r' || tokens[nextIndex]?.value === '\n') {
+    nextIndex += 1;
+  }
+  const next = tokens[nextIndex];
+  if (token.value !== 'git' || next?.type !== 'word') return -1;
+  if (!VALIDATOR_GIT_COMMAND_NAMES.has(next.value)) return -1;
+  const separator = prompt.slice(token.end, next.start);
+  return separator.length > 0 && separator.trim() === '' ? nextIndex : -1;
+}
+
+function tokenizeValidatorGitPrompt(prompt) {
+  const tokens = scanValidatorGitTokens(prompt);
+
+  const atoms = [];
+  // A small token grammar keeps mixed instructions deterministic and avoids
+  // interpolated regular expressions over untrusted prompt text.
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    const commandEnd = validatorGitCommandEnd(prompt, tokens, index);
+
+    if (commandEnd >= 0) {
+      atoms.push({ type: 'command', value: `git ${tokens[commandEnd].value}` });
+      index = commandEnd + 1;
+    } else {
+      atoms.push({ type: token.type, value: token.value });
+      index += 1;
+    }
+  }
+
+  return atoms;
+}
+
+function nextListedCommand(atoms, index, end) {
+  let cursor = index;
+  if (atoms[cursor]?.type === 'comma') {
+    cursor += 1;
+    if (atoms[cursor]?.value === 'and' || atoms[cursor]?.value === 'or') cursor += 1;
+  } else if (atoms[cursor]?.value === 'and' || atoms[cursor]?.value === 'or') {
+    cursor += 1;
+  } else {
+    return -1;
+  }
+  return cursor < end && atoms[cursor]?.type === 'command' ? cursor : -1;
+}
+
+function parseGitCommandList(atoms, index, end) {
+  if (atoms[index]?.type !== 'command') return null;
+
+  const commands = [];
+  let cursor = index;
+  while (cursor >= 0) {
+    commands.push(cursor);
+    const afterCommand = cursor + 1;
+    cursor = nextListedCommand(atoms, afterCommand, end);
+    if (cursor < 0) return { commands, end: afterCommand };
+  }
+
+  return { commands, end };
+}
+
+function skipNegatedInstruction(atoms, index) {
+  if (VALIDATOR_GIT_NEGATED_WORDS.has(atoms[index]?.value)) {
+    return index + 1;
+  }
+  if (
+    VALIDATOR_GIT_NEGATABLE_MODALS.has(atoms[index]?.value) &&
+    atoms[index + 1]?.value === 'not'
+  ) {
+    return index + 2;
+  }
+  return -1;
+}
+
+function skipGitInspectionAction(atoms, index) {
+  if (VALIDATOR_GIT_ACTIONS.has(atoms[index]?.value)) {
+    return index + 1;
+  }
+  if (atoms[index]?.value === 'rely' && atoms[index + 1]?.value === 'on') {
+    return index + 2;
+  }
+  return -1;
+}
+
+function skipCommandLabel(atoms, index) {
+  let cursor = index;
+  if (atoms[cursor]?.value === 'the') cursor += 1;
+  if (atoms[cursor]?.value === 'command' || atoms[cursor]?.value === 'commands') cursor += 1;
+  return cursor;
+}
+
+function skipOptionalGerund(atoms, index) {
+  return VALIDATOR_GIT_ACTION_GERUNDS.has(atoms[index]?.value) ? index + 1 : index;
+}
+
+function skipAlternativeProhibition(atoms, index) {
+  if (atoms[index]?.value === 'avoid') {
+    return skipOptionalGerund(atoms, index + 1);
+  }
+  if (atoms[index]?.value === 'refrain' && atoms[index + 1]?.value === 'from') {
+    return skipOptionalGerund(atoms, index + 2);
+  }
+  if (
+    (atoms[index]?.value === 'is' || atoms[index]?.value === 'are') &&
+    (atoms[index + 1]?.value === 'forbidden' || atoms[index + 1]?.value === 'prohibited') &&
+    atoms[index + 2]?.value === 'from'
+  ) {
+    return skipOptionalGerund(atoms, index + 3);
+  }
+  return -1;
+}
+
+function parsePrefixProhibition(atoms, index, end) {
+  let negatedInstructionEnd = skipNegatedInstruction(atoms, index);
+  if (atoms[negatedInstructionEnd]?.value === 'ever') negatedInstructionEnd += 1;
+  const cursor =
+    negatedInstructionEnd >= 0
+      ? skipGitInspectionAction(atoms, negatedInstructionEnd)
+      : skipAlternativeProhibition(atoms, index);
+  if (cursor < 0) return null;
+  return parseGitCommandList(atoms, skipCommandLabel(atoms, cursor), end);
+}
+
+function findNegatedProhibitionStarts(atoms, start, end) {
+  const negatedStarts = new Set();
+  for (let index = start; index < end; index += 1) {
+    let innerStart = skipNegatedInstruction(atoms, index);
+    if (innerStart < 0) continue;
+    if (atoms[innerStart]?.value === 'ever') innerStart += 1;
+    if (parsePrefixProhibition(atoms, innerStart, end)) negatedStarts.add(innerStart);
+  }
+  return negatedStarts;
+}
+
+function parsePostfixProhibition(atoms, index, end) {
+  const first = atoms[index]?.value;
+  const second = atoms[index + 1]?.value;
+  if ((first === 'is' || first === 'are') && index + 1 < end) {
+    if (second === 'forbidden' || second === 'prohibited' || second === 'disallowed') {
+      return index + 2;
+    }
+    if (second === 'not' && ['allowed', 'permitted'].includes(atoms[index + 2]?.value)) {
+      return index + 3;
+    }
+  }
+
+  let cursor = index;
+  if (['must', 'should', 'may', 'can'].includes(first) && ['not', 'never'].includes(second)) {
+    cursor += 2;
+  } else if (["mustn't", "shouldn't", "can't", 'cannot'].includes(first)) {
+    cursor += 1;
+  } else {
+    return null;
+  }
+
+  if (atoms[cursor]?.value === 'be') cursor += 1;
+  return VALIDATOR_GIT_POSTFIX_PARTICIPLES.has(atoms[cursor]?.value) ? cursor + 1 : null;
+}
+
+function skipCommas(atoms, index) {
+  let cursor = index;
+  while (atoms[cursor]?.type === 'comma') cursor += 1;
+  return cursor;
+}
+
+function terminalQualifierWords(atoms, index, end) {
+  const words = [];
+  for (let cursor = index; cursor < end; cursor += 1) {
+    if (atoms[cursor].type === 'comma') continue;
+    if (atoms[cursor].type !== 'word') return null;
+    words.push(atoms[cursor].value);
+  }
+  return words;
+}
+
+function isStrengtheningException(words, index) {
+  let cursor = index - 1;
+  while (
+    VALIDATOR_GIT_EXCEPTION_MODIFIERS.has(words[cursor]) ||
+    VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])
+  ) {
+    cursor -= 1;
+  }
+  return words[cursor] === 'without';
+}
+
+function isStrengtheningScopeIntroducer(words, index) {
+  return words[index - 1] === 'even';
+}
+
+function isValidatorContextWord(word) {
+  return VALIDATOR_GIT_CONTEXT_PROCESS_WORDS.has(word) || VALIDATOR_GIT_DOMAIN_ANCHORS.has(word);
+}
+
+function isBenignByComplement(words, index) {
+  let cursor = index + 1;
+  if (words[cursor] === 'a' || words[cursor] === 'an' || words[cursor] === 'the') cursor += 1;
+  return isValidatorContextWord(words[cursor]);
+}
+
+function qualifierWordIsHardLimiter(words, index) {
+  const value = words[index];
+  const previousWord = words[index - 1];
+  return (
+    VALIDATOR_GIT_HARD_LIMITER_WORDS.has(value) ||
+    (previousWord === 'other' && value === 'than') ||
+    (previousWord === 'by' && value === 'default') ||
+    (previousWord === 'for' && value === 'now')
+  );
+}
+
+function hasHardQualifierLimiter(words, index) {
+  return words
+    .slice(index)
+    .some((_word, offset) => qualifierWordIsHardLimiter(words, index + offset));
+}
+
+function isEvenStrengtheningTail(words, index) {
+  return (
+    words[index] === 'even' &&
+    VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[index + 1]) &&
+    index + 2 < words.length &&
+    !hasHardQualifierLimiter(words, index + 2)
+  );
+}
+
+function exceptionQualifierEnd(words) {
+  let cursor = 1;
+  if (words[0] === 'with') {
+    while (VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])) cursor += 1;
+    if (words[cursor] !== 'no') return -1;
+    cursor += 1;
+  } else if (words[0] !== 'without') {
+    return -1;
+  }
+
+  while (
+    VALIDATOR_GIT_EXCEPTION_MODIFIERS.has(words[cursor]) ||
+    VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])
+  ) {
+    cursor += 1;
+  }
+  return words[cursor] === 'exception' || words[cursor] === 'exceptions' ? cursor + 1 : -1;
+}
+
+function isExceptionQualifierWords(words) {
+  const tailStart = exceptionQualifierEnd(words);
+  if (tailStart < 0) return false;
+  return tailStart === words.length || isEvenStrengtheningTail(words, tailStart);
+}
+
+function isRegardlessQualifierWords(words) {
+  if (words.length < 2 || hasHardQualifierLimiter(words, 1)) return false;
+  for (let cursor = 1; cursor < words.length; cursor += 1) {
+    if (words[cursor] === 'even') return isEvenStrengtheningTail(words, cursor);
+    if (VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[cursor])) return false;
+  }
+  return true;
+}
+
+function isUniversalScopeWord(word) {
+  return VALIDATOR_GIT_UNIVERSAL_SCOPE_NOUNS.has(word) || isValidatorContextWord(word);
+}
+
+function universalScopeEnd(words, determinerIndex) {
+  let cursor = determinerIndex + 1;
+  while (VALIDATOR_GIT_UNIVERSAL_NOMINAL_MODIFIERS.has(words[cursor])) cursor += 1;
+  if (!isUniversalScopeWord(words[cursor])) return -1;
+  cursor += 1;
+  while (isValidatorContextWord(words[cursor])) cursor += 1;
+  return cursor;
+}
+
+function isUniversalStrengtheningTail(words, index) {
+  if (index === words.length) return true;
+  if (words[index] === 'whatsoever') return index + 1 === words.length;
+  if (words[index] === 'including') {
+    return index + 1 < words.length && !hasHardQualifierLimiter(words, index + 1);
+  }
+  if (words[index] === 'even') return isEvenStrengtheningTail(words, index);
+  if (words[index] === 'regardless') return isRegardlessQualifierWords(words.slice(index));
+  if (words[index] === 'with' || words[index] === 'without') {
+    return isExceptionQualifierWords(words.slice(index));
+  }
+  return false;
+}
+
+function isDeterminerUniversalQualifierWords(words) {
+  const determinerIndex = universalDeterminerIndex(words, 0);
+  if (
+    !VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(words[0]) ||
+    !VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(words[determinerIndex])
+  ) {
+    return false;
+  }
+  const scopeEnd = universalScopeEnd(words, determinerIndex);
+  return scopeEnd >= 0 && isUniversalStrengtheningTail(words, scopeEnd);
+}
+
+function isUniversalQualifierWords(words) {
+  if (words[0] === 'regardless') return isRegardlessQualifierWords(words);
+  if (words[0] === 'with' || words[0] === 'without') return isExceptionQualifierWords(words);
+  return isDeterminerUniversalQualifierWords(words);
+}
+
+function universalDeterminerIndex(words, index) {
+  let cursor = index + 1;
+  while (VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])) cursor += 1;
+  return cursor;
+}
+
+function startsUniversalQualifier(words, index) {
+  const value = words[index];
+  if (value === 'regardless' || value === 'without') return true;
+
+  const determinerIndex = universalDeterminerIndex(words, index);
+  if (value === 'with') return words[determinerIndex] === 'no';
+  return (
+    VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(value) &&
+    VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(words[determinerIndex])
+  );
+}
+
+function isUniversalTerminalQualifier(atoms, index, end) {
+  const words = terminalQualifierWords(atoms, index, end);
+  return words ? isUniversalQualifierWords(words) : false;
+}
+
+function conditionalQualifierValueWeakens(words, index, hasContextProcess) {
+  if (!VALIDATOR_GIT_CONDITIONAL_VALUES.has(words[index])) return false;
+
+  let linkerIndex = index - 1;
+  while (
+    linkerIndex > 0 &&
+    (words[linkerIndex].endsWith('ly') || VALIDATOR_GIT_PREDICATE_MODIFIERS.has(words[linkerIndex]))
+  ) {
+    linkerIndex -= 1;
+  }
+  if (linkerIndex === 0) return true;
+  if (!VALIDATOR_GIT_CONDITIONAL_LINKERS.has(words[linkerIndex])) return false;
+
+  let subjectIndex = linkerIndex - 1;
+  while (
+    subjectIndex > 0 &&
+    (words[subjectIndex].endsWith('ly') ||
+      VALIDATOR_GIT_PREDICATE_MODIFIERS.has(words[subjectIndex]))
+  ) {
+    subjectIndex -= 1;
+  }
+  if (!VALIDATOR_GIT_RELATIVE_PRONOUNS.has(words[subjectIndex])) return true;
+  return !(hasContextProcess && VALIDATOR_GIT_DOMAIN_ANCHORS.has(words[subjectIndex - 1]));
+}
+
+function isRestrictiveQualifierCount(words, index) {
+  const value = words[index];
+  if (
+    (VALIDATOR_GIT_RESTRICTIVE_COUNT_PATTERN.test(value) ||
+      VALIDATOR_GIT_RESTRICTIVE_COUNT_WORDS.has(value)) &&
+    isUniversalScopeWord(words[index + 1])
+  ) {
+    return true;
+  }
+  return value === 'couple' && words[index + 1] === 'of' && isUniversalScopeWord(words[index + 2]);
+}
+
+function qualifierWordWeakens(words, index, hasContextProcess) {
+  const value = words[index];
+  const previousWord = words[index - 1];
+  const strengtheningException =
+    (value === 'exception' || value === 'exceptions') && isStrengtheningException(words, index);
+  return (
+    (VALIDATOR_GIT_WEAKENING_QUALIFIER_WORDS.has(value) && !strengtheningException) ||
+    isRestrictiveQualifierCount(words, index) ||
+    (VALIDATOR_GIT_NESTED_SCOPE_WORDS.has(value) &&
+      !isStrengtheningScopeIntroducer(words, index) &&
+      !(value === 'by' && isBenignByComplement(words, index))) ||
+    conditionalQualifierValueWeakens(words, index, hasContextProcess) ||
+    (previousWord === 'other' && value === 'than') ||
+    (previousWord === 'every' && value === 'other') ||
+    (previousWord === 'in' && value === 'case') ||
+    (previousWord === 'by' && value === 'default') ||
+    (previousWord === 'for' && value === 'now')
+  );
+}
+
+function isStrengtheningRuntimeScope(words, index) {
+  return words[index - 2] === 'even' && VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[index - 1]);
+}
+
+function hasInvalidUniversalOrdinaryStart(words) {
+  return (
+    VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(words[0]) &&
+    words.slice(1).some((word) => VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(word))
+  );
+}
+
+function ordinaryQualifierWordResult(
+  words,
+  index,
+  hasContextProcess,
+  hasDomainAnchor,
+  hasRuntimeScope
+) {
+  const hasValidatorContext = hasContextProcess || hasDomainAnchor;
+  if (
+    VALIDATOR_GIT_UNIVERSAL_TAIL_STARTS.has(words[index]) &&
+    startsUniversalQualifier(words, index)
+  ) {
+    return hasValidatorContext &&
+      (!hasRuntimeScope || hasContextProcess) &&
+      isUniversalQualifierWords(words.slice(index))
+      ? 'safe-tail'
+      : 'unsafe';
+  }
+  if (qualifierWordWeakens(words, index, hasContextProcess)) return 'unsafe';
+  if (
+    VALIDATOR_GIT_COMPLEMENT_INTRODUCERS.has(words[index]) &&
+    !isStrengtheningScopeIntroducer(words, index) &&
+    !hasDomainAnchor
+  ) {
+    return 'unsafe';
+  }
+  if (!VALIDATOR_GIT_RUNTIME_SCOPE_WORDS.has(words[index])) return 'continue';
+  if (isStrengtheningRuntimeScope(words, index)) return 'continue';
+  return hasContextProcess ? 'unsafe' : 'runtime';
+}
+
+function isBenignOrdinaryQualifierWords(words) {
+  if (
+    words.length < 2 ||
+    !VALIDATOR_GIT_QUALIFIER_INTRODUCERS.has(words[0]) ||
+    hasInvalidUniversalOrdinaryStart(words)
+  ) {
+    return false;
+  }
+  let hasContextProcess = false;
+  let hasDomainAnchor = false;
+  let hasRuntimeScope = false;
+  for (let cursor = 1; cursor < words.length; cursor += 1) {
+    const result = ordinaryQualifierWordResult(
+      words,
+      cursor,
+      hasContextProcess,
+      hasDomainAnchor,
+      hasRuntimeScope
+    );
+    if (result === 'safe-tail') return true;
+    if (result === 'unsafe') return false;
+    hasRuntimeScope ||= result === 'runtime';
+    hasContextProcess ||= VALIDATOR_GIT_CONTEXT_PROCESS_WORDS.has(words[cursor]);
+    hasDomainAnchor ||= VALIDATOR_GIT_DOMAIN_ANCHORS.has(words[cursor]);
+  }
+
+  return (hasContextProcess || hasDomainAnchor) && (!hasRuntimeScope || hasContextProcess);
+}
+
+function isBenignTerminalQualifier(atoms, index, end) {
+  if (isUniversalTerminalQualifier(atoms, index, end)) return true;
+  const words = terminalQualifierWords(atoms, index, end);
+  return words ? isBenignOrdinaryQualifierWords(words) : false;
+}
+
+function commandsCoveredByPrefix(atoms, commandList, end) {
+  const suffixStart = skipCommas(atoms, commandList.end);
+  if (suffixStart >= end) return commandList.commands;
+  if (
+    (atoms[suffixStart].value === 'and' || atoms[suffixStart].value === 'or') &&
+    atoms[suffixStart + 1]?.type !== 'command'
+  ) {
+    return commandList.commands;
+  }
+  if (isBenignTerminalQualifier(atoms, suffixStart, end)) {
+    return commandList.commands;
+  }
+
+  return commandList.commands.slice(0, -1);
+}
+
+function commandCoveredByTerminalPostfix(atoms, commandList, end) {
+  const postfixStart = skipCommas(atoms, commandList.end);
+  const postfixEnd = parsePostfixProhibition(atoms, postfixStart, end);
+  if (postfixEnd === null) return -1;
+
+  const qualifierStart = skipCommas(atoms, postfixEnd);
+  if (qualifierStart < end && !isBenignTerminalQualifier(atoms, qualifierStart, end)) {
+    return -1;
+  }
+  return commandList.commands[commandList.commands.length - 1];
+}
+
+function markPrefixProhibitions(atoms, start, end, prohibited) {
+  const negatedStarts = findNegatedProhibitionStarts(atoms, start, end);
+  for (let index = start; index < end; index += 1) {
+    const commandList = parsePrefixProhibition(atoms, index, end);
+    if (!commandList) continue;
+
+    const negatesProhibition = negatedStarts.has(index);
+    const postfixCommand = commandCoveredByTerminalPostfix(atoms, commandList, end);
+    if (postfixCommand >= 0 && (!negatesProhibition || commandList.commands.length > 1)) {
+      prohibited.add(postfixCommand);
+    }
+    if (negatesProhibition) continue;
+
+    for (const command of commandsCoveredByPrefix(atoms, commandList, end)) {
+      prohibited.add(command);
+    }
+  }
+}
+
+function isBenignPostfixPrefixAtom(atom) {
+  return (
+    atom.type === 'comma' ||
+    (atom.type === 'word' && VALIDATOR_GIT_BENIGN_POSTFIX_PREFIXES.has(atom.value))
+  );
+}
+
+function markPostfixProhibitions(atoms, start, end, prohibited) {
+  let cursor = start;
+  while (cursor < end && isBenignPostfixPrefixAtom(atoms[cursor])) cursor += 1;
+
+  while (cursor < end && atoms[cursor].type === 'command') {
+    const commandList = parseGitCommandList(atoms, cursor, end);
+    const predicateEnd = parsePostfixProhibition(atoms, commandList.end, end);
+    if (predicateEnd === null) return;
+
+    const next = skipCommas(atoms, predicateEnd);
+    const continuesWithProhibition =
+      (atoms[next]?.value === 'and' || atoms[next]?.value === 'or') &&
+      atoms[next + 1]?.type === 'command';
+    if (next < end && !continuesWithProhibition && !isBenignTerminalQualifier(atoms, next, end)) {
+      return;
+    }
+
+    for (const command of commandList.commands) prohibited.add(command);
+    if (!continuesWithProhibition) return;
+    cursor = next + 1;
+  }
+}
+
+function findProhibitedGitCommands(atoms) {
+  const prohibited = new Set();
+  let clauseStart = 0;
+
+  for (let index = 0; index <= atoms.length; index += 1) {
+    const atBoundary =
+      index === atoms.length ||
+      atoms[index].type === 'boundary' ||
+      VALIDATOR_GIT_CLAUSE_BOUNDARIES.has(atoms[index].value);
+    if (!atBoundary) continue;
+
+    markPrefixProhibitions(atoms, clauseStart, index, prohibited);
+    markPostfixProhibitions(atoms, clauseStart, index, prohibited);
+    clauseStart = index + 1;
+  }
+
+  return prohibited;
+}
+
+function coreferentialActionObject(atoms, index) {
+  const action = atoms[index]?.value;
+  let objectIndex = skipGitInspectionAction(atoms, index);
+  if (objectIndex < 0 && action === 'do') objectIndex = index + 1;
+  if (objectIndex < 0) return -1;
+
+  const object = atoms[objectIndex]?.value;
+  if (object === 'it' || object === 'them' || (action === 'do' && object === 'so')) {
+    return objectIndex + 1;
+  }
+  if (!VALIDATOR_GIT_COREFERENCE_DEMONSTRATIVES.has(object)) return -1;
+
+  const label = atoms[objectIndex + 1]?.value;
+  if (['command', 'commands', 'instruction', 'instructions'].includes(label)) {
+    return objectIndex + 2;
+  }
+  return action === 'do' && (object === 'this' || object === 'that') ? objectIndex + 1 : -1;
+}
+
+function isDirectlyNegatedCoreferentialAction(atoms, index, clauseStart) {
+  let cursor = index - 1;
+  if (atoms[cursor]?.value === 'ever') cursor -= 1;
+  if (cursor < clauseStart) return false;
+  if (VALIDATOR_GIT_NEGATED_WORDS.has(atoms[cursor]?.value)) return true;
+  return (
+    atoms[cursor]?.value === 'not' &&
+    cursor - 1 >= clauseStart &&
+    VALIDATOR_GIT_NEGATABLE_MODALS.has(atoms[cursor - 1]?.value)
+  );
+}
+
+function findCoreferentialGitOverrides(atoms, prohibitedCommands) {
+  const unsafeCommands = new Set();
+  let priorCommands = new Set();
+  let clauseCommands = new Set();
+  let clauseStart = 0;
+
+  for (let index = 0; index < atoms.length; index += 1) {
+    const atom = atoms[index];
+    const atBoundary = atom.type === 'boundary' || VALIDATOR_GIT_CLAUSE_BOUNDARIES.has(atom.value);
+    if (atBoundary) {
+      priorCommands = new Set(clauseCommands);
+      clauseCommands = new Set();
+      clauseStart = index + 1;
+      continue;
+    }
+
+    if (atom.type === 'command' && prohibitedCommands.has(index)) {
+      clauseCommands.add(atom.value);
+      continue;
+    }
+    const objectEnd = coreferentialActionObject(atoms, index);
+    if (objectEnd < 0 || isDirectlyNegatedCoreferentialAction(atoms, index, clauseStart)) {
+      continue;
+    }
+
+    const referencedCommands = clauseCommands.size > 0 ? clauseCommands : priorCommands;
+    if (atoms[objectEnd - 1]?.value === 'them' && referencedCommands.size < 2) {
+      continue;
+    }
+    for (const command of referencedCommands) unsafeCommands.add(command);
+  }
+
+  return unsafeCommands;
+}
+
 function validateValidatorGitUsage(agent, errors) {
   if (agent.role !== 'validator') {
     return;
   }
 
   const prompt = typeof agent.prompt === 'string' ? agent.prompt : agent.prompt?.system;
-  const gitPatterns = ['git diff', 'git status', 'git log', 'git show'];
-  for (const pattern of gitPatterns) {
-    if (prompt?.includes(pattern)) {
-      errors.push(`Validator '${agent.id}' uses '${pattern}' - git state is unreliable in agents`);
+  if (typeof prompt !== 'string') {
+    return;
+  }
+
+  const atoms = tokenizeValidatorGitPrompt(prompt);
+  const prohibitedCommands = findProhibitedGitCommands(atoms);
+  const unsafeCommands = findCoreferentialGitOverrides(atoms, prohibitedCommands);
+
+  for (let index = 0; index < atoms.length; index += 1) {
+    if (atoms[index].type === 'command' && !prohibitedCommands.has(index)) {
+      unsafeCommands.add(atoms[index].value);
     }
+  }
+
+  for (const command of unsafeCommands) {
+    errors.push(
+      `Validator '${agent.id}' instructs use of '${command}', but Git state is unreliable in validators. ` +
+        'Read files directly instead.'
+    );
   }
 }
 
