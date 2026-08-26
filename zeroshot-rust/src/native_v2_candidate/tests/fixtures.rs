@@ -213,7 +213,10 @@ pub(super) async fn wait_for_terminal(
             )
             .await
             .assert_value_with("OECP status");
-            if let RunStatus::Finished { terminal_result } = status.status {
+            if let RunStatus::Finished {
+                terminal_result, ..
+            } = status.status
+            {
                 return terminal_result;
             }
             tokio::task::yield_now().await;

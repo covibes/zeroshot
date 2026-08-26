@@ -113,7 +113,10 @@ async fn wait_terminal(
                 })
                 .await
                 .assert_value_with("portable status");
-            if let RunStatus::Finished { terminal_result } = status.status {
+            if let RunStatus::Finished {
+                terminal_result, ..
+            } = status.status
+            {
                 return terminal_result;
             }
             tokio::task::yield_now().await;
@@ -287,6 +290,7 @@ async fn observer_reconciles_process_loss_without_constructing_or_dispatching_a_
                 reason: openengine_cluster_protocol::EnumLabel::new("runtime_lost")
                     .assert_value_with("runtime-lost label"),
             },
+            metadata: Default::default(),
         }
     );
 

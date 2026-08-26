@@ -9,6 +9,15 @@
       "revision": "0123456789abcdef0123456789abcdef01234567"
     },
     "status": {
+      "metadata": {
+        "tokenUsage": {
+          "cacheCreationInputTokens": 100,
+          "cacheReadInputTokens": 800,
+          "complete": true,
+          "inputTokens": 1200,
+          "outputTokens": 200
+        }
+      },
       "phase": "finished",
       "terminalResult": {
         "output": {

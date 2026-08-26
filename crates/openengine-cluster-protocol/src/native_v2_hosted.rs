@@ -6,39 +6,48 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveExecution, Cursor, RunForceResult, RunId, RunListResult, RunLogEventNotification,
-    RunSize, RunStatus, RunStatusResult, RunTitle, RunWatchEventNotification,
-    SubscriptionCloseReason, SubscriptionId, TerminalResult, ResolvedSource,
+    Cursor, ResolvedSource, RunForceResult, RunId, RunListResult, RunLogEventNotification, RunSize,
+    RunStatus, RunStatusResult, RunTitle, RunWatchEventNotification, SubscriptionCloseReason,
+    SubscriptionId,
 };
 
 /// Lifecycle exposed by a hosted target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, tag = "phase", rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum HostedRunStatus {
+    Queued(HostedQueuedRunStatus),
+    Target(RunStatus),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "phase", rename_all = "snake_case")]
+pub enum HostedQueuedRunStatus {
     Queued {},
-    Admitted {},
-    Running {
-        #[serde(rename = "activeExecutions")]
-        active_executions: Vec<ActiveExecution>,
-    },
-    Stopping {
-        #[serde(rename = "activeExecutions")]
-        active_executions: Vec<ActiveExecution>,
-    },
-    Finished {
-        #[serde(rename = "terminalResult")]
-        terminal_result: TerminalResult,
-    },
+}
+
+impl HostedRunStatus {
+    #[must_use]
+    pub const fn queued() -> Self {
+        Self::Queued(HostedQueuedRunStatus::Queued {})
+    }
+
+    #[must_use]
+    pub const fn target(status: RunStatus) -> Self {
+        Self::Target(status)
+    }
+
+    #[must_use]
+    pub const fn as_target(&self) -> Option<&RunStatus> {
+        match self {
+            Self::Queued(_) => None,
+            Self::Target(status) => Some(status),
+        }
+    }
 }
 
 impl From<RunStatus> for HostedRunStatus {
     fn from(status: RunStatus) -> Self {
-        match status {
-            RunStatus::Admitted {} => Self::Admitted {},
-            RunStatus::Running { active_executions } => Self::Running { active_executions },
-            RunStatus::Stopping { active_executions } => Self::Stopping { active_executions },
-            RunStatus::Finished { terminal_result } => Self::Finished { terminal_result },
-        }
+        Self::target(status)
     }
 }
 
@@ -154,7 +163,8 @@ mod tests {
             json!({"phase":"stopping","activeExecutions":[]}),
             json!({
                 "phase":"finished",
-                "terminalResult":{"status":"succeeded","output":null}
+                "terminalResult":{"status":"succeeded","output":null},
+                "metadata":{}
             }),
         ] {
             let oecp = serde_json::from_value::<RunStatus>(value);
@@ -164,7 +174,7 @@ mod tests {
             };
             assert!(!matches!(
                 HostedRunStatus::from(oecp),
-                HostedRunStatus::Queued {}
+                HostedRunStatus::Queued(_)
             ));
         }
     }

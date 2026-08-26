@@ -40,7 +40,7 @@ exit 1
         .assert_value();
     let mut durable = handle.take_initial_output().assert_value();
 
-    let (output, completion) = tokio::join!(durable.recv(), handle.completion());
+    let (output, completion) = tokio::join!(durable.recv_output(), handle.completion());
     let output = output.assert_value();
     assert_eq!(output.stream, LiveOutputStream::Error);
     assert_eq!(
@@ -48,7 +48,7 @@ exit 1
         "Claude provider failure: provider rejected [REDACTED] and [REDACTED]"
     );
     assert_eq!(completion, Err(NodeRunnerError::Driver));
-    assert_eq!(durable.recv().await, Err(AttachReceiveError::Closed));
+    assert_eq!(durable.recv_output().await, Err(AttachReceiveError::Closed));
 }
 
 const RETRY_SCRIPT: &str = r#"
@@ -146,7 +146,7 @@ async fn api_retry_signal_continues_once_in_the_same_claude_session() {
     let (logs, completion) = tokio::join!(
         async {
             let mut logs = Vec::new();
-            while let Ok(entry) = durable.recv().await {
+            while let Ok(entry) = durable.recv_output().await {
                 logs.push(entry.text);
             }
             logs

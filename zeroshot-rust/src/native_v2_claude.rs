@@ -264,8 +264,9 @@ impl ClaudeAdapter {
             process.wait().await
         } else {
             process.release().await
-        }
-        .map_err(|_| NodeRunnerError::Driver)?;
+        };
+        turn.control.record_token_usage(transcript.token_usage())?;
+        let process_output = process_output.map_err(|_| NodeRunnerError::Driver)?;
         validate_process_cleanup(&process_output, turn.control)?;
         collected?;
         let attempt = transcript.finish()?;

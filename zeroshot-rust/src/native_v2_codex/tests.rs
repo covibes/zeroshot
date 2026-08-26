@@ -26,7 +26,9 @@ use crate::native_v2_contract::{
     AdmittedRun, DeclaredEnvironment, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission,
     RuntimePlan,
 };
-use crate::native_v2_runner::{NativeNodeRunner, NodeHandle, NodeRunRequest, NodeRunner};
+use crate::native_v2_runner::{
+    AttachReceiveError, NativeNodeRunner, NodeHandle, NodeRunRequest, NodeRunner,
+};
 use crate::worker_catalog::{self, ReasoningEffort};
 
 const SCRIPT: &str = r#"#!/bin/sh
@@ -74,7 +76,7 @@ if [ "${SLOW_RUN-false}" = true ]; then
   /usr/bin/printf '%s\n' "$$" > "$PID_PATH"
   /usr/bin/sleep 30
 fi
-/usr/bin/printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
+/usr/bin/printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,"output_tokens":2}}'
 "#;
 
 fn scripted_adapter(
@@ -204,48 +206,7 @@ async fn start(
         .assert_value()
 }
 
-#[tokio::test]
-async fn openrouter_script_observes_exact_configuration_environment_output_and_attach() {
-    let directory = TestDirectory::new("codex-openrouter");
-    let capture = directory.child("capture");
-    let adapter = scripted_adapter(&directory, CodexProvider::OpenRouter);
-    let admitted = admitted(
-        binding(
-            SessionScope::Execution,
-            &["CAPTURE_PATH", "OPENROUTER_API_KEY"],
-        ),
-        CodexProvider::OpenRouter,
-    )
-    .await;
-    let runtime = runner(&admitted, adapter);
-    let mut handle = start(
-        &runtime,
-        &admitted,
-        1,
-        &[
-            ("CAPTURE_PATH", capture.display().to_string()),
-            ("OPENROUTER_API_KEY", "fake-openrouter-key".to_owned()),
-        ],
-    )
-    .await;
-    let mut attach = handle.take_initial_output().assert_value();
-    let progress = attach.recv().await.assert_value();
-    assert_eq!(progress.stream, LiveOutputStream::System);
-    assert_eq!(progress.text, "Codex turn started");
-    let attached = attach.recv().await.assert_value();
-    assert_eq!(attached.stream, LiveOutputStream::Output);
-    assert_eq!(attached.text, "visible [REDACTED]");
-    assert_eq!(attach.recv().await.assert_value().text, r#"{"answer":42}"#);
-    let completion = handle.completion().await.assert_value();
-    assert_eq!(
-        completion.outcome,
-        WorkerOutcome::Verified {
-            output: json!({"answer":42}),
-            artifacts: Vec::new(),
-        }
-    );
-
-    let capture = fs::read_to_string(capture).assert_value();
+fn assert_openrouter_capture(capture: &str) {
     for expected in [
         "arg=model_provider=\"openrouter\"",
         "arg=model_providers.openrouter.base_url=\"https://openrouter.ai/api/v1\"",
@@ -272,6 +233,65 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
     for suppressed in ["--ignore-user-config", "--ignore-rules", "--strict-config"] {
         assert!(!capture.contains(suppressed));
     }
+}
+
+#[tokio::test]
+async fn openrouter_script_observes_exact_configuration_environment_output_and_attach() {
+    let directory = TestDirectory::new("codex-openrouter");
+    let capture = directory.child("capture");
+    let adapter = scripted_adapter(&directory, CodexProvider::OpenRouter);
+    let admitted = admitted(
+        binding(
+            SessionScope::Execution,
+            &["CAPTURE_PATH", "OPENROUTER_API_KEY"],
+        ),
+        CodexProvider::OpenRouter,
+    )
+    .await;
+    let runtime = runner(&admitted, adapter);
+    let mut handle = start(
+        &runtime,
+        &admitted,
+        1,
+        &[
+            ("CAPTURE_PATH", capture.display().to_string()),
+            ("OPENROUTER_API_KEY", "fake-openrouter-key".to_owned()),
+        ],
+    )
+    .await;
+    let mut attach = handle.take_initial_output().assert_value();
+    let progress = attach.recv_output().await.assert_value();
+    assert_eq!(progress.stream, LiveOutputStream::System);
+    assert_eq!(progress.text, "Codex turn started");
+    let attached = attach.recv_output().await.assert_value();
+    assert_eq!(attached.stream, LiveOutputStream::Output);
+    assert_eq!(attached.text, "visible [REDACTED]");
+    assert_eq!(
+        attach.recv_output().await.assert_value().text,
+        r#"{"answer":42}"#
+    );
+    let completion = handle.completion().await.assert_value();
+    assert_eq!(
+        completion.outcome,
+        WorkerOutcome::Verified {
+            output: json!({"answer":42}),
+            artifacts: Vec::new(),
+        }
+    );
+    let usage = attach.recv_usage().await.assert_value().assert_value();
+    assert_eq!(
+        serde_json::to_value(usage).assert_value(),
+        json!({
+            "inputTokens": 1,
+            "outputTokens": 2,
+            "cacheReadInputTokens": 1,
+            "cacheCreationInputTokens": null
+        })
+    );
+    assert_eq!(attach.recv().await, Err(AttachReceiveError::Closed));
+
+    let capture = fs::read_to_string(capture).assert_value();
+    assert_openrouter_capture(&capture);
 }
 
 #[test]
@@ -420,10 +440,13 @@ async fn cancellation_waits_for_contained_child_cleanup() {
     .await;
     let mut attach = handle.take_initial_output().assert_value();
     assert_eq!(
-        attach.recv().await.assert_value().text,
+        attach.recv_output().await.assert_value().text,
         "Codex turn started"
     );
-    assert_eq!(attach.recv().await.assert_value().text, r#"{"answer":42}"#);
+    assert_eq!(
+        attach.recv_output().await.assert_value().text,
+        r#"{"answer":42}"#
+    );
     let pid = wait_for_pid(&pid_path).await;
     handle.cancel();
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));

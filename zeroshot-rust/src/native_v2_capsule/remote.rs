@@ -230,6 +230,10 @@ async fn handle_remote_event(
             Some(Err(NodeRunnerError::ConnectionLost))
         }
         Some(CapsuleNodeEvent::Output { output }) => handle_remote_output(output, context).await,
+        Some(CapsuleNodeEvent::TokenUsage { usage }) => {
+            let result = context.bridge.record_token_usage(usage);
+            handle_remote_bridge(result, context).await
+        }
         Some(CapsuleNodeEvent::Completed { completion })
             if completion.reference == *context.reference =>
         {
@@ -248,7 +252,15 @@ async fn handle_remote_output(
         Ok(output) => output,
         Err(error) => return Some(Err(error)),
     };
-    let Err(error) = context.bridge.emit(output) else {
+    let result = context.bridge.emit(output);
+    handle_remote_bridge(result, context).await
+}
+
+async fn handle_remote_bridge(
+    result: Result<(), NodeRunnerError>,
+    context: RemoteEventContext<'_>,
+) -> Option<Result<NodeCompletion, NodeRunnerError>> {
+    let Err(error) = result else {
         return None;
     };
     Some(

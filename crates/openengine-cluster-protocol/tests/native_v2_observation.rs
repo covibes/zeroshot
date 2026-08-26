@@ -7,9 +7,10 @@ mod json_read;
 use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     ActiveExecution, Cursor, ExecutionRef, NodeName, RunAttachEventNotification, RunAttachParams,
-    RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunSize,
-    RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
-    RunWatchParams, ResolvedSource, SubscriptionId, TerminalResult,
+    RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunMetadata,
+    RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
+    RunWatchParams, ResolvedSource, SubscriptionId, TerminalResult, TokenCount, TokenUsage,
+    MAX_SAFE_GENERATION,
 };
 use serde_json::json;
 
@@ -136,6 +137,20 @@ fn watch_and_logs_use_required_run_id_and_exclusive_resume_cursor() {
 }
 
 #[test]
+fn token_usage_rejects_counters_that_javascript_cannot_represent_exactly() {
+    assert!(TokenCount::new(MAX_SAFE_GENERATION).is_ok());
+    assert!(TokenCount::new(MAX_SAFE_GENERATION + 1).is_err());
+    assert!(
+        serde_json::from_value::<TokenUsage>(json!({
+            "inputTokens": MAX_SAFE_GENERATION + 1,
+            "outputTokens": 0,
+            "complete": true
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn durable_events_carry_run_and_stable_cursor() {
     let terminal_output = json!({
         "kind": "verification_receipt",
@@ -153,6 +168,15 @@ fn durable_events_carry_run_and_stable_cursor() {
             terminal_result: TerminalResult::Succeeded {
                 output: terminal_output.clone(),
             },
+            metadata: RunMetadata {
+                token_usage: Some(TokenUsage {
+                    input_tokens: TokenCount::new(17).assert_value(),
+                    output_tokens: TokenCount::new(3).assert_value(),
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                    complete: false,
+                }),
+            },
         },
     };
     let value = serde_json::to_value(&watch).assert_value();
@@ -165,6 +189,14 @@ fn durable_events_carry_run_and_stable_cursor() {
     assert_eq!(
         json_read::json_at(&value, "/status/terminalResult/output"),
         &terminal_output
+    );
+    assert_eq!(
+        json_read::json_at(&value, "/status/metadata/tokenUsage"),
+        &json!({
+            "inputTokens": 17,
+            "outputTokens": 3,
+            "complete": false
+        })
     );
 
     let value = json!({

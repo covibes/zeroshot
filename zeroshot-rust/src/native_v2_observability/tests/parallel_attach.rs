@@ -7,7 +7,7 @@ async fn attach_is_live_only_read_only_and_disconnect_does_not_cancel() {
         fixture.ledger.as_ref(),
         &fixture.run_id,
         fixture.reference.execution,
-        fixture.durable.recv().await.assert_value(),
+        fixture.durable.recv_output().await.assert_value(),
     )
     .await;
 
@@ -39,7 +39,7 @@ async fn attach_is_live_only_read_only_and_disconnect_does_not_cancel() {
         fixture.ledger.as_ref(),
         &fixture.run_id,
         fixture.reference.execution,
-        fixture.durable.recv().await.assert_value(),
+        fixture.durable.recv_output().await.assert_value(),
     )
     .await;
     let completion = fixture.handle.completion().await.assert_value();

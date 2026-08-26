@@ -16,6 +16,28 @@ use crate::native_v2_candidate::test_support::full_graph;
 use crate::native_v2_contract::{CodexProvider, RuntimePlan};
 use crate::worker_catalog::ReasoningEffort;
 
+impl DurableOutput {
+    pub(crate) async fn recv_output(&mut self) -> Result<LiveOutput, AttachReceiveError> {
+        loop {
+            match self.recv().await? {
+                DurableNodeEvent::Output(output) => return Ok(output),
+                DurableNodeEvent::TokenUsage(_) => {}
+            }
+        }
+    }
+
+    pub(crate) async fn recv_usage(
+        &mut self,
+    ) -> Result<Option<TokenUsageDelta>, AttachReceiveError> {
+        loop {
+            match self.recv().await? {
+                DurableNodeEvent::Output(_) => {}
+                DurableNodeEvent::TokenUsage(usage) => return Ok(usage),
+            }
+        }
+    }
+}
+
 pub(crate) fn binding(scope: SessionScope) -> NodeRuntimeBinding {
     NodeRuntimeBinding::Agent {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),

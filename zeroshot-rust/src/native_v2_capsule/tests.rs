@@ -6,13 +6,15 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{NodeName, RunId, WorkerOutcome, WorkerRef};
+use openengine_cluster_protocol::{NodeName, RunId, TokenCount, WorkerOutcome, WorkerRef};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 
 use super::*;
 use crate::execution::{SessionScope, process::HostedProcessPool};
-use crate::native_v2_contract::{self, DeclaredEnvironment, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{
+    self, DeclaredEnvironment, NodeInvocation, NodeRuntimeBinding, TokenUsageDelta,
+};
 use crate::native_v2_runner::{ResolvedEnvironment, remote_node_handle};
 use crate::worker_catalog::{self, ReasoningEffort};
 
@@ -74,6 +76,14 @@ impl NodeRunner for TestRunner {
                     bridge
                         .emit(LiveOutput::new(LiveOutputStream::Output, "working").assert_value())
                         .assert_value();
+                    bridge
+                        .record_token_usage(Some(TokenUsageDelta {
+                            input_tokens: TokenCount::new(31).assert_value(),
+                            output_tokens: TokenCount::new(7).assert_value(),
+                            cache_read_input_tokens: Some(TokenCount::new(20).assert_value()),
+                            cache_creation_input_tokens: None,
+                        }))
+                        .assert_value();
                     bridge.finish(Ok(NodeCompletion {
                         reference,
                         outcome: WorkerOutcome::Verified {
@@ -104,10 +114,15 @@ async fn proxy_preserves_durable_live_and_normalized_completion() {
     let mut live = handle.attach();
     local.proceed.notify_one();
 
-    let durable_output = durable.recv().await.assert_value();
+    let durable_output = durable.recv_output().await.assert_value();
     let live_output = live.recv().await.assert_value();
     assert_eq!(durable_output.text, "working");
     assert_eq!(live_output, durable_output);
+    let usage = durable.recv_usage().await.assert_value().assert_value();
+    assert_eq!(usage.input_tokens.get(), 31);
+    assert_eq!(usage.output_tokens.get(), 7);
+    assert_eq!(usage.cache_read_input_tokens.assert_value().get(), 20);
+    assert!(usage.cache_creation_input_tokens.is_none());
     let completion = handle.completion().await.assert_value();
     assert_eq!(
         completion.reference.execution,

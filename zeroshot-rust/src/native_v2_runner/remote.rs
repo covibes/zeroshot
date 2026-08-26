@@ -1,13 +1,15 @@
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use super::{DurableOutput, LIVE_OUTPUT_CAPACITY, LiveOutput, NodeHandle, NodeRunnerError};
-use crate::native_v2_contract::{ExecutionRef, NodeCompletion};
+use super::{
+    DurableNodeEvent, DurableOutput, LIVE_OUTPUT_CAPACITY, LiveOutput, NodeHandle, NodeRunnerError,
+};
+use crate::native_v2_contract::{ExecutionRef, NodeCompletion, TokenUsageDelta};
 
 /// Producer half used only by the private capsule transport.
 pub(crate) struct RemoteNodeHandleBridge {
     cancellation: watch::Receiver<bool>,
     output: Option<broadcast::Sender<LiveOutput>>,
-    durable_output: Option<mpsc::UnboundedSender<LiveOutput>>,
+    durable_output: Option<mpsc::UnboundedSender<DurableNodeEvent>>,
     completion: Option<oneshot::Sender<Result<NodeCompletion, NodeRunnerError>>>,
 }
 
@@ -48,12 +50,23 @@ impl RemoteNodeHandleBridge {
         self.durable_output
             .as_ref()
             .ok_or(NodeRunnerError::DurableOutputClosed)?
-            .send(output.clone())
+            .send(DurableNodeEvent::Output(output.clone()))
             .map_err(|_| NodeRunnerError::DurableOutputClosed)?;
         if let Some(live) = &self.output {
             let _ = live.send(output);
         }
         Ok(())
+    }
+
+    pub(crate) fn record_token_usage(
+        &self,
+        usage: Option<TokenUsageDelta>,
+    ) -> Result<(), NodeRunnerError> {
+        self.durable_output
+            .as_ref()
+            .ok_or(NodeRunnerError::DurableOutputClosed)?
+            .send(DurableNodeEvent::TokenUsage(usage))
+            .map_err(|_| NodeRunnerError::DurableOutputClosed)
     }
 
     pub(crate) fn finish(mut self, result: Result<NodeCompletion, NodeRunnerError>) {

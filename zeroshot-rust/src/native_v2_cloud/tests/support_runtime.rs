@@ -273,7 +273,10 @@ pub(super) async fn terminal(
                 })
                 .await
                 .assert_value_with("status");
-            if let RunStatus::Finished { terminal_result } = result.status {
+            if let RunStatus::Finished {
+                terminal_result, ..
+            } = result.status
+            {
                 return terminal_result;
             }
             tokio::task::yield_now().await;

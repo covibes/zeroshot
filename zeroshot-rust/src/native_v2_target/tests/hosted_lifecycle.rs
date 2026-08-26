@@ -63,7 +63,7 @@ where
         .assert_value();
     assert!(matches!(
         listed.runs.as_slice(),
-        [run] if matches!(run.status, CliRunStatus::Queued {})
+        [run] if matches!(run.status, CliRunStatus::Queued(_))
     ));
     let status = backend
         .run_status(
@@ -74,7 +74,7 @@ where
         )
         .await
         .assert_value();
-    assert!(matches!(status.status, CliRunStatus::Queued {}));
+    assert!(matches!(status.status, CliRunStatus::Queued(_)));
 }
 
 async fn assert_truncated_watch_reconnects<B>(backend: &B, run_id: &RunId)
@@ -137,7 +137,7 @@ where
         )
         .await
         .assert_value();
-    assert!(matches!(forced.status, CliRunStatus::Queued {}));
+    assert!(matches!(forced.status, CliRunStatus::Queued(_)));
 }
 
 fn assert_cloud_requests(requests: &[CapturedHttpRequest]) {

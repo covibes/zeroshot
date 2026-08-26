@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::native_v2_contract::{TokenUsageDelta, parse_token_usage_delta};
 use crate::native_v2_runner::{LiveOutputStream, NodeRunnerError};
 
 pub(super) enum CodexEmission {
@@ -21,6 +22,7 @@ pub(super) struct CodexOutput {
     pub(super) messages: Vec<String>,
     completed: bool,
     failure: Option<String>,
+    token_usage: Option<TokenUsageDelta>,
 }
 
 pub(super) struct CodexOutputDecoder {
@@ -78,6 +80,7 @@ impl CodexOutput {
             messages: Vec::new(),
             completed: false,
             failure: None,
+            token_usage: None,
         }
     }
 
@@ -90,6 +93,10 @@ impl CodexOutput {
 
     pub(super) fn failure_message(&self) -> Option<&str> {
         self.failure.as_deref()
+    }
+
+    pub(super) fn token_usage(&self) -> Option<TokenUsageDelta> {
+        self.token_usage
     }
 
     pub(super) fn final_message(&self) -> Result<&str, NodeRunnerError> {
@@ -130,9 +137,13 @@ impl CodexOutput {
             "turn.started" => "Codex turn started",
             "turn.completed" => {
                 self.completed = true;
+                self.token_usage =
+                    parse_token_usage_delta(event.get("usage"), Some("cached_input_tokens"), None);
                 "Codex turn completed"
             }
             "turn.failed" | "error" => {
+                self.token_usage =
+                    parse_token_usage_delta(event.get("usage"), Some("cached_input_tokens"), None);
                 self.record_failure(event, event_type);
                 "Codex turn failed"
             }
@@ -348,11 +359,16 @@ mod tests {
         let worker = CodexOutput::parse(
             br#"{"type":"thread.started","thread_id":"thread-1"}
 {"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}
-{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}
+{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,"output_tokens":2}}
 "#,
         )
         .assert_value();
         assert_eq!(worker.final_message().assert_value(), r#"{"answer":42}"#);
+        let usage = worker.token_usage().assert_value();
+        assert_eq!(usage.input_tokens.get(), 1);
+        assert_eq!(usage.output_tokens.get(), 2);
+        assert_eq!(usage.cache_read_input_tokens.assert_value().get(), 1);
+        assert!(usage.cache_creation_input_tokens.is_none());
 
         let verifier_events = concat!(
             "{\"type\":\"thread.started\",\"thread_id\":\"thread-2\"}\n",
@@ -371,6 +387,17 @@ mod tests {
                 "diagnostic": null
             })
         );
+    }
+
+    #[test]
+    fn malformed_terminal_usage_is_unavailable_without_rejecting_the_turn() {
+        let output = CodexOutput::parse(
+            br#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
+{"type":"turn.completed","usage":{"input_tokens":"many","output_tokens":2}}
+"#,
+        )
+        .assert_value();
+        assert!(output.token_usage().is_none());
     }
 
     #[test]

@@ -10,8 +10,8 @@ use std::marker::PhantomData;
 use std::num::NonZeroU64;
 
 use openengine_cluster_protocol::{
-    CompiledGraphIr, GraphSpec, IdempotencyKey, NodeInstructions, NodeName, RunId, WorkerOutcome,
-    WorkerRef,
+    CompiledGraphIr, GraphSpec, IdempotencyKey, NodeInstructions, NodeName, RunId, TokenCount,
+    WorkerOutcome, WorkerRef,
 };
 pub use openengine_cluster_protocol::{
     ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, ModelId,
@@ -142,6 +142,47 @@ pub struct ExecutionRef {
     pub node: NodeName,
     pub node_instance: NodeInstanceId,
     pub execution: ExecutionId,
+}
+
+/// Provider-neutral usage reported for exactly one launched agent invocation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TokenUsageDelta {
+    pub input_tokens: TokenCount,
+    pub output_tokens: TokenCount,
+    pub cache_read_input_tokens: Option<TokenCount>,
+    pub cache_creation_input_tokens: Option<TokenCount>,
+}
+
+pub(crate) fn parse_token_usage_delta(
+    value: Option<&Value>,
+    cache_read_key: Option<&str>,
+    cache_creation_key: Option<&str>,
+) -> Option<TokenUsageDelta> {
+    let usage = value?.as_object()?;
+    Some(TokenUsageDelta {
+        input_tokens: token_count(usage.get("input_tokens")?)?,
+        output_tokens: token_count(usage.get("output_tokens")?)?,
+        cache_read_input_tokens: optional_token_count(usage, cache_read_key)?,
+        cache_creation_input_tokens: optional_token_count(usage, cache_creation_key)?,
+    })
+}
+
+fn optional_token_count(
+    usage: &serde_json::Map<String, Value>,
+    key: Option<&str>,
+) -> Option<Option<TokenCount>> {
+    let Some(key) = key else {
+        return Some(None);
+    };
+    match usage.get(key) {
+        Some(value) => token_count(value).map(Some),
+        None => Some(None),
+    }
+}
+
+fn token_count(value: &Value) -> Option<TokenCount> {
+    TokenCount::new(value.as_u64()?).ok()
 }
 
 /// Secret-free runner request produced by the reducer/supervisor boundary.
