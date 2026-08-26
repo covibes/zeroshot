@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "tests/configuration.rs"]
+mod configuration;
 #[path = "tests/correction.rs"]
 mod correction;
 #[path = "tests/environment.rs"]
@@ -207,7 +209,7 @@ printf '%s%s\n' \
 if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$target" = initial.args ]; then
   result=done
 else
-  result='\"done\"'
+  result='{\"response\":\"done\"}'
 fi
 printf '%s%s%s%s\n' \
   '{"type":"result","subtype":"success","is_error":false,"result":"' \
@@ -267,30 +269,48 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
         let arguments = workspace.read("initial.args");
         assert!(arguments.starts_with(concat!(
             "--print\n--input-format\ntext\n--output-format\nstream-json\n",
-            "--verbose\n--include-partial-messages\n--model\nclaude-sonnet-5\n",
-            "--effort\nmax\n--dangerously-skip-permissions\n",
+            "--verbose\n--include-partial-messages\n--model\nclaude-sonnet-5\n--json-schema\n",
         )));
+        let schema = arguments
+            .lines()
+            .skip_while(|line| *line != "--json-schema")
+            .nth(1)
+            .and_then(|line| serde_json::from_str::<Value>(line).ok())
+            .assert_value();
+        assert_eq!(
+            schema.pointer("/properties/response").assert_value(),
+            &json!({"type":"string"})
+        );
+        assert!(arguments.contains("--effort\nmax\n--dangerously-skip-permissions\n"));
         assert!(!arguments.contains("--setting-sources"));
         assert!(arguments.contains("Authored instructions:\nExercise the Claude adapter."));
         assert!(arguments.contains("Input JSON:\n\"perform the node task\""));
         assert!(arguments.contains("Runtime-owned response contract:\n{\"kind\":\"worker\""));
         assert_eq!(workspace.read("ambient.txt").trim(), "unset");
-        match provider {
-            ClaudeProvider::Anthropic => {
-                assert_eq!(workspace.read("anthropic-key.txt").trim(), provider_value);
-                assert_eq!(workspace.read("anthropic-token.txt").trim(), "unset");
-                assert_eq!(workspace.read("anthropic-base-url.txt").trim(), "unset");
-                assert_eq!(workspace.read("openrouter-key.txt").trim(), "unset");
-            }
-            ClaudeProvider::OpenRouter => {
-                assert_eq!(workspace.read("anthropic-key.txt"), "\n");
-                assert_eq!(workspace.read("anthropic-token.txt").trim(), provider_value);
-                assert_eq!(
-                    workspace.read("anthropic-base-url.txt").trim(),
-                    OPENROUTER_BASE_URL
-                );
-                assert_eq!(workspace.read("openrouter-key.txt").trim(), provider_value);
-            }
+        assert_provider_environment(&workspace, provider, provider_value);
+    }
+}
+
+fn assert_provider_environment(
+    workspace: &TestDirectory,
+    provider: ClaudeProvider,
+    provider_value: &str,
+) {
+    match provider {
+        ClaudeProvider::Anthropic => {
+            assert_eq!(workspace.read("anthropic-key.txt").trim(), provider_value);
+            assert_eq!(workspace.read("anthropic-token.txt").trim(), "unset");
+            assert_eq!(workspace.read("anthropic-base-url.txt").trim(), "unset");
+            assert_eq!(workspace.read("openrouter-key.txt").trim(), "unset");
+        }
+        ClaudeProvider::OpenRouter => {
+            assert_eq!(workspace.read("anthropic-key.txt"), "\n");
+            assert_eq!(workspace.read("anthropic-token.txt").trim(), provider_value);
+            assert_eq!(
+                workspace.read("anthropic-base-url.txt").trim(),
+                OPENROUTER_BASE_URL
+            );
+            assert_eq!(workspace.read("openrouter-key.txt").trim(), provider_value);
         }
     }
 }
@@ -361,9 +381,9 @@ printf '%s\n' "$@" > verifier.args
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"verifier-session"}'
 printf '%s%s%s%s\n' \
   '{"type":"result","subtype":"success","is_error":false,' \
-  '"result":"{\"output\":null,' \
-  '\"signals\":{\"verdict\":\"accepted\"},' \
-  '\"diagnostic\":null}"}'
+  '"result":"ignored","structured_output":{"response":{"output":null,' \
+  '"signals":{"verdict":"accepted"},' \
+  '"diagnostic":null}}}'
 "#,
     );
     let binding = agent_binding(
@@ -439,24 +459,6 @@ wait
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
     assert!(!Path::new(&format!("/proc/{child_pid}")).exists());
     assert!(!workspace.child("survivor.txt").exists());
-}
-
-#[test]
-fn supported_models_and_efforts_match_the_admission_catalog() {
-    assert!(validate_model_effort("claude-haiku-4-5", None).is_ok());
-    assert!(validate_model_effort("claude-haiku-4-5", Some(ReasoningEffort::Max)).is_err());
-    for model in ["claude-sonnet-5", "claude-opus-5", "claude-fable-5"] {
-        for effort in [
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::Xhigh,
-            ReasoningEffort::Max,
-        ] {
-            assert!(validate_model_effort(model, Some(effort)).is_ok());
-        }
-        assert!(validate_model_effort(model, None).is_err());
-    }
 }
 
 #[path = "tests/failure.rs"]

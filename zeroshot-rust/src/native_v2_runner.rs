@@ -36,7 +36,10 @@ mod response;
 pub use output::{AttachReceiveError, DurableOutput, LiveOutputSource, ReadOnlyAttach};
 use output::closed_live_attach;
 pub use response::{render_agent_prompt, NodeResponseContract};
-pub(crate) use response::{AgentResponse, AgentResponseState, resolve_agent_response};
+pub(crate) use response::ProviderSchemaDialect;
+pub(crate) use response::{
+    AgentResponse, AgentResponseState, resolve_agent_response, resolve_agent_response_with_dialect,
+};
 pub(crate) use remote::{RemoteNodeHandleBridge, remote_node_handle};
 
 mod plan;

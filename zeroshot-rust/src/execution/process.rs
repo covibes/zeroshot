@@ -7,6 +7,7 @@ mod session;
 mod session_runtime;
 mod spawn_recovery;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -25,6 +26,24 @@ pub const MAX_PROCESS_ENV_ITEMS: usize = 256;
 pub const MAX_PROCESS_ENV_BYTES: usize = 64 * 1024;
 pub const HOSTED_WORKER_UID: u32 = 10_002;
 pub const HOSTED_WORKER_GID: u32 = 10_002;
+
+pub(crate) fn write_new_file(path: &Path, bytes: &[u8], unix_mode: u32) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(unix_mode);
+    }
+    #[cfg(not(unix))]
+    let _ = unix_mode;
+    let mut file = options.open(path)?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
 
 /// Linux identity allocation for one contained provider process domain.
 ///

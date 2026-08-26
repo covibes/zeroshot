@@ -111,10 +111,13 @@ impl ClaudeTranscript {
                 diagnostic,
             }));
         }
-        let message = self
-            .result
-            .and_then(|result| result.as_str().map(str::to_owned))
-            .ok_or(NodeRunnerError::Driver)?;
+        let result = self.result.ok_or(NodeRunnerError::Driver)?;
+        let message = match result {
+            Value::String(message) => message,
+            structured => {
+                serde_json::to_string(&structured).map_err(|_| NodeRunnerError::Driver)?
+            }
+        };
         Ok(ClaudeAttempt::Complete(ClaudeResult {
             session_id: self.session_id,
             message,
@@ -269,7 +272,14 @@ impl ClaudeTranscript {
         if self.result.is_some() {
             return Err(NodeRunnerError::Driver);
         }
-        self.result = Some(event.get("result").cloned().unwrap_or(Value::Null));
+        self.result = Some(
+            event
+                .get("structured_output")
+                .filter(|value| !value.is_null())
+                .or_else(|| event.get("result"))
+                .cloned()
+                .unwrap_or(Value::Null),
+        );
         self.settled = true;
         Ok(())
     }

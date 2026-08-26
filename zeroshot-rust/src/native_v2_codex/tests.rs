@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "tests/cancellation.rs"]
+mod cancellation;
 #[path = "tests/correction.rs"]
 mod correction;
 #[path = "tests/environment.rs"]
@@ -11,9 +13,8 @@ mod retry;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use openengine_cluster_protocol::{IdempotencyKey, NodeName, RunSize, RunTitle, WorkerOutcome};
 use openengine_cluster_testkit::assertions::AssertValue;
@@ -50,6 +51,16 @@ prompt=$(/usr/bin/cat)
   /usr/bin/printf 'ambient=%s\n' "${AMBIENT_SENTINEL-unset}"
 } >> "$CAPTURE_PATH"
 
+schema_path=
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "--output-schema" ]; then schema_path=$argument; fi
+  previous=$argument
+done
+test -n "$schema_path"
+/usr/bin/printf 'schema_path=%s\n' "$schema_path" >> "$CAPTURE_PATH"
+/usr/bin/printf 'schema=%s\n' "$(/usr/bin/cat "$schema_path")" >> "$CAPTURE_PATH"
+
 resumed=false
 for argument in "$@"; do
   if [ "$argument" = "resume" ]; then
@@ -65,13 +76,21 @@ if [ "${OPENROUTER_API_KEY-unset}" != unset ]; then
     '"text":"visible fake-openrouter-key"}}'
 fi
 if [ "${ALWAYS_MALFORMED-false}" = true ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":\"wrong\"}}"}}'
 elif [ "${CORRECT_OUTPUT-false}" = true ] && [ "$resumed" = false ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":\"wrong\"}}"}}'
 elif [ "$resumed" = true ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":43}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":43}}"}}'
 else
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":42}}"}}'
 fi
 
 if [ "${SLOW_RUN-false}" = true ]; then
@@ -208,6 +227,26 @@ async fn start(
         .assert_value()
 }
 
+fn assert_schema_capture(capture: &str) {
+    let schema = capture
+        .lines()
+        .find_map(|line| line.strip_prefix("schema="))
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .assert_value();
+    assert_eq!(
+        schema
+            .pointer("/properties/response/properties/answer")
+            .assert_value(),
+        &json!({"type":"integer"})
+    );
+    for path in capture
+        .lines()
+        .filter_map(|line| line.strip_prefix("schema_path="))
+    {
+        assert!(!Path::new(path).exists(), "schema file was not removed");
+    }
+}
+
 fn assert_openrouter_capture(capture: &str) {
     for expected in [
         "arg=model_provider=\"openrouter\"",
@@ -216,6 +255,7 @@ fn assert_openrouter_capture(capture: &str) {
         "arg=model_providers.openrouter.wire_api=\"responses\"",
         "arg=--model\narg=openai/gpt-5.6-sol",
         "arg=model_reasoning_effort=\"max\"",
+        "arg=--output-schema",
         "arg=--sandbox\narg=workspace-write",
         "arg=approval_policy=\"never\"",
         "arg=web_search=\"disabled\"",
@@ -232,6 +272,7 @@ fn assert_openrouter_capture(capture: &str) {
             "missing capture evidence: {expected}"
         );
     }
+    assert_schema_capture(capture);
     for suppressed in ["--ignore-user-config", "--ignore-rules", "--strict-config"] {
         assert!(!capture.contains(suppressed));
     }
@@ -270,7 +311,7 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
     assert_eq!(attached.text, "visible [REDACTED]");
     assert_eq!(
         attach.recv_output().await.assert_value().text,
-        r#"{"answer":42}"#
+        r#"{"response":{"answer":42}}"#
     );
     let completion = handle.completion().await.assert_value();
     assert_eq!(
@@ -380,61 +421,4 @@ async fn malformed_output_stops_after_two_correction_turns() {
     let capture = fs::read_to_string(capture).assert_value();
     assert_eq!(capture.matches("prompt=").count(), 3);
     assert_eq!(capture.matches("arg=resume").count(), 2);
-}
-
-#[tokio::test]
-async fn cancellation_waits_for_contained_child_cleanup() {
-    let directory = TestDirectory::new("codex-cancel");
-    let capture = directory.child("capture");
-    let pid_path = directory.child("pid");
-    let (admitted, runtime) = openai_runtime(
-        &directory,
-        SessionScope::Execution,
-        &["CAPTURE_PATH", "CODEX_API_KEY", "PID_PATH", "SLOW_RUN"],
-    )
-    .await;
-    let mut handle = start(
-        &runtime,
-        &admitted,
-        1,
-        &[
-            ("CAPTURE_PATH", capture.display().to_string()),
-            ("CODEX_API_KEY", "fake-openai-key".to_owned()),
-            ("PID_PATH", pid_path.display().to_string()),
-            ("SLOW_RUN", "true".to_owned()),
-        ],
-    )
-    .await;
-    let mut attach = handle.take_initial_output().assert_value();
-    assert_eq!(
-        attach.recv_output().await.assert_value().text,
-        "Codex turn started"
-    );
-    assert_eq!(
-        attach.recv_output().await.assert_value().text,
-        r#"{"answer":42}"#
-    );
-    let pid = wait_for_pid(&pid_path).await;
-    handle.cancel();
-    assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
-    assert!(
-        !process_is_live(pid),
-        "provider child remained alive after completion"
-    );
-}
-
-async fn wait_for_pid(path: &Path) -> u32 {
-    for _ in 0..100 {
-        if let Ok(value) = fs::read_to_string(path) {
-            if let Ok(pid) = value.trim().parse() {
-                return pid;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    None::<u32>.assert_value_with("script did not publish its pid")
-}
-
-fn process_is_live(pid: u32) -> bool {
-    PathBuf::from(format!("/proc/{pid}")).exists()
 }

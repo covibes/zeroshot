@@ -5,12 +5,13 @@ use openengine_cluster_protocol::{
     EnumLabel, FieldName, NodeInstructions, NonEmptyEnumSet, PayloadType, WorkerOutcome,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use super::{DriverControl, LiveOutput, LiveOutputStream, NodeRunnerError};
 
 const MAX_RESPONSE_ERROR_BYTES: usize = 8 * 1024;
 const MAX_OUTPUT_CORRECTIONS: usize = 2;
+const OPENAI_OPTIONAL_NULL_OMISSION: &str = "__zeroshot_omitted_optional_null__";
 
 /// Ephemeral response contract derived from the admitted graph leaf.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -26,7 +27,63 @@ pub enum NodeResponseContract {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderSchemaDialect {
+    Standard,
+    OpenAiStrict,
+}
+
 impl NodeResponseContract {
+    pub(crate) fn provider_schema(&self, dialect: ProviderSchemaDialect) -> Value {
+        closed_object_schema(
+            BTreeMap::from([("response".to_owned(), self.response_schema(dialect))]),
+            vec!["response".to_owned()],
+        )
+    }
+
+    fn response_schema(&self, dialect: ProviderSchemaDialect) -> Value {
+        match self {
+            Self::Worker { output } => payload_schema(output, dialect),
+            Self::Verifier {
+                output,
+                signals,
+                diagnostic,
+            } => {
+                let signal_properties = signals
+                    .iter()
+                    .map(|(name, labels)| {
+                        (
+                            name.as_str().to_owned(),
+                            enum_schema(labels.values().iter().map(EnumLabel::as_str)),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                closed_object_schema(
+                    BTreeMap::from([
+                        ("diagnostic".to_owned(), payload_schema(diagnostic, dialect)),
+                        ("output".to_owned(), payload_schema(output, dialect)),
+                        (
+                            "signals".to_owned(),
+                            closed_object_schema(
+                                signal_properties,
+                                signals
+                                    .keys()
+                                    .map(|name| name.as_str().to_owned())
+                                    .collect(),
+                            ),
+                        ),
+                    ]),
+                    vec![
+                        "diagnostic".to_owned(),
+                        "output".to_owned(),
+                        "signals".to_owned(),
+                    ],
+                )
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn parse_agent_response(
         &self,
         response: &str,
@@ -34,6 +91,10 @@ impl NodeResponseContract {
         let value = serde_json::from_str(response).map_err(|error| {
             NodeResponseError::new(format!("final response is not valid JSON: {error}"))
         })?;
+        self.parse_agent_value(value)
+    }
+
+    fn parse_agent_value(&self, value: Value) -> Result<WorkerOutcome, NodeResponseError> {
         let outcome = match self {
             Self::Worker { .. } => WorkerOutcome::Verified {
                 output: value,
@@ -55,6 +116,25 @@ impl NodeResponseContract {
         };
         self.validate_agent_outcome(&outcome)?;
         Ok(outcome)
+    }
+
+    fn normalize_openai_response(&self, value: &mut Value) {
+        match self {
+            Self::Worker { output } => normalize_openai_payload(output, value),
+            Self::Verifier {
+                output, diagnostic, ..
+            } => {
+                let Some(response) = value.as_object_mut() else {
+                    return;
+                };
+                if let Some(output_value) = response.get_mut("output") {
+                    normalize_openai_payload(output, output_value);
+                }
+                if let Some(diagnostic_value) = response.get_mut("diagnostic") {
+                    normalize_openai_payload(diagnostic, diagnostic_value);
+                }
+            }
+        }
     }
 
     pub(super) fn validate_outcome(&self, outcome: &WorkerOutcome) -> Result<(), NodeRunnerError> {
@@ -170,10 +250,43 @@ pub(crate) fn resolve_agent_response(
     contract: &NodeResponseContract,
     response: &str,
 ) -> Result<AgentResponse, NodeRunnerError> {
-    Ok(match contract.parse_agent_response(response) {
+    resolve_agent_response_with_dialect(contract, response, ProviderSchemaDialect::Standard)
+}
+
+pub(crate) fn resolve_agent_response_with_dialect(
+    contract: &NodeResponseContract,
+    response: &str,
+    dialect: ProviderSchemaDialect,
+) -> Result<AgentResponse, NodeRunnerError> {
+    let semantic_response = parse_provider_envelope(response);
+    let parsed = match semantic_response {
+        Ok(mut response) => {
+            if dialect == ProviderSchemaDialect::OpenAiStrict {
+                contract.normalize_openai_response(&mut response);
+            }
+            contract.parse_agent_value(response)
+        }
+        Err(error) => Err(error),
+    };
+    Ok(match parsed {
         Ok(outcome) => AgentResponse::Complete(outcome),
         Err(error) => AgentResponse::Correction(render_agent_correction(contract, &error)?),
     })
+}
+
+fn parse_provider_envelope(response: &str) -> Result<Value, NodeResponseError> {
+    let envelope: ProviderResponseEnvelope = serde_json::from_str(response).map_err(|error| {
+        NodeResponseError::new(format!(
+            "provider response must be exactly an object containing response: {error}"
+        ))
+    })?;
+    Ok(envelope.response)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderResponseEnvelope {
+    response: Value,
 }
 
 impl fmt::Display for NodeResponseError {
@@ -234,6 +347,99 @@ fn validate_native_v2_outcome(outcome: &WorkerOutcome) -> Result<(), NodeRunnerE
     }
 }
 
+fn payload_schema(payload: &PayloadType, dialect: ProviderSchemaDialect) -> Value {
+    match payload {
+        PayloadType::Null => json!({ "type": "null" }),
+        PayloadType::Boolean => json!({ "type": "boolean" }),
+        PayloadType::Integer => json!({ "type": "integer" }),
+        PayloadType::Number => json!({ "type": "number" }),
+        PayloadType::String => json!({ "type": "string" }),
+        PayloadType::Record { fields } => {
+            let properties = fields
+                .iter()
+                .map(|(name, field)| {
+                    let schema = payload_schema(&field.value_type, dialect);
+                    let schema =
+                        if !field.required && dialect == ProviderSchemaDialect::OpenAiStrict {
+                            openai_optional_schema(&field.value_type, schema)
+                        } else {
+                            schema
+                        };
+                    (name.as_str().to_owned(), schema)
+                })
+                .collect::<BTreeMap<_, _>>();
+            let required = fields
+                .iter()
+                .filter(|(_, field)| {
+                    field.required || dialect == ProviderSchemaDialect::OpenAiStrict
+                })
+                .map(|(name, _)| name.as_str().to_owned())
+                .collect();
+            closed_object_schema(properties, required)
+        }
+        PayloadType::Array { items } => {
+            json!({ "type": "array", "items": payload_schema(items, dialect) })
+        }
+        PayloadType::Enum { values } => enum_schema(values.values().iter().map(EnumLabel::as_str)),
+    }
+}
+
+fn openai_optional_schema(payload: &PayloadType, schema: Value) -> Value {
+    let omission = match payload {
+        PayloadType::Null => json!({
+            "type": "string",
+            "enum": [OPENAI_OPTIONAL_NULL_OMISSION],
+            "description": "Use this sentinel when the optional field is omitted."
+        }),
+        _ => json!({ "type": "null" }),
+    };
+    json!({ "anyOf": [schema, omission] })
+}
+
+fn openai_value_is_omitted(payload: &PayloadType, value: Option<&Value>) -> bool {
+    match payload {
+        PayloadType::Null => value.and_then(Value::as_str) == Some(OPENAI_OPTIONAL_NULL_OMISSION),
+        _ => value.is_some_and(Value::is_null),
+    }
+}
+
+fn normalize_openai_payload(payload: &PayloadType, value: &mut Value) {
+    match (payload, value) {
+        (PayloadType::Record { fields }, Value::Object(values)) => {
+            for (name, field) in fields {
+                let name = name.as_str();
+                if !field.required && openai_value_is_omitted(&field.value_type, values.get(name)) {
+                    values.remove(name);
+                    continue;
+                }
+                if let Some(field_value) = values.get_mut(name) {
+                    normalize_openai_payload(&field.value_type, field_value);
+                }
+            }
+        }
+        (PayloadType::Array { items }, Value::Array(values)) => {
+            for item in values {
+                normalize_openai_payload(items, item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn enum_schema<'a>(values: impl Iterator<Item = &'a str>) -> Value {
+    json!({ "type": "string", "enum": values.collect::<Vec<_>>() })
+}
+
+fn closed_object_schema(properties: BTreeMap<String, Value>, required: Vec<String>) -> Value {
+    let properties = properties.into_iter().collect::<Map<_, _>>();
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false
+    })
+}
+
 /// Renders the provider-neutral node turn contract used by every agent harness.
 pub fn render_agent_prompt(
     instructions: &NodeInstructions,
@@ -249,10 +455,11 @@ pub fn render_agent_prompt(
          Input JSON:\n{input}\n\
          Runtime-owned response contract:\n{response}\n\
          The response contract describes the required type; never return the contract itself. \
-         Return only JSON with no Markdown or commentary. For a worker, return the output value \
-         itself; an output contract of {{\"kind\":\"null\"}} requires the literal null. For a \
-         verifier, return exactly an object with output, signals, and diagnostic; every signal \
-         must use one of its declared labels."
+         Return only JSON with no Markdown or commentary. The provider response must be exactly \
+         an object with one field named response. For a worker, response contains the output \
+         value; an output contract of {{\"kind\":\"null\"}} requires the literal null inside \
+         {{\"response\":null}}. For a verifier, response contains exactly an object with output, \
+         signals, and diagnostic; every signal must use one of its declared labels."
     ))
 }
 
@@ -266,51 +473,11 @@ pub(crate) fn render_agent_correction(
         "Your previous final response was rejected mechanically and was not passed to the graph.\n\
          Validation error:\n{error}\n\
          Response contract:\n{response}\n\
-         Return a corrected final response only. It must be valid JSON with no Markdown or commentary."
+         Return a corrected provider response only: exactly an object with one field named \
+         response. It must be valid JSON with no Markdown or commentary."
     ))
 }
 
 #[cfg(test)]
-mod tests {
-    use openengine_cluster_testkit::assertions::AssertValue;
-    use serde_json::json;
-
-    use super::*;
-
-    fn worker_contract() -> NodeResponseContract {
-        NodeResponseContract::Worker {
-            output: serde_json::from_value(json!({
-                "kind": "record",
-                "fields": {
-                    "answer": { "type": { "kind": "integer" }, "required": true }
-                }
-            }))
-            .assert_value(),
-        }
-    }
-
-    #[test]
-    fn agent_response_reports_mechanical_json_and_payload_errors() {
-        let contract = worker_contract();
-        let malformed = contract
-            .parse_agent_response("not json")
-            .err()
-            .assert_value();
-        assert!(
-            malformed
-                .to_string()
-                .starts_with("final response is not valid JSON:")
-        );
-
-        assert_eq!(
-            contract.parse_agent_response(r#"{"answer":"wrong"}"#),
-            Err(NodeResponseError::new(
-                "output $.answer must be a integer".to_owned()
-            ))
-        );
-        assert!(matches!(
-            contract.parse_agent_response(r#"{"answer":42}"#).assert_value(),
-            WorkerOutcome::Verified { output, .. } if output == json!({"answer": 42})
-        ));
-    }
-}
+#[path = "response/tests.rs"]
+mod tests;

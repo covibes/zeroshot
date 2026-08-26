@@ -291,7 +291,9 @@ if [ "$attempt" = 1 ]; then
   exit 1
 fi
 /usr/bin/printf '%s\n' '{"type":"thread.started","thread_id":"retry-thread"}'
-/usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"null"}}'
+/usr/bin/printf '%s%s\n' \
+  '{"type":"item.completed","item":{"type":"agent_message",' \
+  '"text":"{\"response\":null}"}}'
 /usr/bin/printf '%s\n' '{"type":"turn.completed"}'
 "#;
 
@@ -316,5 +318,5 @@ fi
 /usr/bin/printf '%s\n' '{"type":"system","subtype":"init","session_id":"retry-session"}'
 /usr/bin/printf '%s%s\n' \
   '{"type":"result","subtype":"success","is_error":false,' \
-  '"result":"null","session_id":"retry-session"}'
+  '"result":"{\"response\":null}","session_id":"retry-session"}'
 "#;

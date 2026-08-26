@@ -13,6 +13,7 @@ use openengine_cluster_server::identity::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::execution::process::write_new_file;
 use crate::native_v2_admission::DeliveryPolicy;
 use crate::native_v2_contract::EnvironmentVariableName;
 use crate::native_v2_supervisor::RunEnvironment;
@@ -389,16 +390,7 @@ fn validate_private_bootstrap(path: &Path) -> Result<(), PortableControllerError
 }
 
 fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), PortableControllerError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(PortableControllerError::Io)?;
-    file.write_all(bytes).map_err(PortableControllerError::Io)?;
-    file.sync_all().map_err(PortableControllerError::Io)
+    write_new_file(path, bytes, 0o600).map_err(PortableControllerError::Io)
 }
 
 #[cfg(unix)]
