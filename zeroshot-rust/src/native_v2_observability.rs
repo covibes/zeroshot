@@ -14,8 +14,8 @@ use openengine_cluster_protocol::{
     ActiveExecution, AgentAttachEvent, BoundedAssistantOutput, BoundedLogMessage, BoundedLogTarget,
     Cursor, ExecutionRef as PublicExecutionRef, LogLevel, LogRecord, RunAttachEventNotification,
     RunAttachParams, RunAttachResult, RunId, RunLogEventNotification, RunLogsParams, RunLogsResult,
-    RunStatus, RunStatusParams, RunStatusResult, RunWatchEventNotification, RunWatchParams,
-    RunWatchResult, SubscriptionId,
+    RunMetadata, RunStatus, RunStatusParams, RunStatusResult, RunWatchEventNotification,
+    RunWatchParams, RunWatchResult, SubscriptionId,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;

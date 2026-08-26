@@ -153,7 +153,7 @@ struct LocalExecutionTask {
 
 enum LocalInput {
     Completion(Result<NodeCompletion, NodeRunnerError>),
-    Output(Result<LiveOutput, crate::native_v2_runner::AttachReceiveError>),
+    Output(Result<DurableNodeEvent, crate::native_v2_runner::AttachReceiveError>),
     Cancel,
 }
 
@@ -235,20 +235,20 @@ async fn next_local_input(
 }
 
 fn apply_local_output(
-    output: Result<LiveOutput, crate::native_v2_runner::AttachReceiveError>,
+    output: Result<DurableNodeEvent, crate::native_v2_runner::AttachReceiveError>,
     context: LocalOutputContext<'_>,
 ) {
     let Ok(output) = output else {
         *context.output_closed = true;
         return;
     };
-    if context
-        .events
-        .send(CapsuleNodeEvent::Output {
+    let event = match output {
+        DurableNodeEvent::Output(output) => CapsuleNodeEvent::Output {
             output: output.into(),
-        })
-        .is_err()
-    {
+        },
+        DurableNodeEvent::TokenUsage(usage) => CapsuleNodeEvent::TokenUsage { usage },
+    };
+    if context.events.send(event).is_err() {
         *context.consumer_gone = true;
         context.handle.cancel();
     }

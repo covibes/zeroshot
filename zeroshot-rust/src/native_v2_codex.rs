@@ -241,7 +241,10 @@ impl NativeV2CodexAdapter {
         let redactions =
             redaction_values(turn.invocation.environment.iter().map(|(_, value)| value));
         let output = collect_output(&mut process, turn.control, &redactions).await;
-        let completion = finish_process(&mut process, output.is_ok()).await?;
+        let completion = finish_process(&mut process, output.is_ok()).await;
+        turn.control
+            .record_token_usage(output.as_ref().ok().and_then(CodexOutput::token_usage))?;
+        let completion = completion?;
         validate_process_cleanup(&completion, turn.control)?;
         let output = output?;
         if output.failure_message().is_none() {

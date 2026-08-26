@@ -59,7 +59,7 @@ impl NativeV2Supervisor {
         let registration = match self.register_live(&dispatch.reference, &mut handle).await {
             Ok(registration) => registration,
             Err(_) => {
-                bridge_logs(
+                bridge_durable_events(
                     self.ledger.clone(),
                     self.run_id.clone(),
                     dispatch.reference.execution,

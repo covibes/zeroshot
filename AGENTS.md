@@ -332,10 +332,15 @@ telemetry, and retry authorization outside this module.
 A lost node-instance session terminates the affected execution; its descriptive fault disposition
 must never authorize retry or replacement-session recovery.
 `v2_run_ledger` is the one-run durable authority. It stores immutable run metadata, ordered run/node
-events with stable cursors, current projections, normalized inline outputs, safe logs, force intent,
-and one terminal result. Keep provider sessions, credentials, runtime handles, raw diagnostics,
-artifacts, and workspace recovery outside it. It intentionally has no old-ledger hash chain,
-mutation receipts, proof capabilities, replay, or recovery engine.
+events with stable cursors, current projections, normalized inline outputs, safe logs, normalized
+per-invocation token-usage observations, force intent, and one terminal result. Token usage sums
+every launched provider turn across nodes, retries, and corrections and appears publicly only as
+run-wide terminal metadata. Missing or malformed provider counters make the retained sum an
+explicitly incomplete lower bound; cache counters remain absent unless every observed counter set
+supports them. Keep per-node/provider/model/turn detail, costs, provider sessions, credentials,
+runtime handles, raw diagnostics, artifacts, and workspace recovery outside the ledger. It
+intentionally has no old-ledger hash chain, mutation receipts, proof capabilities, replay, or
+recovery engine.
 Full-v1 reduction accepts only verifier-produced `VerifiedGraph` values containing authoritative
 `CompiledGraphIr` and durable ordered outcomes. It never accepts compiled IR directly.
 It is a pure authored-order fold: ledger position is the only concurrent

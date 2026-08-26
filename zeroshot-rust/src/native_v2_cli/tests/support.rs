@@ -364,7 +364,7 @@ impl NativeV2CliBackend for FakeBackend {
                 "source":source(),
                 "size":"standard",
                 "cursor":"v2:2",
-                "status":{"phase":"finished","terminalResult":terminal_result}
+                "status":{"phase":"finished","terminalResult":terminal_result,"metadata":{}}
             }))
             .assert_value(),
         )]))

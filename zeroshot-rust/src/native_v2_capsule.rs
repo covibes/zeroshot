@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::execution::process::{HostedProcessPool, HostedProcessScope};
-use crate::native_v2_contract::{ExecutionRef, NodeCompletion};
+use crate::native_v2_contract::{ExecutionRef, NodeCompletion, TokenUsageDelta};
 use crate::native_v2_runner::{
-    LiveOutput, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner, NodeRunnerError,
-    RemoteNodeHandleBridge, remote_node_handle,
+    DurableNodeEvent, LiveOutput, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner,
+    NodeRunnerError, RemoteNodeHandleBridge, remote_node_handle,
 };
 
 const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,6 +102,7 @@ impl CapsuleNodeFailure {
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub enum CapsuleNodeEvent {
     Output { output: CapsuleOutput },
+    TokenUsage { usage: Option<TokenUsageDelta> },
     Completed { completion: NodeCompletion },
     Failed { failure: CapsuleNodeFailure },
 }

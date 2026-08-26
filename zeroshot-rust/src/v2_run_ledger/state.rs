@@ -1,10 +1,10 @@
-use openengine_cluster_protocol::{Cursor, TerminalResult};
+use openengine_cluster_protocol::{Cursor, TerminalResult, TokenCount, TokenUsage};
 use serde::Serialize;
 
 use super::{
     CreateRun, ExecutionId, ExecutionRef, ExecutionVoidReason, MAX_ADMITTED_RUN_BYTES,
     MAX_EVENT_BYTES, NodeCompletion, NodeSnapshot, NodeState, RunEvent, RunLedgerError, RunPhase,
-    RunSnapshot, INITIAL_CURSOR,
+    RunSnapshot, TokenUsageDelta, INITIAL_CURSOR,
 };
 
 pub(crate) fn initial_cursor() -> Cursor {
@@ -66,6 +66,9 @@ fn apply_event_kind(
             apply_execution_voided(snapshot, reference, *reason, sequence)
         }
         RunEvent::SafeLog { execution, .. } => apply_safe_log(snapshot, *execution),
+        RunEvent::TokenUsageObserved { execution, usage } => {
+            apply_token_usage(snapshot, *execution, usage.as_ref())
+        }
         RunEvent::ForceStopRequested => apply_force_stop(snapshot),
         RunEvent::Terminal { result } => apply_terminal(snapshot, result),
     }
@@ -180,6 +183,76 @@ fn apply_safe_log(
         Some(_) => Err(RunLedgerError::InvalidEvent(
             "log references an unknown execution",
         )),
+    }
+}
+
+fn apply_token_usage(
+    snapshot: &mut RunSnapshot,
+    execution: ExecutionId,
+    usage: Option<&TokenUsageDelta>,
+) -> Result<(), RunLedgerError> {
+    require_active_execution(snapshot, execution)?;
+    match (&mut snapshot.token_usage, usage) {
+        (None, Some(usage)) => {
+            snapshot.token_usage = Some(TokenUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_input_tokens: usage.cache_read_input_tokens,
+                cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                complete: true,
+            });
+        }
+        (None, None) => {
+            snapshot.token_usage = Some(TokenUsage {
+                input_tokens: TokenCount::default(),
+                output_tokens: TokenCount::default(),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                complete: false,
+            });
+        }
+        (Some(total), Some(usage)) => {
+            total.input_tokens = add_tokens(total.input_tokens, usage.input_tokens)?;
+            total.output_tokens = add_tokens(total.output_tokens, usage.output_tokens)?;
+            total.cache_read_input_tokens =
+                add_optional_tokens(total.cache_read_input_tokens, usage.cache_read_input_tokens)?;
+            total.cache_creation_input_tokens = add_optional_tokens(
+                total.cache_creation_input_tokens,
+                usage.cache_creation_input_tokens,
+            )?;
+        }
+        (Some(total), None) => total.complete = false,
+    }
+    Ok(())
+}
+
+fn require_active_execution(
+    snapshot: &RunSnapshot,
+    execution: ExecutionId,
+) -> Result<(), RunLedgerError> {
+    match snapshot.executions.get(&execution) {
+        Some(node) if matches!(node.state, NodeState::Active) => Ok(()),
+        Some(_) => Err(RunLedgerError::InvalidEvent(
+            "token usage references a settled execution",
+        )),
+        None => Err(RunLedgerError::InvalidEvent(
+            "token usage references an unknown execution",
+        )),
+    }
+}
+
+fn add_tokens(left: TokenCount, right: TokenCount) -> Result<TokenCount, RunLedgerError> {
+    left.checked_add(right)
+        .ok_or(RunLedgerError::InvalidEvent("token usage overflow"))
+}
+
+fn add_optional_tokens(
+    left: Option<TokenCount>,
+    right: Option<TokenCount>,
+) -> Result<Option<TokenCount>, RunLedgerError> {
+    match (left, right) {
+        (Some(left), Some(right)) => add_tokens(left, right).map(Some),
+        _ => Ok(None),
     }
 }
 

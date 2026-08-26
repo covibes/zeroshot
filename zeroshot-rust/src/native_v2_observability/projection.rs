@@ -52,12 +52,18 @@ pub(super) fn status_from_snapshot(
                 .terminal
                 .clone()
                 .ok_or(NativeV2ObservationError::InvalidState)?,
+            metadata: RunMetadata {
+                token_usage: snapshot.token_usage.clone(),
+            },
         }),
     }
 }
 
 pub(super) fn changes_public_status(event: &RunEvent) -> bool {
-    !matches!(event, RunEvent::SafeLog { .. })
+    !matches!(
+        event,
+        RunEvent::SafeLog { .. } | RunEvent::TokenUsageObserved { .. }
+    )
 }
 
 pub(super) fn log_notification(

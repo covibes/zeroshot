@@ -11,6 +11,68 @@ fn assert_watch_cursors(events: &[RunWatchEventNotification], expected: &[&str])
 }
 
 #[tokio::test]
+async fn usage_is_hidden_during_execution_and_reported_only_at_terminal() {
+    let (ledger, run_id) = ledger_run("terminal-usage").await;
+    let worker = reference(&run_id, "worker", 1);
+    ledger
+        .append(
+            &run_id,
+            vec![
+                RunEvent::RunStarted,
+                started(&worker),
+                RunEvent::TokenUsageObserved {
+                    execution: worker.execution,
+                    usage: Some(TokenUsageDelta {
+                        input_tokens: TokenCount::new(8).assert_value(),
+                        output_tokens: TokenCount::new(2).assert_value(),
+                        cache_read_input_tokens: Some(TokenCount::new(5).assert_value()),
+                        cache_creation_input_tokens: None,
+                    }),
+                },
+            ],
+        )
+        .await
+        .assert_value();
+    let service = NativeV2Observability::new(ledger.clone());
+    let (_, mut watch) = service
+        .watch(RunWatchParams {
+            run_id: run_id.clone(),
+            from_cursor: Some(Cursor::new("v2:2")),
+        })
+        .await
+        .assert_value();
+    assert!(watch.read_available().await.assert_value().is_empty());
+
+    ledger
+        .append(
+            &run_id,
+            vec![
+                completed(&worker, Value::Null),
+                RunEvent::Terminal {
+                    result: TerminalResult::Succeeded {
+                        output: Value::Null,
+                    },
+                },
+            ],
+        )
+        .await
+        .assert_value();
+    let transitions = watch.read_available().await.assert_value();
+    assert_watch_cursors(&transitions, &["v2:4", "v2:5"]);
+    let metadata = match &transitions.assert_at(1).status {
+        RunStatus::Finished { metadata, .. } => Some(metadata),
+        _ => None,
+    }
+    .assert_value();
+    let usage = metadata.token_usage.as_ref().assert_value();
+    assert_eq!(usage.input_tokens.get(), 8);
+    assert_eq!(usage.output_tokens.get(), 2);
+    assert_eq!(usage.cache_read_input_tokens.assert_value().get(), 5);
+    assert!(usage.cache_creation_input_tokens.is_none());
+    assert!(usage.complete);
+}
+
+#[tokio::test]
 async fn durable_watch_resumes_exclusively_without_gaps_or_duplicates() {
     let (ledger, run_id, _left, right, service) = cursor_fixture().await;
 
@@ -80,6 +142,7 @@ async fn durable_watch_resumes_exclusively_without_gaps_or_duplicates() {
             terminal_result: TerminalResult::Succeeded {
                 output: terminal_output,
             },
+            metadata: Default::default(),
         }
     );
 }

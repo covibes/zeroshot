@@ -23,15 +23,18 @@ use crate::execution::SessionScope;
 use crate::full_v1_reducer::{ExecutionId, NodeInstanceId};
 use crate::native_v2_contract::{
     AdmittedRun, EnvironmentVariableName, ExecutionRef, NodeCompletion, NodeInvocation,
-    NodeRuntimeBinding,
+    NodeRuntimeBinding, TokenUsageDelta,
 };
 
 const LIVE_OUTPUT_CAPACITY: usize = 256;
 const MAX_LIVE_OUTPUT_BYTES: usize = 16 * 1024;
 
+mod output;
 mod remote;
 mod response;
 
+pub use output::{AttachReceiveError, DurableOutput, LiveOutputSource, ReadOnlyAttach};
+use output::closed_live_attach;
 pub use response::{render_agent_prompt, NodeResponseContract};
 pub(crate) use response::{AgentResponse, AgentResponseState, resolve_agent_response};
 pub(crate) use remote::{RemoteNodeHandleBridge, remote_node_handle};
@@ -68,6 +71,12 @@ impl LiveOutput {
         }
         Ok(Self { stream, text })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DurableNodeEvent {
+    Output(LiveOutput),
+    TokenUsage(Option<TokenUsageDelta>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -137,7 +146,7 @@ impl DriverInvocation {
 pub struct DriverControl {
     cancellation: watch::Receiver<bool>,
     live_output: broadcast::Sender<LiveOutput>,
-    durable_output: mpsc::UnboundedSender<LiveOutput>,
+    durable_output: mpsc::UnboundedSender<DurableNodeEvent>,
 }
 
 impl DriverControl {
@@ -161,10 +170,19 @@ impl DriverControl {
 
     pub fn emit(&self, output: LiveOutput) -> Result<(), NodeRunnerError> {
         self.durable_output
-            .send(output.clone())
+            .send(DurableNodeEvent::Output(output.clone()))
             .map_err(|_| NodeRunnerError::DurableOutputClosed)?;
         let _ = self.live_output.send(output);
         Ok(())
+    }
+
+    pub fn record_token_usage(
+        &self,
+        usage: Option<TokenUsageDelta>,
+    ) -> Result<(), NodeRunnerError> {
+        self.durable_output
+            .send(DurableNodeEvent::TokenUsage(usage))
+            .map_err(|_| NodeRunnerError::DurableOutputClosed)
     }
 }
 
@@ -281,7 +299,7 @@ struct RunnerTask<'a> {
     response: NodeResponseContract,
     cancellation: watch::Receiver<bool>,
     output: broadcast::Sender<LiveOutput>,
-    durable_output: mpsc::UnboundedSender<LiveOutput>,
+    durable_output: mpsc::UnboundedSender<DurableNodeEvent>,
     activity: &'a ActivityToken,
 }
 
@@ -427,61 +445,6 @@ impl Drop for NodeHandle {
             let _ = self.cancel.send(true);
         }
     }
-}
-
-pub struct ReadOnlyAttach {
-    receiver: broadcast::Receiver<LiveOutput>,
-}
-
-#[derive(Clone)]
-pub struct LiveOutputSource {
-    output: broadcast::Sender<LiveOutput>,
-}
-
-impl LiveOutputSource {
-    #[must_use]
-    pub fn subscribe(&self) -> ReadOnlyAttach {
-        ReadOnlyAttach {
-            receiver: self.output.subscribe(),
-        }
-    }
-}
-
-fn closed_live_attach() -> ReadOnlyAttach {
-    let (output, receiver) = broadcast::channel(1);
-    drop(output);
-    ReadOnlyAttach { receiver }
-}
-
-/// Lossless run-local bridge into the durable log writer.
-///
-/// Harnesses bound the total provider output accepted for one execution, so this queue remains
-/// bounded by that harness cap without blocking provider process cleanup.
-pub struct DurableOutput {
-    receiver: mpsc::UnboundedReceiver<LiveOutput>,
-}
-
-impl DurableOutput {
-    pub async fn recv(&mut self) -> Result<LiveOutput, AttachReceiveError> {
-        self.receiver.recv().await.ok_or(AttachReceiveError::Closed)
-    }
-}
-
-impl ReadOnlyAttach {
-    pub async fn recv(&mut self) -> Result<LiveOutput, AttachReceiveError> {
-        self.receiver.recv().await.map_err(|error| match error {
-            broadcast::error::RecvError::Closed => AttachReceiveError::Closed,
-            broadcast::error::RecvError::Lagged(_) => AttachReceiveError::Lagged,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum AttachReceiveError {
-    #[error("node output stream closed")]
-    Closed,
-    #[error("live attachment fell behind; reconnect through durable logs")]
-    Lagged,
 }
 
 mod state;

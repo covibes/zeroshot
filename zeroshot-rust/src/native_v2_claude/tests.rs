@@ -2,6 +2,8 @@
 
 #[path = "tests/correction.rs"]
 mod correction;
+#[path = "tests/environment.rs"]
+mod environment;
 #[path = "tests/local_identity.rs"]
 mod local_identity;
 
@@ -207,10 +209,11 @@ if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$target" = initial.args ]; then
 else
   result='\"done\"'
 fi
-printf '%s%s%s\n' \
+printf '%s%s%s%s\n' \
   '{"type":"result","subtype":"success","is_error":false,"result":"' \
   "$result" \
-  '","session_id":"session-1"}'
+  '","session_id":"session-1","usage":{"input_tokens":11,"output_tokens":4,' \
+  '"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}'
 "#;
 
 #[tokio::test]
@@ -241,7 +244,7 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
             .await
             .assert_value();
         let mut attach = handle.take_initial_output().assert_value();
-        let (live, completion) = tokio::join!(attach.recv(), handle.completion());
+        let (live, completion) = tokio::join!(attach.recv_output(), handle.completion());
         assert_eq!(live.assert_value().text, "visible [REDACTED]");
         assert_eq!(
             completion.assert_value().outcome,
@@ -250,6 +253,17 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
                 artifacts: Vec::new(),
             }
         );
+        let usage = attach.recv_usage().await.assert_value().assert_value();
+        assert_eq!(
+            [
+                usage.input_tokens.get(),
+                usage.output_tokens.get(),
+                usage.cache_read_input_tokens.assert_value().get(),
+                usage.cache_creation_input_tokens.assert_value().get(),
+            ],
+            [11, 4, 6, 2]
+        );
+        assert_eq!(attach.recv().await, Err(AttachReceiveError::Closed));
         let arguments = workspace.read("initial.args");
         assert!(arguments.starts_with(concat!(
             "--print\n--input-format\ntext\n--output-format\nstream-json\n",
@@ -419,7 +433,7 @@ wait
         .await
         .assert_value();
     let mut attach = handle.take_initial_output().assert_value();
-    assert_eq!(attach.recv().await.assert_value().text, "started");
+    assert_eq!(attach.recv_output().await.assert_value().text, "started");
     let child_pid: u32 = workspace.read("child.pid").parse().assert_value();
     handle.cancel();
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
@@ -443,54 +457,6 @@ fn supported_models_and_efforts_match_the_admission_catalog() {
         }
         assert!(validate_model_effort(model, None).is_err());
     }
-}
-
-#[test]
-fn base_environment_is_explicit_bounded_and_non_secret_by_name() {
-    assert!(ClaudeProcessEnvironment::new(BTreeMap::new()).is_ok());
-    assert!(
-        ClaudeProcessEnvironment::new(BTreeMap::from([(
-            "OPENAI_API_KEY".to_owned(),
-            "not-allowed".to_owned(),
-        )]))
-        .is_err()
-    );
-}
-
-#[test]
-fn capsule_environment_roots_home_defaults_path_and_preserves_minimal_values() {
-    let base = ClaudeProcessEnvironment::new(BTreeMap::from([
-        ("HOME".to_owned(), "/host/home".to_owned()),
-        ("LANG".to_owned(), "C.UTF-8".to_owned()),
-    ]))
-    .assert_value();
-    let derived = base
-        .for_capsule(Path::new("/capsule/runtime"), "/configured/bin")
-        .assert_value();
-    assert_eq!(
-        derived.clone_values(),
-        BTreeMap::from([
-            ("HOME".to_owned(), "/capsule/runtime".to_owned()),
-            ("LANG".to_owned(), "C.UTF-8".to_owned()),
-            ("PATH".to_owned(), "/configured/bin".to_owned()),
-        ])
-    );
-
-    let explicit_path = ClaudeProcessEnvironment::new(BTreeMap::from([(
-        "PATH".to_owned(),
-        "/explicit/bin".to_owned(),
-    )]))
-    .assert_value();
-    assert_eq!(
-        explicit_path
-            .for_capsule(Path::new("/next/runtime"), "/configured/bin")
-            .assert_value()
-            .clone_values(),
-        BTreeMap::from([
-            ("HOME".to_owned(), "/next/runtime".to_owned()),
-            ("PATH".to_owned(), "/explicit/bin".to_owned()),
-        ])
-    );
 }
 
 #[path = "tests/failure.rs"]

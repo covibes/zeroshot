@@ -10,7 +10,7 @@ use std::fmt;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     Cursor, IdempotencyKey, Phase, PositiveInteger, RunId, RunSize, RunTitle, Sha256Digest,
-    ResolvedSource, TerminalResult, WorkerOutcome,
+    ResolvedSource, TerminalResult, TokenUsage, WorkerOutcome,
 };
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -18,7 +18,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::full_v1_reducer::{ExecutionId, ExecutionVoidReason, StructuralOccurrence};
-use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeCompletion};
+use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeCompletion, TokenUsageDelta};
 
 #[path = "v2_run_ledger/fake.rs"]
 pub mod fake;
@@ -100,6 +100,7 @@ pub struct RunSnapshot {
     pub force_stop_requested: bool,
     pub executions: BTreeMap<ExecutionId, NodeSnapshot>,
     pub terminal: Option<TerminalResult>,
+    pub token_usage: Option<TokenUsage>,
 }
 
 impl RunSnapshot {
@@ -115,6 +116,7 @@ impl RunSnapshot {
             force_stop_requested: false,
             executions: BTreeMap::new(),
             terminal: None,
+            token_usage: None,
         }
     }
 
@@ -131,6 +133,7 @@ impl RunSnapshot {
             force_stop_requested: false,
             executions: BTreeMap::new(),
             terminal: None,
+            token_usage: None,
         }
     }
 
@@ -197,6 +200,10 @@ pub enum RunEvent {
         execution: Option<ExecutionId>,
         stream: SafeLogStream,
         line: SafeLogLine,
+    },
+    TokenUsageObserved {
+        execution: ExecutionId,
+        usage: Option<TokenUsageDelta>,
     },
     ForceStopRequested,
     Terminal {

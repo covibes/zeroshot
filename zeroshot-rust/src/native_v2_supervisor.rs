@@ -29,7 +29,8 @@ use crate::native_v2_admission::{DeliveryPolicy, sole_delivery_node, writer_node
 use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation};
 use crate::native_v2_delivery::{DeliveryTarget, is_matching_success_receipt};
 use crate::native_v2_runner::{
-    LiveOutputSource, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner, NodeRunnerError,
+    DurableNodeEvent, LiveOutputSource, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner,
+    NodeRunnerError,
 };
 #[cfg(test)]
 use crate::native_v2_runner::ResolvedEnvironment;

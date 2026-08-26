@@ -6,8 +6,8 @@ pub(super) async fn drain_terminalizing_tasks(
     while let Some(finished) = tasks.join_next().await {
         let finished = finished.map_err(|_| NativeV2SupervisorError::Task)?;
         match finished.result {
-            DispatchResult::LogFailure(error) => return Err(error.into()),
-            DispatchResult::LogTaskFailed => return Err(NativeV2SupervisorError::Task),
+            DispatchResult::DurableEventFailure(error) => return Err(error.into()),
+            DispatchResult::DurableEventTaskFailed => return Err(NativeV2SupervisorError::Task),
             DispatchResult::Completed(_)
             | DispatchResult::TimedOut
             | DispatchResult::Interrupted => {}
@@ -97,8 +97,8 @@ pub(super) enum DispatchResult {
     Completed(Result<NodeCompletion, NodeRunnerError>),
     TimedOut,
     Interrupted,
-    LogFailure(RunLedgerError),
-    LogTaskFailed,
+    DurableEventFailure(RunLedgerError),
+    DurableEventTaskFailed,
 }
 
 pub(super) struct FinishedDispatch {
@@ -129,7 +129,7 @@ pub(super) async fn run_dispatch(task: DispatchTask) -> FinishedDispatch {
     } = task;
     let reference = handle.reference().clone();
     let execution = reference.execution;
-    let logs = tokio::spawn(bridge_logs(ledger, run_id, execution, output));
+    let events = tokio::spawn(bridge_durable_events(ledger, run_id, execution, output));
     let interrupt = async {
         tokio::select! {
             _ = tokio::time::sleep(timeout) => DispatchResult::TimedOut,
@@ -145,10 +145,10 @@ pub(super) async fn run_dispatch(task: DispatchTask) -> FinishedDispatch {
             interrupt
         }
     };
-    let result = match logs.await {
+    let result = match events.await {
         Ok(Ok(())) => result,
-        Ok(Err(error)) => DispatchResult::LogFailure(error),
-        Err(_) => DispatchResult::LogTaskFailed,
+        Ok(Err(error)) => DispatchResult::DurableEventFailure(error),
+        Err(_) => DispatchResult::DurableEventTaskFailed,
     };
     if let Some(registration) = registration {
         registration.close().await;
@@ -160,23 +160,24 @@ pub(super) async fn run_dispatch(task: DispatchTask) -> FinishedDispatch {
     }
 }
 
-pub(super) async fn bridge_logs(
+pub(super) async fn bridge_durable_events(
     ledger: Arc<dyn RunLedger>,
     run_id: RunId,
     execution: ExecutionId,
     mut output: crate::native_v2_runner::DurableOutput,
 ) -> Result<(), RunLedgerError> {
-    while let Ok(output) = output.recv().await {
-        ledger
-            .append(
-                &run_id,
-                vec![RunEvent::SafeLog {
-                    execution: Some(execution),
-                    stream: safe_log_stream(output.stream),
-                    line: SafeLogLine::new(output.text)?,
-                }],
-            )
-            .await?;
+    while let Ok(event) = output.recv().await {
+        let event = match event {
+            DurableNodeEvent::Output(output) => RunEvent::SafeLog {
+                execution: Some(execution),
+                stream: safe_log_stream(output.stream),
+                line: SafeLogLine::new(output.text)?,
+            },
+            DurableNodeEvent::TokenUsage(usage) => {
+                RunEvent::TokenUsageObserved { execution, usage }
+            }
+        };
+        ledger.append(&run_id, vec![event]).await?;
     }
     Ok(())
 }
@@ -373,8 +374,8 @@ pub(super) fn settled_outcome(
         DispatchResult::Completed(Err(error)) => Ok(runner_failure(error)),
         DispatchResult::TimedOut => Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Timeout)),
         DispatchResult::Interrupted => Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Crash)),
-        DispatchResult::LogFailure(error) => Err(error.into()),
-        DispatchResult::LogTaskFailed => Err(NativeV2SupervisorError::Task),
+        DispatchResult::DurableEventFailure(error) => Err(error.into()),
+        DispatchResult::DurableEventTaskFailed => Err(NativeV2SupervisorError::Task),
     }
 }
 

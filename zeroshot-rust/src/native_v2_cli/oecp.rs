@@ -8,7 +8,8 @@ use openengine_cluster_client::{
 };
 use openengine_cluster_protocol::{
     Cursor, RunAttachEventNotification, RunAttachParams, RunForceParams, RunListParams,
-    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult, RunWatchParams,
+    RunLogEventNotification, RunLogsParams, RunStatus, RunStatusParams, RunSubmitResult,
+    RunWatchParams,
 };
 use tokio::sync::mpsc;
 
@@ -344,7 +345,9 @@ where
 fn task_is_active(status: &CliRunStatus) -> bool {
     matches!(
         status,
-        CliRunStatus::Admitted {} | CliRunStatus::Running { .. } | CliRunStatus::Stopping { .. }
+        CliRunStatus::Target(
+            RunStatus::Admitted {} | RunStatus::Running { .. } | RunStatus::Stopping { .. }
+        )
     )
 }
 

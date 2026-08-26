@@ -151,7 +151,7 @@ async fn cancellation_closes_session_and_initial_output_precedes_live_attach() {
         .assert_value();
     tokio::time::sleep(Duration::from_millis(10)).await;
     let mut initial = handle.take_initial_output().assert_value();
-    let output = initial.recv().await.assert_value();
+    let output = initial.recv_output().await.assert_value();
     assert_eq!(output.text, "working");
     assert!(handle.take_initial_output().is_none());
     let mut live_only = handle.attach();

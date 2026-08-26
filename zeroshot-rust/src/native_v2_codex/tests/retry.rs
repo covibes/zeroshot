@@ -80,7 +80,7 @@ async fn terminal_error_continues_once_in_the_same_session() {
     let (logs, completion) = tokio::join!(
         async {
             let mut logs = Vec::new();
-            while let Ok(entry) = output.recv().await {
+            while let Ok(entry) = output.recv_output().await {
                 logs.push(entry);
             }
             logs

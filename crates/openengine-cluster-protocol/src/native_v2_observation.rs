@@ -6,13 +6,94 @@
 //! with a graph node name so clients can distinguish simultaneous verifier executions without
 //! learning product-local execution, capsule, harness, provider, or session identities.
 
-use schemars::JsonSchema;
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentAttachEvent, Cursor, ExecutionRef, LogRecord, NodeName, RunId, SubscriptionId, RunSize,
-    RunTitle, ResolvedSource, TerminalResult,
+    RunTitle, ResolvedSource, TerminalResult, MAX_SAFE_GENERATION,
 };
+
+/// Non-negative token counter that remains exact in JavaScript clients.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct TokenCount(u64);
+
+impl TokenCount {
+    pub fn new(value: u64) -> Result<Self, TokenCountOutOfRange> {
+        if value <= MAX_SAFE_GENERATION {
+            Ok(Self(value))
+        } else {
+            Err(TokenCountOutOfRange(value))
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn checked_add(self, other: Self) -> Option<Self> {
+        self.0
+            .checked_add(other.0)
+            .and_then(|value| Self::new(value).ok())
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenCount {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = crate::value::deserialize_javascript_safe_u64(deserializer, 0)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for TokenCount {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "TokenCount".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        crate::value::javascript_safe_integer_schema(0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("token count {0} exceeds the JavaScript-safe integer maximum {MAX_SAFE_GENERATION}")]
+pub struct TokenCountOutOfRange(pub u64);
+
+/// Run-wide sum of provider-reported usage for every launched agent invocation.
+///
+/// `complete` is false when at least one invocation did not report usable counters. Cache
+/// counters are omitted when the provider does not expose them consistently.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: TokenCount,
+    pub output_tokens: TokenCount,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<TokenCount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<TokenCount>,
+    pub complete: bool,
+}
+
+/// Additive metadata emitted only with a terminal run projection.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RunMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+}
 
 /// One currently active graph-leaf execution.
 ///
@@ -44,6 +125,8 @@ pub enum RunStatus {
     Finished {
         #[serde(rename = "terminalResult")]
         terminal_result: TerminalResult,
+        #[serde(default)]
+        metadata: RunMetadata,
     },
 }
 

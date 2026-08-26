@@ -40,7 +40,8 @@ async fn startup_reconciles_every_persisted_nonterminal_before_status_is_visible
         RunStatus::Finished {
             terminal_result: TerminalResult::Failed {
                 reason: EnumLabel::new("runtime_lost").assert_value_with("label")
-            }
+            },
+            metadata: Default::default(),
         }
     );
     assert_eq!(controller.list().await.assert_value_with("list").len(), 1);

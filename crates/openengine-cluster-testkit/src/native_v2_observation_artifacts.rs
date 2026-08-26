@@ -7,9 +7,9 @@ use openengine_cluster_protocol::{
     Cursor, ExecutionRef, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LogLevel,
     LogRecord, NodeName, RunAttachEventNotification, RunAttachParams, RunAttachResult,
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunLogsResult,
-    RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
-    RunWatchParams, RunWatchResult, SourceBranchId, SourceRepositoryId, SourceRevisionId,
-    ResolvedSource, SubscriptionId, TerminalResult,
+    RunMetadata, RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle,
+    RunWatchEventNotification, RunWatchParams, RunWatchResult, SourceBranchId, SourceRepositoryId,
+    SourceRevisionId, ResolvedSource, SubscriptionId, TerminalResult, TokenCount, TokenUsage,
 };
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Value};
@@ -133,6 +133,15 @@ fn watch_fixture() -> Value {
                         "kind": "verification_receipt",
                         "summary": "checkout repaired",
                         "passed": true
+                    }),
+                },
+                metadata: RunMetadata {
+                    token_usage: Some(TokenUsage {
+                        input_tokens: TokenCount::new(1_200).assert_value(),
+                        output_tokens: TokenCount::new(200).assert_value(),
+                        cache_read_input_tokens: Some(TokenCount::new(800).assert_value()),
+                        cache_creation_input_tokens: Some(TokenCount::new(100).assert_value()),
+                        complete: true,
                     }),
                 },
             },

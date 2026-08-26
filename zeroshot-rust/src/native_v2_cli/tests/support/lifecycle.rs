@@ -55,7 +55,8 @@ pub(super) fn queued_watch(
             "cloud:3",
             json!({
                 "phase":"finished",
-                "terminalResult":{"status":"succeeded","output":null}
+                "terminalResult":{"status":"succeeded","output":null},
+                "metadata":{}
             }),
         ),
     ])

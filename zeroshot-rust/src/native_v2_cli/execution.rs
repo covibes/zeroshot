@@ -1,7 +1,8 @@
 use std::{io::Write, time::Duration};
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
-    RunLogsParams, RunStatusParams, RunWatchParams, SubscriptionCloseReason, TerminalResult,
+    RunLogsParams, RunStatus, RunStatusParams, RunWatchParams, SubscriptionCloseReason,
+    TerminalResult,
 };
 use serde::Serialize;
 use super::{
@@ -13,11 +14,14 @@ use super::{
 mod attach;
 #[path = "execution/context.rs"]
 mod context;
+#[path = "execution/status.rs"]
+mod status;
 #[path = "execution/submission.rs"]
 mod submission;
 use attach::{follow_attach, RoutedAttach};
 pub(crate) use context::CliExecutionContext;
 use submission::prepare_submission_with_environment;
+use status::outcome_for_status;
 
 pub async fn execute_native_v2_cli<B, S, W>(
     command: NativeV2CliCommand,
@@ -459,12 +463,14 @@ fn write_durable_event(
     let outcome = match event {
         DurableItem::Watch(event) => {
             let outcome = match &event.status {
-                CliRunStatus::Finished {
+                CliRunStatus::Target(RunStatus::Finished {
                     terminal_result: TerminalResult::Succeeded { .. },
-                } => Some(CliOutcome::Finished),
-                CliRunStatus::Finished {
+                    ..
+                }) => Some(CliOutcome::Finished),
+                CliRunStatus::Target(RunStatus::Finished {
                     terminal_result: TerminalResult::Failed { .. },
-                } => Some(CliOutcome::Failed),
+                    ..
+                }) => Some(CliOutcome::Failed),
                 _ => None,
             };
             write_json(output, &event)?;
@@ -485,16 +491,4 @@ fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), Nat
     output.write_all(b"\n")?;
     output.flush()?;
     Ok(())
-}
-
-fn outcome_for_status(status: &CliRunStatus) -> CliOutcome {
-    match status {
-        CliRunStatus::Finished {
-            terminal_result: TerminalResult::Succeeded { .. },
-        } => CliOutcome::Finished,
-        CliRunStatus::Finished {
-            terminal_result: TerminalResult::Failed { .. },
-        } => CliOutcome::Failed,
-        _ => CliOutcome::Completed,
-    }
 }

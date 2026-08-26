@@ -3967,6 +3967,23 @@
       ],
       "type": "object"
     },
+    "RunMetadata": {
+      "additionalProperties": false,
+      "description": "Additive metadata emitted only with a terminal run projection.",
+      "properties": {
+        "tokenUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
     "RunSize": {
       "enum": [
         "tiny",
@@ -4035,6 +4052,10 @@
         {
           "additionalProperties": false,
           "properties": {
+            "metadata": {
+              "$ref": "#/$defs/RunMetadata",
+              "default": {}
+            },
             "phase": {
               "const": "finished",
               "type": "string"
@@ -4590,6 +4611,47 @@
           "type": "object"
         }
       ]
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "description": "Run-wide sum of provider-reported usage for every launched agent invocation.\n\n`complete` is false when at least one invocation did not report usable counters. Cache\ncounters are omitted when the provider does not expose them consistently.",
+      "properties": {
+        "cacheCreationInputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cacheReadInputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "inputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outputTokens": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "inputTokens",
+        "outputTokens",
+        "complete"
+      ],
+      "type": "object"
     },
     "UpdateParams": {
       "additionalProperties": false,

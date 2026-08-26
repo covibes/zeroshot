@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::native_v2_contract::{TokenUsageDelta, parse_token_usage_delta};
 use crate::native_v2_runner::{DriverControl, LiveOutput, LiveOutputStream, NodeRunnerError};
 
 const MAX_EVENTS: usize = 4096;
@@ -34,6 +35,7 @@ pub(super) struct ClaudeTranscript {
     retryable_failure_seen: bool,
     settled: bool,
     visible_text_emitted: bool,
+    token_usage: Option<TokenUsageDelta>,
     redactions: Vec<String>,
 }
 
@@ -53,6 +55,7 @@ impl ClaudeTranscript {
             retryable_failure_seen: false,
             settled: false,
             visible_text_emitted: false,
+            token_usage: None,
             redactions,
         }
     }
@@ -84,6 +87,10 @@ impl ClaudeTranscript {
             .is_empty()
             .then_some(())
             .ok_or(NodeRunnerError::Driver)
+    }
+
+    pub(super) fn token_usage(&self) -> Option<TokenUsageDelta> {
+        self.token_usage
     }
 
     pub(super) fn finish(self) -> Result<ClaudeAttempt, NodeRunnerError> {
@@ -232,6 +239,11 @@ impl ClaudeTranscript {
         event: &serde_json::Map<String, Value>,
         _control: &DriverControl,
     ) -> Result<(), NodeRunnerError> {
+        self.token_usage = parse_token_usage_delta(
+            event.get("usage"),
+            Some("cache_read_input_tokens"),
+            Some("cache_creation_input_tokens"),
+        );
         let unsuccessful = event.get("subtype").and_then(Value::as_str) != Some("success")
             || event.get("is_error").and_then(Value::as_bool) == Some(true);
         if unsuccessful {

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use openengine_cluster_protocol::{
     ArtifactRef, CompiledGraphIr, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
     RunSize, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
-    TerminalResult, WorkerOutcome,
+    TerminalResult, TokenCount, TokenUsage, WorkerOutcome,
 };
 use serde_json::{Value, json};
 
@@ -17,7 +17,7 @@ use super::{
 use crate::full_v1_reducer::{ExecutionVoidReason, StructuralOccurrence};
 use crate::native_v2_contract::{
     AdmittedRun, CodexProvider, ExecutionId, ExecutionRef, NodeCompletion, NodeInstanceId,
-    RuntimePlan,
+    RuntimePlan, TokenUsageDelta,
 };
 
 fn admitted_run() -> AdmittedRun {
@@ -82,6 +82,21 @@ fn completed(reference: ExecutionRef, output: Value) -> RunEvent {
                 artifacts: Vec::new(),
             },
         },
+    }
+}
+
+fn usage(
+    input: u64,
+    output: u64,
+    cache_read: Option<u64>,
+    cache_creation: Option<u64>,
+) -> TokenUsageDelta {
+    TokenUsageDelta {
+        input_tokens: TokenCount::new(input).assert_value(),
+        output_tokens: TokenCount::new(output).assert_value(),
+        cache_read_input_tokens: cache_read.map(|value| TokenCount::new(value).assert_value()),
+        cache_creation_input_tokens: cache_creation
+            .map(|value| TokenCount::new(value).assert_value()),
     }
 }
 
@@ -183,7 +198,6 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
     ledger.create_or_get(request).await.assert_value();
     let first = reference(&run_id, 1);
     let second = reference(&run_id, 2);
-
     let appended = ledger
         .append(
             &run_id,
@@ -210,10 +224,10 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
         )
         .await
         .assert_value();
-
     assert_eq!(appended.events.len(), 7);
     assert_eq!(appended.snapshot.cursor, cursor_for(7));
     assert_eq!(appended.snapshot.phase, RunPhase::Finished);
+    assert!(appended.snapshot.token_usage.is_none());
     assert!(matches!(
         appended
             .snapshot
@@ -254,6 +268,53 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
             .await
             .assert_error(),
         RunLedgerError::InvalidEvent("run is already terminal")
+    );
+}
+
+#[tokio::test]
+async fn token_usage_sums_nodes_and_retries_while_preserving_missing_data() {
+    let ledger = FakeRunLedger::new();
+    let run_id = RunId::new("run-usage");
+    let first = reference(&run_id, 1);
+    let second = reference(&run_id, 2);
+    ledger
+        .create_or_get(create(run_id.as_str(), "submission-usage", '6'))
+        .await
+        .assert_value();
+
+    let appended = ledger
+        .append(
+            &run_id,
+            vec![
+                RunEvent::RunStarted,
+                started(first.clone()),
+                started(second.clone()),
+                RunEvent::TokenUsageObserved {
+                    execution: first.execution,
+                    usage: Some(usage(10, 2, Some(4), Some(1))),
+                },
+                RunEvent::TokenUsageObserved {
+                    execution: first.execution,
+                    usage: Some(usage(3, 1, Some(2), None)),
+                },
+                RunEvent::TokenUsageObserved {
+                    execution: second.execution,
+                    usage: None,
+                },
+            ],
+        )
+        .await
+        .assert_value();
+
+    assert_eq!(
+        appended.snapshot.token_usage,
+        Some(TokenUsage {
+            input_tokens: TokenCount::new(13).assert_value(),
+            output_tokens: TokenCount::new(3).assert_value(),
+            cache_read_input_tokens: Some(TokenCount::new(6).assert_value()),
+            cache_creation_input_tokens: None,
+            complete: false,
+        })
     );
 }
 
@@ -360,6 +421,10 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
                 vec![
                     RunEvent::RunStarted,
                     started(reference(&run_id, 1)),
+                    RunEvent::TokenUsageObserved {
+                        execution: ExecutionId::new(1).assert_value(),
+                        usage: Some(usage(5, 1, None, None)),
+                    },
                     completed(reference(&run_id, 1), json!("done")),
                 ],
             )
@@ -369,7 +434,11 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
 
     let reopened = SqliteRunLedger::open(&path).assert_value();
     let stored = reopened.get(&run_id).await.assert_value().assert_value();
-    assert_eq!(stored.snapshot.cursor, cursor_for(3));
+    assert_eq!(stored.snapshot.cursor, cursor_for(4));
+    let persisted_usage = stored.snapshot.token_usage.assert_value();
+    assert_eq!(persisted_usage.input_tokens.get(), 5);
+    assert_eq!(persisted_usage.output_tokens.get(), 1);
+    assert!(persisted_usage.complete);
     assert!(matches!(
         reopened.create_or_get(request).await.assert_value(),
         CreateRunOutcome::Existing(_)
@@ -378,7 +447,7 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
         .snapshot_and_tail(&run_id, Some(&cursor_for(1)))
         .await
         .assert_value();
-    assert_eq!(observation.events.len(), 2);
+    assert_eq!(observation.events.len(), 3);
     assert_eq!(observation.events.assert_at(0).cursor, cursor_for(2));
 
     drop(reopened);
