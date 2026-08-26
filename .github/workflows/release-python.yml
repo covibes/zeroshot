@@ -231,7 +231,13 @@ jobs:
             echo "::error::$ARCHIVE contains unexpected version $reported_version"
             exit 1
           }
-          echo "ZEROSHOT_RUST_BINARY=$PWD/native/${{ matrix.executable }}" >> "$GITHUB_ENV"
+          binary_path="$(python - <<'PY'
+          from pathlib import Path
+
+          print(Path('native/${{ matrix.executable }}').resolve(strict=True))
+          PY
+          )"
+          echo "ZEROSHOT_RUST_BINARY=$binary_path" >> "$GITHUB_ENV"
 
       - name: Build platform wheel containing the exact Rust executable
         working-directory: sdks/python
