@@ -19,8 +19,8 @@ use self::contract::{
     require_response_route, validate_device_code, validate_secret, validate_token,
 };
 use self::credentials::{
-    DeviceCodeNotifier, KeyringTargetCredentialStore, StderrDeviceCodeNotifier, TargetRefreshGuard,
-    credential_service, open_refresh_lock,
+    CredentialStorePreparation, DeviceCodeNotifier, StderrDeviceCodeNotifier, TargetRefreshGuard,
+    credential_service, open_refresh_lock, production_target_credential_store,
 };
 use super::registry::default_target_registry_path;
 use super::{TargetAccess, TargetAuthorityError, TargetRecord};
@@ -55,6 +55,8 @@ impl TargetHttpControlAuthority {
             .parent()
             .ok_or_else(|| authority_error("target refresh lock path is unavailable"))?
             .to_owned();
+        let credentials =
+            production_target_credential_store(refresh_lock_directory.join("credentials"))?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
@@ -71,7 +73,7 @@ impl TargetHttpControlAuthority {
         Ok(Self {
             client,
             stream_client,
-            credentials: Arc::new(KeyringTargetCredentialStore),
+            credentials,
             notifier: Arc::new(StderrDeviceCodeNotifier),
             refresh_lock_directory,
         })
@@ -147,6 +149,20 @@ impl TargetHttpControlAuthority {
     }
 
     async fn login_inner(&self, request: HostedLogin<'_>) -> Result<(), TargetAuthorityError> {
+        if let CredentialStorePreparation::PrivateFile(path) = self
+            .credentials
+            .prepare_for_login(request.target_id)
+            .await?
+        {
+            eprintln!(
+                concat!(
+                    "\nWarning: the refresh token will be stored unencrypted in this private ",
+                    "file:\n  {}\nSet ZEROSHOT_RUST_CREDENTIAL_STORE=system to require Secret ",
+                    "Service.\n"
+                ),
+                path.display()
+            );
+        }
         let code: DeviceCodeWire = self
             .post_form_json(
                 &request.auth.device_authorization_endpoint,

@@ -33,6 +33,7 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
             .device_token()
             .ok_or_else(|| authority_error("direct target does not use login"))?;
         let (auth, controller) = self.descriptors(target).await?;
+        let _refresh_guard = self.lock_refresh_family(&target.id).await?;
         self.login_inner(HostedLogin {
             target_id: &target.id,
             device_token,

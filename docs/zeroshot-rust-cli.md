@@ -78,7 +78,9 @@ Options:
 #### `zeroshot-rust target login`
 
 ```text
-Authenticate with a hosted named target
+Authenticate with a hosted named target.
+
+On Linux, desktop sessions prefer Secret Service and headless sessions use a durable private file. Set ZEROSHOT_RUST_CREDENTIAL_STORE to auto, system, or file to override automatic selection.
 
 Usage: zeroshot-rust target login <NAME>
 
@@ -88,7 +90,7 @@ Arguments:
 
 Options:
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 #### `zeroshot-rust target setup`

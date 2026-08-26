@@ -80,6 +80,10 @@ enum TargetCommand {
     Add(TargetAddArgs),
 
     /// Authenticate with a hosted named target.
+    ///
+    /// On Linux, desktop sessions prefer Secret Service and headless sessions use a durable
+    /// private file. Set ZEROSHOT_RUST_CREDENTIAL_STORE to auto, system, or file to override
+    /// automatic selection.
     Login(TargetNameArgs),
 
     /// Configure the local profile for a named target.
