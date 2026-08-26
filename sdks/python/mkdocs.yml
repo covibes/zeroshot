@@ -1,0 +1,19 @@
+site_name: Zeroshot Python SDK
+site_description: Async Python client for the Zeroshot Rust run engine
+docs_dir: docs
+strict: true
+theme:
+  name: material
+nav:
+  - Overview: index.md
+  - API reference: api.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true

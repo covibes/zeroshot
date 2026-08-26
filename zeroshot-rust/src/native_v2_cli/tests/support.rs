@@ -62,6 +62,7 @@ pub(super) enum Call {
         target: Option<String>,
         run_id: String,
         from_cursor: Option<String>,
+        execution: Option<String>,
     },
     Attach {
         target: Option<String>,
@@ -324,6 +325,7 @@ impl NativeV2CliBackend for FakeBackend {
                 target,
                 run_id: &params.run_id,
                 from_cursor: params.from_cursor.as_ref(),
+                execution: None,
             },
         );
         if self.pending_watch {
@@ -382,6 +384,7 @@ impl NativeV2CliBackend for FakeBackend {
                 target,
                 run_id: &params.run_id,
                 from_cursor: params.from_cursor.as_ref(),
+                execution: params.execution.as_ref(),
             },
         );
         if self.reconnect_logs {

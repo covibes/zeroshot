@@ -10,8 +10,9 @@ use thiserror::Error;
 use zeroshot_engine::native_v2_cli::local::{LOCAL_CONTROLLER_MODE, LocalCliBackend};
 use zeroshot_engine::native_v2_cli::oecp::NamedTargetCliBackend;
 use zeroshot_engine::native_v2_cli::{
-    execute_native_v2_cli, parse_native_v2_args, try_execute_native_v2_static, CtrlCDetachSignal,
-    NativeV2CliCommand, NativeV2CliError,
+    execute_native_v2_cli, parse_native_v2_args, try_execute_native_v2_preflight,
+    try_execute_native_v2_static, CtrlCDetachSignal, NativeV2CliCommand, NativeV2CliDiagnostic,
+    NativeV2CliError, ERROR_FORMAT_ENV, JSON_ERROR_FORMAT,
 };
 #[cfg(unix)]
 use zeroshot_engine::native_v2_portable_controller::{PortableControllerError, run_controller_process};
@@ -68,6 +69,12 @@ async fn run_public_command(command: NativeV2CliCommand) -> Result<(), ProcessEr
     if try_execute_native_v2_static(&command, &mut output)?.is_some() {
         return Ok(());
     }
+    if try_execute_native_v2_preflight(&command, &mut output)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
 
     let mut detach = CtrlCDetachSignal;
     if is_local_command(&command) {
@@ -120,10 +127,11 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
     match command {
         NativeV2CliCommand::Run(run) => run.target.is_none(),
         NativeV2CliCommand::List { target } => target.is_none(),
-        NativeV2CliCommand::Status(run)
-        | NativeV2CliCommand::Watch(run)
-        | NativeV2CliCommand::Logs(run)
-        | NativeV2CliCommand::ForceStop(run) => run.target.is_none(),
+        NativeV2CliCommand::Status(run) | NativeV2CliCommand::ForceStop(run) => {
+            run.target.is_none()
+        }
+        NativeV2CliCommand::Watch(command) => command.run.target.is_none(),
+        NativeV2CliCommand::Logs(command) => command.run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
         NativeV2CliCommand::Help(_)
         | NativeV2CliCommand::Version
@@ -157,8 +165,23 @@ fn private_controller_bootstrap(
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("zeroshot-rust: {error}");
+        write_process_error(&error);
         std::process::exit(1);
+    }
+}
+
+fn write_process_error(error: &ProcessError) {
+    if std::env::var(ERROR_FORMAT_ENV).as_deref() == Ok(JSON_ERROR_FORMAT) {
+        let diagnostic = match error {
+            ProcessError::Cli(error) => error.diagnostic(),
+            error => NativeV2CliDiagnostic::target(error.to_string()),
+        };
+        match serde_json::to_string(&diagnostic) {
+            Ok(encoded) => eprintln!("{encoded}"),
+            Err(_) => eprintln!("zeroshot-rust: {error}"),
+        }
+    } else {
+        eprintln!("zeroshot-rust: {error}");
     }
 }
 

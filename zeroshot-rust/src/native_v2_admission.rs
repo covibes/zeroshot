@@ -260,6 +260,10 @@ use validation::{
     ExecutableDeclaration, executable_declarations, normalize_runtime,
     validate_executable_bindings, validate_graph_input,
 };
+pub(crate) fn executable_runtime_roles(root: &GraphNode) -> Vec<(NodeName, bool)> {
+    validation::executable_runtime_roles(root)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeRole {
     Agent,

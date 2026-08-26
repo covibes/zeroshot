@@ -14,6 +14,71 @@ fn parser_exposes_static_help_and_version_commands() {
 }
 
 #[test]
+fn durable_observation_accepts_native_resume_and_execution_filters() {
+    let watch = parse_native_v2_args(args(&[
+        "watch", "run-7", "--target", "prod", "--after", "cloud:12",
+    ]))
+    .assert_value();
+    let watch = match watch {
+        NativeV2CliCommand::Watch(command) => Some(command),
+        _ => None,
+    }
+    .assert_value_with("watch command");
+    assert_eq!(watch.run.target.as_deref(), Some("prod"));
+    assert_eq!(watch.run.run_id.as_str(), "run-7");
+    assert_eq!(watch.after.as_ref().map(Cursor::as_str), Some("cloud:12"));
+
+    let logs = parse_native_v2_args(args(&[
+        "logs",
+        "run-7",
+        "--after",
+        "cloud:13",
+        "--execution",
+        "opaque-worker-2",
+    ]))
+    .assert_value();
+    let logs = match logs {
+        NativeV2CliCommand::Logs(command) => Some(command),
+        _ => None,
+    }
+    .assert_value_with("logs command");
+    assert_eq!(logs.after.as_ref().map(Cursor::as_str), Some("cloud:13"));
+    assert_eq!(
+        logs.execution.as_ref().map(ExecutionRef::as_str),
+        Some("opaque-worker-2")
+    );
+}
+
+#[test]
+fn explicit_template_delivery_is_parsed_and_validated_by_rust() {
+    let shown = parse_native_v2_args(args(&[
+        "template",
+        "show",
+        "software-change",
+        "--delivery",
+        "merge",
+    ]))
+    .assert_value();
+    assert!(matches!(
+        shown,
+        NativeV2CliCommand::TemplateShow {
+            delivery: TemplateDelivery::Merge,
+            ..
+        }
+    ));
+
+    let error = parse_native_v2_args(args(&[
+        "template",
+        "show",
+        "software-change",
+        "--delivery",
+        "future-mode",
+    ]))
+    .assert_error();
+    assert!(error.to_string().contains("future-mode"));
+}
+
+#[test]
 fn parser_is_the_agreed_lean_hosted_surface() {
     let run = parse_native_v2_args(args(&[
         "run",
@@ -38,7 +103,11 @@ fn parser_is_the_agreed_lean_hosted_surface() {
     assert_eq!(run.target.as_deref(), Some("prod"));
     assert_eq!(run.title.as_str(), "Repair checkout");
     assert_eq!(run.graph, RunGraph::File(PathBuf::from("graph.json")));
-    assert_eq!(run.runtime_config, PathBuf::from("runtime.json"));
+    assert_eq!(
+        run.runtime,
+        RunRuntime::Exact(PathBuf::from("runtime.json"))
+    );
+    assert!(!run.validate_only);
     assert_eq!(
         run.branch.as_ref().map(SourceBranchId::as_str),
         Some("feature/source-selection")
@@ -368,11 +437,6 @@ async fn unsupported_graph_profile_fails_before_target_contact() {
     ))
     .assert_value();
     let backend = FakeBackend::default();
-    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-        .await
-        .assert_error();
+    let error = rejected_without_backend_contact(command, &backend).await;
     assert!(matches!(error, NativeV2CliError::Usage(_)));
-    assert!(backend.calls().is_empty());
 }
-
-use openengine_cluster_testkit::assertions::{AssertValue, AssertError};

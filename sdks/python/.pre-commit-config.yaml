@@ -1,0 +1,23 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff lint and docstrings
+        entry: python -m ruff check sdks/python/src sdks/python/tests sdks/python/examples
+        language: system
+        pass_filenames: false
+      - id: ruff-format
+        name: Ruff format
+        entry: python -m ruff format --check sdks/python/src sdks/python/tests sdks/python/examples
+        language: system
+        pass_filenames: false
+      - id: pydoclint
+        name: Public docstring signatures
+        entry: pydoclint sdks/python/src/zeroshot
+        language: system
+        pass_filenames: false
+      - id: mypy
+        name: Public API and example types
+        entry: python -m mypy --config-file sdks/python/pyproject.toml sdks/python/src sdks/python/examples
+        language: system
+        pass_filenames: false

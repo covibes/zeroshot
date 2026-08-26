@@ -7,7 +7,7 @@ use openengine_cluster_testkit::assertions::AssertValue;
 use zeroshot_engine::native_v2_cli::oecp::NamedTargetCliBackend;
 use zeroshot_engine::native_v2_cli::{
     CliOutcome, CliRunStatus, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
-    NativeV2CliCommand, NeverDetach, RunSelector, execute_native_v2_cli,
+    NativeV2CliCommand, NeverDetach, RunSelector, RunWatchCommand, execute_native_v2_cli,
 };
 
 use super::super::controller_authority::TargetCredentialStore;
@@ -83,9 +83,12 @@ where
 {
     let mut output = Vec::new();
     let outcome = execute_native_v2_cli(
-        NativeV2CliCommand::Watch(RunSelector {
-            target: Some("prod".to_owned()),
-            run_id: run_id.clone(),
+        NativeV2CliCommand::Watch(RunWatchCommand {
+            run: RunSelector {
+                target: Some("prod".to_owned()),
+                run_id: run_id.clone(),
+            },
+            after: None,
         }),
         backend,
         &mut NeverDetach,

@@ -5,6 +5,7 @@ pub(super) struct CursorCallArgs<'a> {
     pub(super) target: Option<&'a str>,
     pub(super) run_id: &'a RunId,
     pub(super) from_cursor: Option<&'a openengine_cluster_protocol::Cursor>,
+    pub(super) execution: Option<&'a openengine_cluster_protocol::ExecutionRef>,
 }
 
 pub(super) fn record_cursor_call(backend: &FakeBackend, args: CursorCallArgs<'_>) -> usize {
@@ -23,6 +24,9 @@ pub(super) fn record_cursor_call(backend: &FakeBackend, args: CursorCallArgs<'_>
     let target = args.target.map(str::to_owned);
     let run_id = args.run_id.as_str().to_owned();
     let from_cursor = args.from_cursor.map(|cursor| cursor.as_str().to_owned());
+    let execution = args
+        .execution
+        .map(|execution| execution.as_str().to_owned());
     calls.push(match args.kind {
         CursorCallKind::Watch => Call::Watch {
             target,
@@ -33,6 +37,7 @@ pub(super) fn record_cursor_call(backend: &FakeBackend, args: CursorCallArgs<'_>
             target,
             run_id,
             from_cursor,
+            execution,
         },
     });
     attempt

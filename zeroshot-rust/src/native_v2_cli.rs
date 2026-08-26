@@ -11,13 +11,14 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
+    Cursor, EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunId,
     RunStatusParams, RunTitle, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
 pub use crate::native_v2_contract::RunSubmissionIntent as TargetRunIntent;
+use crate::native_v2_admission::NativeV2AdmissionError;
 use crate::native_v2_supervisor::RunEnvironmentError;
 
 #[path = "native_v2_templates.rs"]
@@ -41,10 +42,16 @@ pub mod local;
 #[path = "native_v2_cli/execution.rs"]
 pub(crate) mod execution;
 
+#[path = "native_v2_cli/diagnostic.rs"]
+mod diagnostic;
+pub use diagnostic::{ERROR_FORMAT_ENV, JSON_ERROR_FORMAT, NativeV2CliDiagnostic};
+
 #[path = "native_v2_cli/parser.rs"]
 mod parser;
 
-pub use execution::{execute_native_v2_cli, try_execute_native_v2_static};
+pub use execution::{
+    execute_native_v2_cli, try_execute_native_v2_preflight, try_execute_native_v2_static,
+};
 pub use parser::{Cli, parse_native_v2_args};
 
 #[cfg(test)]
@@ -81,10 +88,17 @@ pub struct RunCommand {
     pub title: RunTitle,
     pub graph: RunGraph,
     pub input: PathBuf,
-    pub runtime_config: PathBuf,
+    pub runtime: RunRuntime,
     pub branch: Option<SourceBranchId>,
     pub detach: bool,
+    pub validate_only: bool,
     pub submission_key: Option<IdempotencyKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunRuntime {
+    Exact(PathBuf),
+    Uniform(PathBuf),
 }
 
 /// CLI-materialized input before a named target resolves its exact source revision.
@@ -134,6 +148,19 @@ pub struct RunSelector {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunWatchCommand {
+    pub run: RunSelector,
+    pub after: Option<Cursor>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunLogsCommand {
+    pub run: RunSelector,
+    pub after: Option<Cursor>,
+    pub execution: Option<ExecutionRef>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeV2CliCommand {
     Help(String),
     Version,
@@ -153,8 +180,8 @@ pub enum NativeV2CliCommand {
         target: Option<String>,
     },
     Status(RunSelector),
-    Watch(RunSelector),
-    Logs(RunSelector),
+    Watch(RunWatchCommand),
+    Logs(RunLogsCommand),
     Attach {
         run: RunSelector,
         execution: ExecutionRef,
@@ -206,6 +233,8 @@ pub enum NativeV2CliError {
     },
     #[error("initial input does not match GraphSpec.initialInput: {0}")]
     InitialInput(String),
+    #[error("run validation failed: {0}")]
+    InvalidRun(#[source] NativeV2AdmissionError),
     #[error("declared environment variable {0} is unavailable or is not valid UTF-8")]
     Environment(EnvironmentVariableName),
     #[error(transparent)]
@@ -220,6 +249,16 @@ pub enum NativeV2CliError {
     Local(String),
     #[error("Zeroshot Rust OECP request failed: {0}")]
     Protocol(String),
+    #[error("remote operation failed with {code}: {message}")]
+    Remote {
+        code: String,
+        message: String,
+        details: Option<serde_json::Value>,
+    },
+    #[error("run {run_id} was not found")]
+    RunNotFound { run_id: String },
+    #[error("submission key already identifies a different admitted run ({existing_run_id})")]
+    SubmissionConflict { existing_run_id: String },
     #[error("Zeroshot Rust observation transport disconnected")]
     Disconnected,
     #[error("run finished unsuccessfully")]

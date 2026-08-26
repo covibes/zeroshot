@@ -715,3 +715,22 @@ jobs:
           else
             npm publish --provenance --access public ./shim-release/*.tgz
           fi
+
+  python-sdk-release:
+    needs: [plan, rust-shim-publish]
+    if: |
+      always() &&
+      inputs.action == 'release' &&
+      needs.plan.result == 'success' &&
+      needs.rust-shim-publish.result == 'success'
+    permissions:
+      checks: read
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/release-python.yml
+    with:
+      action: release
+      rust_version: ${{ needs.plan.outputs.version }}
+      sdk_revision: 1
+      release_commit: ${{ needs.plan.outputs.commit }}
+    secrets: inherit

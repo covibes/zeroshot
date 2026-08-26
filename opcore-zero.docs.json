@@ -38,8 +38,16 @@
       "document": "AGENTS.md"
     },
     {
+      "source": "zeroshot-rust/src/native_v2_cli/diagnostic.rs",
+      "document": "AGENTS.md"
+    },
+    {
       "source": "crates/openengine-cluster-testkit/src/fixture.rs",
       "document": "AGENTS.md"
+    },
+    {
+      "source": "sdks/python/src/zeroshot/__init__.py",
+      "document": "sdks/python/docs/api.md"
     }
   ]
 }

@@ -2,15 +2,16 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::Parser;
-use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey, RunTitle, SourceBranchId};
+use openengine_cluster_protocol::{Cursor, ExecutionRef, IdempotencyKey, RunTitle, SourceBranchId};
 
 use super::{
-    AttachArgs, Cli, CliCommand, RunArgs, RunSelectorArgs, TargetCommand, TemplateCommand,
-    TemplateName, UtilityCommand,
+    AttachArgs, Cli, CliCommand, RunArgs, RunLogsArgs, RunSelectorArgs, RunWatchArgs,
+    TargetCommand, TemplateCommand, TemplateName, UtilityCommand,
 };
 use crate::native_v2_cli::{
-    BuiltinGraphTemplate, NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph, RunSelector,
-    TargetAdd, TargetServe, TargetSetup, TemplateDelivery,
+    BuiltinGraphTemplate, NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph,
+    RunLogsCommand, RunRuntime, RunSelector, RunWatchCommand, TargetAdd, TargetServe, TargetSetup,
+    TemplateDelivery,
 };
 
 /// Parse the public native-v2 command surface from arguments after the executable name.
@@ -65,8 +66,8 @@ impl UtilityCommand {
                 target: validated_target(args.target)?,
             }),
             Self::Status(args) => args.into_selector().map(NativeV2CliCommand::Status),
-            Self::Watch(args) => args.into_selector().map(NativeV2CliCommand::Watch),
-            Self::Logs(args) => args.into_selector().map(NativeV2CliCommand::Logs),
+            Self::Watch(args) => args.into_command(),
+            Self::Logs(args) => args.into_command(),
             Self::Attach(args) => args.into_command(),
             Self::ForceStop(args) => args.into_selector().map(NativeV2CliCommand::ForceStop),
             Self::Version => Ok(NativeV2CliCommand::Version),
@@ -115,7 +116,7 @@ impl TemplateCommand {
                 let template = args.template.into_template()?;
                 Ok(NativeV2CliCommand::TemplateShow {
                     template,
-                    delivery: template_delivery(template, args.pr, args.ship)?,
+                    delivery: template_delivery(template, args.delivery.selection())?,
                 })
             }
         }
@@ -140,13 +141,27 @@ impl RunArgs {
             target,
             title: RunTitle::new(self.title)
                 .map_err(|error| usage(format!("invalid --title: {error}")))?,
-            graph: run_graph(self.graph, self.template, self.pr, self.ship)?,
+            graph: run_graph(self.graph, self.template, self.delivery.selection())?,
             input: self.input,
-            runtime_config: self.runtime_config,
+            runtime: run_runtime(self.runtime_config, self.uniform_runtime_config)?,
             branch,
             detach: self.detach,
+            validate_only: self.validate_only,
             submission_key: submission_key(self.submission_key)?,
         }))
+    }
+}
+
+fn run_runtime(
+    exact: Option<PathBuf>,
+    uniform: Option<PathBuf>,
+) -> Result<RunRuntime, NativeV2CliError> {
+    match (exact, uniform) {
+        (Some(path), None) => Ok(RunRuntime::Exact(path)),
+        (None, Some(path)) => Ok(RunRuntime::Uniform(path)),
+        _ => Err(usage(
+            "exactly one of --runtime-config or --uniform-runtime-config is required",
+        )),
     }
 }
 
@@ -165,11 +180,11 @@ fn run_route(
 fn run_graph(
     graph: Option<PathBuf>,
     template: Option<TemplateName>,
-    pr: bool,
-    ship: bool,
+    delivery: (Option<&str>, bool, bool),
 ) -> Result<RunGraph, NativeV2CliError> {
+    let (delivery, pr, ship) = delivery;
     match (graph, template) {
-        (Some(path), None) if !pr && !ship => Ok(RunGraph::File(path)),
+        (Some(path), None) if delivery.is_none() && !pr && !ship => Ok(RunGraph::File(path)),
         (Some(_), None) => Err(usage(
             "--pr and --ship require --template software-change; author delivery in custom graphs",
         )),
@@ -177,7 +192,7 @@ fn run_graph(
             let template = template.into_template()?;
             Ok(RunGraph::Template {
                 template,
-                delivery: template_delivery(template, pr, ship)?,
+                delivery: template_delivery(template, (delivery, pr, ship))?,
             })
         }
         _ => Err(usage("exactly one of --graph or --template is required")),
@@ -203,6 +218,30 @@ impl RunSelectorArgs {
     }
 }
 
+impl RunWatchArgs {
+    fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
+        Ok(NativeV2CliCommand::Watch(RunWatchCommand {
+            run: self.run.into_selector()?,
+            after: self.after.map(Cursor::new),
+        }))
+    }
+}
+
+impl RunLogsArgs {
+    fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
+        let execution = self
+            .execution
+            .map(ExecutionRef::new)
+            .transpose()
+            .map_err(|error| usage(format!("invalid execution reference: {error}")))?;
+        Ok(NativeV2CliCommand::Logs(RunLogsCommand {
+            run: self.run.into_selector()?,
+            after: self.after.map(Cursor::new),
+            execution,
+        }))
+    }
+}
+
 impl AttachArgs {
     fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
         validate_public_id(&self.run_id, "run ID")?;
@@ -220,14 +259,16 @@ impl AttachArgs {
 
 fn template_delivery(
     template: BuiltinGraphTemplate,
-    pr: bool,
-    ship: bool,
+    (selected, pr, ship): (Option<&str>, bool, bool),
 ) -> Result<TemplateDelivery, NativeV2CliError> {
-    let delivery = match (pr, ship) {
-        (true, false) => TemplateDelivery::PullRequest,
-        (false, true) => TemplateDelivery::Merge,
-        (false, false) => TemplateDelivery::None,
-        (true, true) => return Err(usage("--pr and --ship are mutually exclusive")),
+    let delivery = match (selected, pr, ship) {
+        (Some("none"), false, false) | (None, false, false) => TemplateDelivery::None,
+        (Some("pull_request"), false, false) | (None, true, false) => TemplateDelivery::PullRequest,
+        (Some("merge"), false, false) | (None, false, true) => TemplateDelivery::Merge,
+        (Some(mode), false, false) => {
+            return Err(usage(format!("unknown template delivery mode {mode:?}")));
+        }
+        _ => return Err(usage("--delivery, --pr, and --ship are mutually exclusive")),
     };
     if template == BuiltinGraphTemplate::SingleWorker && delivery != TemplateDelivery::None {
         return Err(usage(

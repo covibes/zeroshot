@@ -59,10 +59,10 @@ enum UtilityCommand {
     Status(RunSelectorArgs),
 
     /// Follow a run's durable event stream as NDJSON.
-    Watch(RunSelectorArgs),
+    Watch(RunWatchArgs),
 
     /// Follow a run's log stream as NDJSON.
-    Logs(RunSelectorArgs),
+    Logs(RunLogsArgs),
 
     /// Attach to an execution's interactive event stream as NDJSON.
     Attach(AttachArgs),
@@ -173,11 +173,11 @@ enum TemplateName {
 }
 
 #[derive(Debug, Args)]
-#[command(group = ArgGroup::new("delivery").args(["pr", "ship"]).multiple(false))]
-struct TemplateShowArgs {
-    /// Built-in graph template to render.
-    #[arg(value_enum, value_name = "TEMPLATE")]
-    template: TemplateName,
+#[group(id = "delivery_mode", multiple = false)]
+struct DeliveryArgs {
+    /// Materialize this Rust-owned delivery mode.
+    #[arg(long, value_name = "MODE")]
+    delivery: Option<String>,
 
     /// Materialize pull-request delivery for the software-change template.
     #[arg(long)]
@@ -190,9 +190,28 @@ struct TemplateShowArgs {
     ship: bool,
 }
 
+impl DeliveryArgs {
+    fn selection(&self) -> (Option<&str>, bool, bool) {
+        (self.delivery.as_deref(), self.pr, self.ship)
+    }
+}
+
+#[derive(Debug, Args)]
+struct TemplateShowArgs {
+    /// Built-in graph template to render.
+    #[arg(value_enum, value_name = "TEMPLATE")]
+    template: TemplateName,
+
+    #[command(flatten)]
+    delivery: DeliveryArgs,
+}
+
 #[derive(Debug, Args)]
 #[command(group = ArgGroup::new("graph_source").args(["graph", "template"]).required(true).multiple(false))]
-#[command(group = ArgGroup::new("delivery").args(["pr", "ship"]).multiple(false))]
+#[command(group = ArgGroup::new("runtime_source")
+    .args(["runtime_config", "uniform_runtime_config"])
+    .required(true)
+    .multiple(false))]
 #[command(after_long_help = r#"RUNTIME CONFIGURATION
     The file is secret-free JSON. For example:
 
@@ -223,7 +242,11 @@ struct TemplateShowArgs {
     process; never put values in this file.
 
     Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
-    template-owned delivery binding."#)]
+    template-owned delivery binding.
+
+    --uniform-runtime-config accepts the same harness, provider, size, model, effort, sessionScope,
+    and env fields without nodes. Rust expands that agent binding across every executable graph
+    node and supplies graph-visible Git delivery bindings itself."#)]
 struct RunArgs {
     /// Human-readable title recorded with the run.
     #[arg(long, value_name = "TITLE")]
@@ -241,9 +264,13 @@ struct RunArgs {
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
 
-    /// Load the secret-free runtime plan from this JSON file.
+    /// Load an exact secret-free runtime plan from this JSON file.
     #[arg(long, value_name = "FILE")]
-    runtime_config: PathBuf,
+    runtime_config: Option<PathBuf>,
+
+    /// Expand one secret-free agent runtime across every executable graph node.
+    #[arg(long, value_name = "FILE")]
+    uniform_runtime_config: Option<PathBuf>,
 
     /// Run on this named target; if omitted, run locally. Named targets receive GH_TOKEN when set.
     ///
@@ -264,13 +291,12 @@ struct RunArgs {
     #[arg(short = 'd', long)]
     detach: bool,
 
-    /// Materialize pull-request delivery for the software-change template.
+    /// Validate and materialize the run without submitting it or contacting a target.
     #[arg(long)]
-    pr: bool,
+    validate_only: bool,
 
-    /// Materialize merge delivery for the software-change template.
-    #[arg(long)]
-    ship: bool,
+    #[command(flatten)]
+    delivery: DeliveryArgs,
 }
 
 #[derive(Debug, Args)]
@@ -289,6 +315,30 @@ struct RunSelectorArgs {
     /// Use this named target. If omitted, use the local controller.
     #[arg(long, value_name = "NAME")]
     target: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct RunWatchArgs {
+    #[command(flatten)]
+    run: RunSelectorArgs,
+
+    /// Resume strictly after this durable cursor.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct RunLogsArgs {
+    #[command(flatten)]
+    run: RunSelectorArgs,
+
+    /// Resume strictly after this durable cursor.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<String>,
+
+    /// Return records only for this opaque execution selector.
+    #[arg(long, value_name = "EXECUTION_REF")]
+    execution: Option<String>,
 }
 
 #[derive(Debug, Args)]
