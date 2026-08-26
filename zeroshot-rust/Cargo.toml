@@ -21,7 +21,12 @@ fs2.workspace = true
 getrandom.workspace = true
 httparse.workspace = true
 libc.workspace = true
-keyring = { workspace = true, features = ["apple-native", "sync-secret-service", "windows-native"] }
+keyring = { workspace = true, features = [
+  "apple-native",
+  "crypto-rust",
+  "sync-secret-service",
+  "windows-native",
+] }
 openengine-cluster-protocol.workspace = true
 openengine_cluster_client.workspace = true
 openengine-cluster-server.workspace = true

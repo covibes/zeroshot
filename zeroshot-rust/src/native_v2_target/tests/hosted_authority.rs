@@ -1,14 +1,24 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 
+use super::super::controller_authority::credentials::CredentialStorePreparation;
 use super::super::controller_authority::TargetCredentialStore;
 use super::super::*;
 
 pub(super) struct RotatingCredentialStore {
     state: Mutex<RotatingCredentialState>,
+}
+
+pub(super) struct LoginBlockingCredentialStore {
+    value: Mutex<String>,
+    prepare_started: Notify,
+    prepare_release: Notify,
+    reads: AtomicUsize,
 }
 
 struct RotatingCredentialState {
@@ -360,6 +370,55 @@ async fn read_http_body(stream: &mut tokio::net::TcpStream, bytes: &mut Vec<u8>,
         let count = stream.read(&mut chunk).await.assert_value();
         assert!(count > 0, "HTTP request ended before body");
         bytes.extend_from_slice(chunk.get(..count).assert_value());
+    }
+}
+
+impl LoginBlockingCredentialStore {
+    pub(super) fn new(value: &str) -> Self {
+        Self {
+            value: Mutex::new(value.to_owned()),
+            prepare_started: Notify::new(),
+            prepare_release: Notify::new(),
+            reads: AtomicUsize::new(0),
+        }
+    }
+
+    pub(super) async fn wait_until_prepared(&self) {
+        self.prepare_started.notified().await;
+    }
+
+    pub(super) fn release_login(&self) {
+        self.prepare_release.notify_one();
+    }
+
+    pub(super) fn reads(&self) -> usize {
+        self.reads.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn value(&self) -> String {
+        self.value.lock().assert_value().clone()
+    }
+}
+
+#[async_trait]
+impl TargetCredentialStore for LoginBlockingCredentialStore {
+    async fn prepare_for_login(
+        &self,
+        _target_id: &str,
+    ) -> Result<CredentialStorePreparation, TargetAuthorityError> {
+        self.prepare_started.notify_one();
+        self.prepare_release.notified().await;
+        Ok(CredentialStorePreparation::Managed)
+    }
+
+    async fn get(&self, _target_id: &str) -> Result<Option<String>, TargetAuthorityError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(self.value()))
+    }
+
+    async fn set(&self, _target_id: &str, refresh_token: &str) -> Result<(), TargetAuthorityError> {
+        *self.value.lock().assert_value() = refresh_token.to_owned();
+        Ok(())
     }
 }
 
