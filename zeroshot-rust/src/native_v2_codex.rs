@@ -27,9 +27,9 @@ use crate::native_v2_capsule::provider_process::{
 };
 use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
-    AgentResponse, AgentResponseState, render_agent_prompt, resolve_agent_response, DriverControl,
-    DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
-    ProviderSchemaDialect,
+    AgentResponse, AgentResponseState, render_agent_prompt, resolve_agent_response_with_dialect,
+    DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError,
+    ProviderSchemaDialect, ResolvedEnvironment,
 };
 
 use command::{
@@ -397,7 +397,11 @@ fn resolve_codex_output(
     if let Some(failure) = output.failure_message() {
         return Ok(CodexTurnAdvance::ProviderFailure(failure.to_owned()));
     }
-    let response = resolve_agent_response(&turn.invocation.response, output.final_message()?)?;
+    let response = resolve_agent_response_with_dialect(
+        &turn.invocation.response,
+        output.final_message()?,
+        ProviderSchemaDialect::OpenAiStrict,
+    )?;
     if matches!(response, AgentResponse::Correction(_)) {
         turn.control.emit(LiveOutput::new(
             LiveOutputStream::System,

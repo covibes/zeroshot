@@ -140,7 +140,7 @@ fn provider_schema_covers_every_payload_kind_and_the_verifier_shape() {
 }
 
 #[test]
-fn openai_schema_requires_every_declared_object_field() {
+fn openai_schema_requires_every_field_and_normalizes_optional_nulls() {
     let contract = NodeResponseContract::Worker {
         output: serde_json::from_value(json!({
             "kind": "record",
@@ -159,6 +159,88 @@ fn openai_schema_requires_every_declared_object_field() {
             .assert_value(),
         &json!(["optional", "required"])
     );
+    assert_eq!(
+        schema
+            .pointer("/properties/response/properties/optional")
+            .assert_value(),
+        &json!({ "anyOf": [{ "type": "string" }, { "type": "null" }] })
+    );
+    assert!(matches!(
+        resolve_agent_response_with_dialect(
+            &contract,
+            r#"{"response":{"required":true,"optional":null}}"#,
+            ProviderSchemaDialect::OpenAiStrict,
+        )
+        .assert_value(),
+        AgentResponse::Complete(WorkerOutcome::Verified { output, .. })
+            if output == json!({"required": true})
+    ));
+}
+
+#[test]
+fn openai_normalizes_optional_nulls_recursively() {
+    let contract = NodeResponseContract::Worker {
+        output: serde_json::from_value(json!({
+            "kind": "record",
+            "fields": {
+                "items": {
+                    "type": {
+                        "kind": "array",
+                        "items": {
+                            "kind": "record",
+                            "fields": {
+                                "note": { "type": { "kind": "string" }, "required": false }
+                            }
+                        }
+                    },
+                    "required": true
+                }
+            }
+        }))
+        .assert_value(),
+    };
+
+    assert!(matches!(
+        resolve_agent_response_with_dialect(
+            &contract,
+            r#"{"response":{"items":[{"note":null},{"note":"kept"}]}}"#,
+            ProviderSchemaDialect::OpenAiStrict,
+        )
+        .assert_value(),
+        AgentResponse::Complete(WorkerOutcome::Verified { output, .. })
+            if output == json!({"items": [{}, {"note": "kept"}]})
+    ));
+}
+
+#[test]
+fn openai_preserves_optional_null_payloads() {
+    let contract = NodeResponseContract::Worker {
+        output: serde_json::from_value(json!({
+            "kind": "record",
+            "fields": {
+                "nothing": { "type": { "kind": "null" }, "required": false }
+            }
+        }))
+        .assert_value(),
+    };
+
+    let schema = contract.provider_schema(ProviderSchemaDialect::OpenAiStrict);
+    assert_eq!(
+        schema
+            .pointer("/properties/response/properties/nothing")
+            .assert_value(),
+        &json!({ "type": "null" })
+    );
+    assert!(matches!(
+        resolve_agent_response_with_dialect(
+            &contract,
+            r#"{"response":{"nothing":null}}"#,
+            ProviderSchemaDialect::OpenAiStrict,
+        )
+        .assert_value(),
+        AgentResponse::Complete(WorkerOutcome::Verified { output, .. })
+            if output == json!({"nothing": null})
+    ));
 }
 
 #[test]

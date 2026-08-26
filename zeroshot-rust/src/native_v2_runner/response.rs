@@ -82,6 +82,7 @@ impl NodeResponseContract {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn parse_agent_response(
         &self,
         response: &str,
@@ -89,6 +90,10 @@ impl NodeResponseContract {
         let value = serde_json::from_str(response).map_err(|error| {
             NodeResponseError::new(format!("final response is not valid JSON: {error}"))
         })?;
+        self.parse_agent_value(value)
+    }
+
+    fn parse_agent_value(&self, value: Value) -> Result<WorkerOutcome, NodeResponseError> {
         let outcome = match self {
             Self::Worker { .. } => WorkerOutcome::Verified {
                 output: value,
@@ -110,6 +115,25 @@ impl NodeResponseContract {
         };
         self.validate_agent_outcome(&outcome)?;
         Ok(outcome)
+    }
+
+    fn normalize_openai_response(&self, value: &mut Value) {
+        match self {
+            Self::Worker { output } => normalize_openai_payload(output, value),
+            Self::Verifier {
+                output, diagnostic, ..
+            } => {
+                let Some(response) = value.as_object_mut() else {
+                    return;
+                };
+                if let Some(output_value) = response.get_mut("output") {
+                    normalize_openai_payload(output, output_value);
+                }
+                if let Some(diagnostic_value) = response.get_mut("diagnostic") {
+                    normalize_openai_payload(diagnostic, diagnostic_value);
+                }
+            }
+        }
     }
 
     pub(super) fn validate_outcome(&self, outcome: &WorkerOutcome) -> Result<(), NodeRunnerError> {
@@ -225,9 +249,22 @@ pub(crate) fn resolve_agent_response(
     contract: &NodeResponseContract,
     response: &str,
 ) -> Result<AgentResponse, NodeRunnerError> {
+    resolve_agent_response_with_dialect(contract, response, ProviderSchemaDialect::Standard)
+}
+
+pub(crate) fn resolve_agent_response_with_dialect(
+    contract: &NodeResponseContract,
+    response: &str,
+    dialect: ProviderSchemaDialect,
+) -> Result<AgentResponse, NodeRunnerError> {
     let semantic_response = parse_provider_envelope(response);
     let parsed = match semantic_response {
-        Ok(response) => contract.parse_agent_response(&response),
+        Ok(mut response) => {
+            if dialect == ProviderSchemaDialect::OpenAiStrict {
+                contract.normalize_openai_response(&mut response);
+            }
+            contract.parse_agent_value(response)
+        }
         Err(error) => Err(error),
     };
     Ok(match parsed {
@@ -236,14 +273,13 @@ pub(crate) fn resolve_agent_response(
     })
 }
 
-fn parse_provider_envelope(response: &str) -> Result<String, NodeResponseError> {
+fn parse_provider_envelope(response: &str) -> Result<Value, NodeResponseError> {
     let envelope: ProviderResponseEnvelope = serde_json::from_str(response).map_err(|error| {
         NodeResponseError::new(format!(
             "provider response must be exactly an object containing response: {error}"
         ))
     })?;
-    serde_json::to_string(&envelope.response)
-        .map_err(|_| NodeResponseError::new("provider response could not be encoded".to_owned()))
+    Ok(envelope.response)
 }
 
 #[derive(Deserialize)]
@@ -321,10 +357,16 @@ fn payload_schema(payload: &PayloadType, dialect: ProviderSchemaDialect) -> Valu
             let properties = fields
                 .iter()
                 .map(|(name, field)| {
-                    (
-                        name.as_str().to_owned(),
-                        payload_schema(&field.value_type, dialect),
-                    )
+                    let schema = payload_schema(&field.value_type, dialect);
+                    let schema = if !field.required
+                        && dialect == ProviderSchemaDialect::OpenAiStrict
+                        && !matches!(&field.value_type, PayloadType::Null)
+                    {
+                        json!({ "anyOf": [schema, { "type": "null" }] })
+                    } else {
+                        schema
+                    };
+                    (name.as_str().to_owned(), schema)
                 })
                 .collect::<BTreeMap<_, _>>();
             let required = fields
@@ -340,6 +382,32 @@ fn payload_schema(payload: &PayloadType, dialect: ProviderSchemaDialect) -> Valu
             json!({ "type": "array", "items": payload_schema(items, dialect) })
         }
         PayloadType::Enum { values } => enum_schema(values.values().iter().map(EnumLabel::as_str)),
+    }
+}
+
+fn normalize_openai_payload(payload: &PayloadType, value: &mut Value) {
+    match (payload, value) {
+        (PayloadType::Record { fields }, Value::Object(values)) => {
+            for (name, field) in fields {
+                let name = name.as_str();
+                if !field.required
+                    && !matches!(&field.value_type, PayloadType::Null)
+                    && values.get(name).is_some_and(Value::is_null)
+                {
+                    values.remove(name);
+                    continue;
+                }
+                if let Some(field_value) = values.get_mut(name) {
+                    normalize_openai_payload(&field.value_type, field_value);
+                }
+            }
+        }
+        (PayloadType::Array { items }, Value::Array(values)) => {
+            for item in values {
+                normalize_openai_payload(items, item);
+            }
+        }
+        _ => {}
     }
 }
 
