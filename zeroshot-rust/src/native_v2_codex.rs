@@ -6,6 +6,7 @@
 
 mod command;
 mod output;
+mod schema_file;
 #[path = "native_v2_codex/session.rs"]
 mod session;
 
@@ -28,6 +29,7 @@ use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
     AgentResponse, AgentResponseState, render_agent_prompt, resolve_agent_response, DriverControl,
     DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
+    ProviderSchemaDialect,
 };
 
 use command::{
@@ -36,6 +38,7 @@ use command::{
     provider_model, role_settings,
 };
 use output::{CodexOutput, CodexOutputDecoder};
+use schema_file::CodexSchemaFile;
 use session::CodexSession;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
@@ -119,8 +122,7 @@ impl NativeV2CodexAdapter {
     fn command(
         &self,
         turn: &CodexTurn<'_>,
-        resume: Option<&str>,
-        runtime_home: &Path,
+        input: CodexCommandInput<'_>,
     ) -> Result<ProcessSessionCommand, NodeRunnerError> {
         let invocation = turn.invocation;
         let (model, effort) = agent_selection(&invocation.node.binding)?;
@@ -129,17 +131,18 @@ impl NativeV2CodexAdapter {
         let workspace = self.config.workspace.clone();
         let mut argv = vec!["exec".to_owned()];
         self.add_execution_policy(&mut argv, sandbox);
-        add_resume_command(&mut argv, resume);
+        add_resume_command(&mut argv, input.resume);
         add_provider_args(&mut argv, self.config.provider);
         self.add_execution_config(&mut argv, invocation.role);
         let model = provider_model(self.config.provider, model.as_str());
         add_node_args(&mut argv, &model, effort.copied());
-        add_session_target(&mut argv, resume);
+        argv.extend(["--output-schema".to_owned(), path_text(input.schema_path)?]);
+        add_session_target(&mut argv, input.resume);
 
         Ok(ProcessSessionCommand {
             program: executable,
             argv,
-            environment: self.provider_environment(&invocation.environment, runtime_home)?,
+            environment: self.provider_environment(&invocation.environment, input.runtime_home)?,
             workspace: WorkspaceCapability {
                 current_dir: workspace,
                 mode: access,
@@ -244,11 +247,11 @@ impl NativeV2CodexAdapter {
         resume: Option<&str>,
         prompt: &str,
     ) -> Result<CodexOutput, NodeRunnerError> {
-        let mut process = self.open_turn_process(turn, resume, prompt).await?;
+        let mut turn_process = self.open_turn_process(turn, resume, prompt).await?;
         let redactions =
             redaction_values(turn.invocation.environment.iter().map(|(_, value)| value));
-        let output = collect_output(&mut process, turn.control, &redactions).await;
-        let completion = finish_process(&mut process, output.is_ok()).await;
+        let output = collect_output(&mut turn_process.process, turn.control, &redactions).await;
+        let completion = finish_process(&mut turn_process.process, output.is_ok()).await;
         turn.control
             .record_token_usage(output.as_ref().ok().and_then(CodexOutput::token_usage))?;
         let completion = completion?;
@@ -265,12 +268,30 @@ impl NativeV2CodexAdapter {
         turn: &CodexTurn<'_>,
         resume: Option<&str>,
         prompt: &str,
-    ) -> Result<ProcessSession, NodeRunnerError> {
+    ) -> Result<CodexTurnProcess, NodeRunnerError> {
         let (runner, runtime_home) = self.turn_process(turn.invocation)?;
-        let command = self.command(turn, resume, &runtime_home)?;
+        let schema = CodexSchemaFile::create(
+            &runtime_home,
+            &turn
+                .invocation
+                .response
+                .provider_schema(ProviderSchemaDialect::OpenAiStrict),
+        )?;
+        let command = self.command(
+            turn,
+            CodexCommandInput {
+                resume,
+                runtime_home: &runtime_home,
+                schema_path: schema.path(),
+            },
+        )?;
         let prompt =
             ProcessFrame::new(prompt.as_bytes().to_vec()).map_err(|_| NodeRunnerError::Driver)?;
-        Self::open_process(runner, command, prompt, turn.control).await
+        let process = Self::open_process(runner, command, prompt, turn.control).await?;
+        Ok(CodexTurnProcess {
+            process,
+            _schema: schema,
+        })
     }
 
     async fn open_process(
@@ -296,6 +317,17 @@ struct CodexTurn<'a> {
     session: &'a CodexSession,
     control: &'a DriverControl,
     deadline: Instant,
+}
+
+struct CodexCommandInput<'a> {
+    resume: Option<&'a str>,
+    runtime_home: &'a Path,
+    schema_path: &'a Path,
+}
+
+struct CodexTurnProcess {
+    process: ProcessSession,
+    _schema: CodexSchemaFile,
 }
 
 struct CodexRunState {

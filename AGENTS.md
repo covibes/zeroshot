@@ -320,6 +320,12 @@ artifact store, CAS, staged artifact pipeline, or `ArtifactRef` delivery path, a
 `execution/process` is the contained streaming-session seam. Recovery is registered before spawn,
 stdout and diagnostics remain bounded, and close/release owns termination and reaping exactly once.
 Provider framing and response decoding remain in the Codex and Claude adapters.
+Native-v2 agent turns compile the admitted response contract into a closed provider JSON Schema
+around the single-field `{"response":...}` transport envelope. Claude passes the standard schema
+inline and consumes `structured_output`; Codex passes its required-all-properties strict dialect
+through an atomically created per-turn schema file in the provider-private runtime home. Keep local
+payload validation authoritative, retain the bounded correction fallback, and remove each Codex
+schema file after its process exits.
 Those adapters leave native repository config and MCP discovery enabled; v2 has no MCP schema or
 proxy. The built-in local host alone inherits the current user's `HOME`/`CODEX_HOME` paths for CLI
 subscription identity. Those paths and credentials never enter OECP; hosted homes stay private and

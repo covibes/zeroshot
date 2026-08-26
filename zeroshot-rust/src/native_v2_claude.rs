@@ -25,7 +25,7 @@ use crate::native_v2_capsule::provider_process::{
 use crate::native_v2_contract::{ClaudeProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
     AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
-    LiveOutput, LiveOutputStream, NodeRunnerError, ResolvedEnvironment,
+    LiveOutput, LiveOutputStream, NodeRunnerError, ProviderSchemaDialect, ResolvedEnvironment,
 };
 use command::{
     ClaudeTurnArguments, claude_arguments, configure_openrouter, extend_declared_environment,
@@ -187,6 +187,12 @@ impl ClaudeAdapter {
                 effort: *effort,
                 role: invocation.role,
                 resume_id: input.resume_id,
+                json_schema: serde_json::to_string(
+                    &invocation
+                        .response
+                        .provider_schema(ProviderSchemaDialect::Standard),
+                )
+                .map_err(|_| NodeRunnerError::Driver)?,
                 prompt: input.prompt,
             },
         )?;

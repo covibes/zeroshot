@@ -16,6 +16,7 @@ pub(super) struct ClaudeTurnArguments<'a> {
     pub(super) effort: Option<ReasoningEffort>,
     pub(super) role: NodeRole,
     pub(super) resume_id: Option<&'a str>,
+    pub(super) json_schema: String,
     pub(super) prompt: String,
 }
 
@@ -33,6 +34,8 @@ pub(super) fn claude_arguments(
         "--include-partial-messages".to_owned(),
         "--model".to_owned(),
         turn.model.to_owned(),
+        "--json-schema".to_owned(),
+        turn.json_schema,
     ]);
     if let Some(effort) = turn.effort {
         argv.extend(["--effort".to_owned(), effort_token(effort).to_owned()]);

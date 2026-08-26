@@ -47,7 +47,7 @@ async fn invalid_output_is_corrected_in_the_same_claude_session() {
     let resumed = workspace.read("resumed.args");
     assert_resumed_session(&resumed);
     assert!(resumed.contains("Your previous final response was rejected mechanically"));
-    assert!(resumed.contains("final response is not valid JSON"));
+    assert!(resumed.contains("provider response must be exactly an object containing response"));
 }
 
 #[tokio::test]

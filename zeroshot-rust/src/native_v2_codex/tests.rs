@@ -50,6 +50,16 @@ prompt=$(/usr/bin/cat)
   /usr/bin/printf 'ambient=%s\n' "${AMBIENT_SENTINEL-unset}"
 } >> "$CAPTURE_PATH"
 
+schema_path=
+previous=
+for argument in "$@"; do
+  if [ "$previous" = "--output-schema" ]; then schema_path=$argument; fi
+  previous=$argument
+done
+test -n "$schema_path"
+/usr/bin/printf 'schema_path=%s\n' "$schema_path" >> "$CAPTURE_PATH"
+/usr/bin/printf 'schema=%s\n' "$(/usr/bin/cat "$schema_path")" >> "$CAPTURE_PATH"
+
 resumed=false
 for argument in "$@"; do
   if [ "$argument" = "resume" ]; then
@@ -65,13 +75,21 @@ if [ "${OPENROUTER_API_KEY-unset}" != unset ]; then
     '"text":"visible fake-openrouter-key"}}'
 fi
 if [ "${ALWAYS_MALFORMED-false}" = true ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":\"wrong\"}}"}}'
 elif [ "${CORRECT_OUTPUT-false}" = true ] && [ "$resumed" = false ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":\"wrong\"}}"}}'
 elif [ "$resumed" = true ]; then
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":43}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":43}}"}}'
 else
-  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}'
+  /usr/bin/printf '%s%s\n' \
+    '{"type":"item.completed","item":{"type":"agent_message",' \
+    '"text":"{\"response\":{\"answer\":42}}"}}'
 fi
 
 if [ "${SLOW_RUN-false}" = true ]; then
@@ -216,6 +234,7 @@ fn assert_openrouter_capture(capture: &str) {
         "arg=model_providers.openrouter.wire_api=\"responses\"",
         "arg=--model\narg=openai/gpt-5.6-sol",
         "arg=model_reasoning_effort=\"max\"",
+        "arg=--output-schema",
         "arg=--sandbox\narg=workspace-write",
         "arg=approval_policy=\"never\"",
         "arg=web_search=\"disabled\"",
@@ -231,6 +250,21 @@ fn assert_openrouter_capture(capture: &str) {
             capture.contains(expected),
             "missing capture evidence: {expected}"
         );
+    }
+    let schema = capture
+        .lines()
+        .find_map(|line| line.strip_prefix("schema="))
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .assert_value();
+    assert_eq!(
+        schema["properties"]["response"]["properties"]["answer"],
+        json!({"type":"integer"})
+    );
+    for path in capture
+        .lines()
+        .filter_map(|line| line.strip_prefix("schema_path="))
+    {
+        assert!(!Path::new(path).exists(), "schema file was not removed");
     }
     for suppressed in ["--ignore-user-config", "--ignore-rules", "--strict-config"] {
         assert!(!capture.contains(suppressed));
@@ -270,7 +304,7 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
     assert_eq!(attached.text, "visible [REDACTED]");
     assert_eq!(
         attach.recv_output().await.assert_value().text,
-        r#"{"answer":42}"#
+        r#"{"response":{"answer":42}}"#
     );
     let completion = handle.completion().await.assert_value();
     assert_eq!(
@@ -412,7 +446,7 @@ async fn cancellation_waits_for_contained_child_cleanup() {
     );
     assert_eq!(
         attach.recv_output().await.assert_value().text,
-        r#"{"answer":42}"#
+        r#"{"response":{"answer":42}}"#
     );
     let pid = wait_for_pid(&pid_path).await;
     handle.cancel();

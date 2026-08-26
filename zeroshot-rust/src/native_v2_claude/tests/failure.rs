@@ -93,7 +93,7 @@ if [ "${FAIL_TWICE-false}" = true ]; then
 fi
 printf '%s%s\n' \
   '{"type":"result","subtype":"success","is_error":false,' \
-  '"result":"\"done\"","session_id":"retry-session"}'
+  '"result":"{\"response\":\"done\"}","session_id":"retry-session"}'
 "#;
 
 async fn retry_runner(workspace: &TestDirectory) -> (NativeNodeRunner, NodeRuntimeBinding) {

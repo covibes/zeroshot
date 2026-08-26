@@ -29,7 +29,9 @@ fi
 /usr/bin/printf '%s%s\n' \
   '{"type":"item.completed","item":{"type":"file_change",' \
   '"changes":[{"path":"src/lib.rs","kind":"update"}],"status":"completed"}}'
-/usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}'
+/usr/bin/printf '%s%s\n' \
+  '{"type":"item.completed","item":{"type":"agent_message",' \
+  '"text":"{\"response\":{\"answer\":42}}"}}'
 /usr/bin/printf '%s\n' '{"type":"turn.completed"}'
 "#;
 
