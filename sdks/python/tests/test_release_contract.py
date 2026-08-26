@@ -15,6 +15,7 @@ def test_sdk_release_is_manual_and_rust_release_triggered() -> None:
     assert "workflow_dispatch:" in workflow
     assert "workflow_call:" in workflow
     assert 'name = "zeroshot-rust"' in package
+    assert "glob(f'zeroshot_rust-{version}-py3-none-*.whl')" in workflow
     assert 'sdk_tag="zeroshot-python-v${RUST_VERSION}_${SDK_REVISION}"' in workflow
     assert 'package_version="${RUST_VERSION}.post${SDK_REVISION}"' in workflow
     release_targets = json.loads(

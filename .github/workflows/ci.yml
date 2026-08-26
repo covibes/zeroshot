@@ -253,7 +253,9 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          wheels = list(Path('dist').glob('zeroshot-0.1.0.post1-py3-none-manylinux_2_17_x86_64.whl'))
+          wheels = list(
+              Path('dist').glob('zeroshot_rust-0.1.0.post1-py3-none-manylinux_2_17_x86_64.whl')
+          )
           assert len(wheels) == 1, wheels
           with zipfile.ZipFile(wheels[0]) as archive:
               assert any(

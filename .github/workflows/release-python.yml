@@ -283,7 +283,7 @@ jobs:
           from pathlib import Path
 
           version = os.environ['PACKAGE_VERSION']
-          wheels = sorted(Path('sdk-release').glob(f'zeroshot-{version}-py3-none-*.whl'))
+          wheels = sorted(Path('sdk-release').glob(f'zeroshot_rust-{version}-py3-none-*.whl'))
           assert len(wheels) == 5, wheels
           assert len({wheel.name for wheel in wheels}) == 5
           PY
