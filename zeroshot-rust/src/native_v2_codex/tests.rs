@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "tests/correction.rs"]
+mod correction;
 #[path = "tests/environment.rs"]
 mod environment;
 #[path = "tests/local_identity.rs"]
@@ -299,11 +301,9 @@ fn hosted_codex_uses_the_capsule_as_its_sandbox_boundary() {
     let directory = TestDirectory::new("codex-hosted-policy");
     let local = scripted_adapter(&directory, CodexProvider::OpenAi);
     let hosted = NativeV2CodexAdapter::new(local.config.clone());
-    for role in [NodeRole::Worker, NodeRole::Verifier] {
-        let mut arguments = Vec::new();
-        hosted.add_execution_policy(&mut arguments, role, "read-only");
-        assert_eq!(arguments, ["--dangerously-bypass-approvals-and-sandbox"]);
-    }
+    let mut arguments = Vec::new();
+    hosted.add_execution_policy(&mut arguments, "read-only");
+    assert_eq!(arguments, ["--dangerously-bypass-approvals-and-sandbox"]);
 }
 
 #[tokio::test]
@@ -349,39 +349,6 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
             .iter()
             .all(|home| home.ends_with("writer-node-instance-1"))
     );
-}
-
-#[tokio::test]
-async fn invalid_output_is_corrected_in_the_same_codex_session() {
-    let directory = TestDirectory::new("codex-correction");
-    let capture = directory.child("capture");
-    let (admitted, runtime) = openai_runtime(
-        &directory,
-        SessionScope::Execution,
-        &["CAPTURE_PATH", "OPENAI_API_KEY", "CORRECT_OUTPUT"],
-    )
-    .await;
-    let mut handle = start(
-        &runtime,
-        &admitted,
-        1,
-        &[
-            ("CAPTURE_PATH", capture.display().to_string()),
-            ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
-            ("CORRECT_OUTPUT", "true".to_owned()),
-        ],
-    )
-    .await;
-
-    assert!(matches!(
-        handle.completion().await.assert_value().outcome,
-        WorkerOutcome::Verified { output, .. } if output == json!({"answer": 43})
-    ));
-    let capture = fs::read_to_string(capture).assert_value();
-    assert_eq!(capture.matches("arg=resume").count(), 1);
-    assert_eq!(capture.matches("arg=thread-123").count(), 1);
-    assert!(capture.contains("Your previous final response was rejected mechanically"));
-    assert!(capture.contains("output $.answer must be a integer"));
 }
 
 #[tokio::test]

@@ -30,6 +30,7 @@ jobs:
     outputs:
       node: ${{ steps.paths.outputs.node }}
       rust: ${{ steps.paths.outputs.rust }}
+      python: ${{ steps.paths.outputs.python }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -199,6 +200,69 @@ jobs:
         run: |
           cargo build --locked --release --package zeroshot-rust --bin zeroshot-rust
           ./target/release/zeroshot-rust --help
+
+  python-check:
+    name: Python SDK checks
+    needs: classify
+    if: needs.classify.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: sdks/python/pyproject.toml
+
+      - name: Install Python SDK checks
+        run: python -m pip install --disable-pip-version-check -e '.[dev]'
+
+      - name: Lint and format Python
+        run: |
+          python -m ruff check src tests examples
+          python -m ruff format --check src tests examples
+
+      - name: Type-check Python
+        run: python -m mypy src examples
+
+      - name: Check public docstring signatures
+        run: pydoclint src/zeroshot
+
+      - name: Test Python SDK
+        run: python -m pytest
+
+      - name: Build strict generated documentation and examples
+        run: |
+          python -m mkdocs build --strict
+          python -m compileall -q examples
+
+      - name: Build and inspect a platform wheel
+        env:
+          ZEROSHOT_PYTHON_VERSION: 0.1.0.post1
+          ZEROSHOT_PYTHON_WHEEL_PLATFORM: manylinux_2_17_x86_64
+          ZEROSHOT_RUST_BINARY: /bin/true
+        run: |
+          python -m build --wheel
+          python -m twine check dist/*.whl
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          wheels = list(
+              Path('dist').glob('zeroshot_rust-0.1.0.post1-py3-none-manylinux_2_17_x86_64.whl')
+          )
+          assert len(wheels) == 1, wheels
+          with zipfile.ZipFile(wheels[0]) as archive:
+              assert any(
+                  name.endswith('/zeroshot/_bin/zeroshot-rust')
+                  for name in archive.namelist()
+              )
+          PY
 
   rust-docker:
     name: Rust Docker target
@@ -446,6 +510,7 @@ jobs:
       - node-check
       - rust-check
       - rust-docker
+      - python-check
       - install-matrix
       - release-preflight
     runs-on: ubuntu-latest
@@ -455,9 +520,11 @@ jobs:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           NODE_SELECTED: ${{ needs.classify.outputs.node }}
           RUST_SELECTED: ${{ needs.classify.outputs.rust }}
+          PYTHON_SELECTED: ${{ needs.classify.outputs.python }}
           NODE_CHECK_RESULT: ${{ needs.node-check.result }}
           RUST_CHECK_RESULT: ${{ needs.rust-check.result }}
           RUST_DOCKER_RESULT: ${{ needs.rust-docker.result }}
+          PYTHON_CHECK_RESULT: ${{ needs.python-check.result }}
           INSTALL_MATRIX_RESULT: ${{ needs.install-matrix.result }}
           RELEASE_PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
         run: |
@@ -488,6 +555,13 @@ jobs:
             fi
             if [[ "$RUST_DOCKER_RESULT" != "success" ]]; then
               echo "::error::rust-docker concluded with $RUST_DOCKER_RESULT"
+              exit 1
+            fi
+          fi
+
+          if [[ "$PYTHON_SELECTED" == "true" ]]; then
+            if [[ "$PYTHON_CHECK_RESULT" != "success" ]]; then
+              echo "::error::python-check concluded with $PYTHON_CHECK_RESULT"
               exit 1
             fi
           fi

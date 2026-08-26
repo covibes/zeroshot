@@ -1,10 +1,11 @@
 use std::process::{Command, Output};
 
-use openengine_cluster_testkit::assertions::AssertValue;
+use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};
 use zeroshot_engine::native_v2_admission::{CLAUDE_MODELS, CODEX_MODELS};
 use zeroshot_engine::native_v2_contract::{
     ClaudeProvider, CodexProvider, ReasoningEffort, RunSize, SessionScope,
 };
+use zeroshot_engine::native_v2_cli::{ERROR_FORMAT_ENV, JSON_ERROR_FORMAT};
 
 macro_rules! exhaustive_values {
     ($type:ty => [$($variant:path),+ $(,)?]) => {{
@@ -235,6 +236,25 @@ fn typos_report_a_suggestion_and_contextual_usage() {
         "a similar argument exists: '--title'",
         "usage: zeroshot-rust run",
     );
+}
+
+#[test]
+fn sdk_error_mode_emits_one_stable_native_diagnostic() {
+    let output = Command::new(env!("CARGO_BIN_EXE_zeroshot-rust"))
+        .args(["template", "show", "definitely-not-a-template"])
+        .env(ERROR_FORMAT_ENV, JSON_ERROR_FORMAT)
+        .output()
+        .assert_value_with("zeroshot-rust command should be invocable");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stderr).assert_value_with("structured SDK diagnostic");
+    assert_eq!(value.assert_key("schema"), "zeroshot.error/v1");
+    assert_eq!(value.assert_key("kind"), "invalid_request");
+    assert_eq!(value.assert_key("code"), "template.unknown");
+    assert!(value.assert_key("message").as_str().is_some_and(|message| {
+        message.contains("definitely-not-a-template") && message.contains("single-worker")
+    }));
 }
 
 fn assert_help(arguments: &[&str], path: &[&str]) {

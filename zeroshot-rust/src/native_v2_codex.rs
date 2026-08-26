@@ -31,9 +31,9 @@ use crate::native_v2_runner::{
 };
 
 use command::{
-    add_local_execution_policy, add_node_args, add_provider_args, add_resume_command,
-    add_session_target, configure_provider_auth, process_environment, provider_model,
-    role_settings,
+    add_local_execution_config, add_local_execution_policy, add_node_args, add_provider_args,
+    add_resume_command, add_session_target, configure_provider_auth, process_environment,
+    provider_model, role_settings,
 };
 use output::{CodexOutput, CodexOutputDecoder};
 use session::CodexSession;
@@ -94,12 +94,18 @@ impl NativeV2CodexAdapter {
         Self::new_local(config)
     }
 
-    fn add_execution_policy(&self, argv: &mut Vec<String>, role: NodeRole, sandbox: &str) {
+    fn add_execution_policy(&self, argv: &mut Vec<String>, sandbox: &str) {
         if self.externally_sandboxed {
             argv.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
             return;
         }
-        add_local_execution_policy(argv, role, sandbox);
+        add_local_execution_policy(argv, sandbox);
+    }
+
+    fn add_execution_config(&self, argv: &mut Vec<String>, role: NodeRole) {
+        if !self.externally_sandboxed {
+            add_local_execution_config(argv, role);
+        }
     }
 
     fn turn_process(
@@ -122,9 +128,10 @@ impl NativeV2CodexAdapter {
         let executable = path_text(&self.config.executable)?;
         let workspace = self.config.workspace.clone();
         let mut argv = vec!["exec".to_owned()];
-        add_provider_args(&mut argv, self.config.provider);
-        self.add_execution_policy(&mut argv, invocation.role, sandbox);
+        self.add_execution_policy(&mut argv, sandbox);
         add_resume_command(&mut argv, resume);
+        add_provider_args(&mut argv, self.config.provider);
+        self.add_execution_config(&mut argv, invocation.role);
         let model = provider_model(self.config.provider, model.as_str());
         add_node_args(&mut argv, &model, effort.copied());
         add_session_target(&mut argv, resume);

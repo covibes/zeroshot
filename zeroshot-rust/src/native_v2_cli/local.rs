@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_client::ClusterClient;
+use openengine_cluster_client::{ClientError, ClusterClient};
 use openengine_cluster_protocol::{
     IdempotencyKey, RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult,
     RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams,
@@ -30,7 +30,7 @@ use crate::native_v2_portable_controller::{
 };
 use crate::native_v2_portable_controller::process::{PortableControllerTransport, connect_transport};
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
-use crate::v2_run_ledger::{RunLedger, RunLedgerError};
+use crate::v2_run_ledger::RunLedger;
 
 #[path = "local/state.rs"]
 mod state;
@@ -111,7 +111,7 @@ impl LocalCliBackend {
         &self,
         run_id: &openengine_cluster_protocol::RunId,
     ) -> Result<Arc<PortableControllerTransport>, NativeV2CliError> {
-        let paths = self.paths(run_id)?;
+        let paths = self.existing_run_paths(run_id)?;
         let deadline = Instant::now() + self.ready_timeout;
         loop {
             if read_ready(&paths).is_ok_and(|ready| &ready.run_id != run_id) {
@@ -142,6 +142,18 @@ impl LocalCliBackend {
         }
     }
 
+    fn existing_run_paths(
+        &self,
+        run_id: &openengine_cluster_protocol::RunId,
+    ) -> Result<PortableControllerPaths, NativeV2CliError> {
+        if !self.run_storage(run_id)?.is_dir() {
+            return Err(NativeV2CliError::RunNotFound {
+                run_id: run_id.as_str().to_owned(),
+            });
+        }
+        self.paths(run_id)
+    }
+
     async fn start_controller(
         &self,
         request: PreparedRunRequest,
@@ -149,7 +161,7 @@ impl LocalCliBackend {
         NativeV2Admission
             .validate_intent(&request.intent, DeliveryPolicy::Optional)
             .await
-            .map_err(local_error)?;
+            .map_err(NativeV2CliError::InvalidRun)?;
         let prepared = prepare_local_run(request, &self.current_directory, &self.git_program)
             .map_err(local_error)?;
         let digest = submission_digest(&prepared.submission).map_err(local_error)?;
@@ -250,9 +262,9 @@ impl LocalCliBackend {
             ));
         }
         if stored.submission_digest != *submission_digest {
-            return Err(local_error(RunLedgerError::SubmissionConflict {
-                existing_run_id: run_id,
-            }));
+            return Err(NativeV2CliError::SubmissionConflict {
+                existing_run_id: run_id.as_str().to_owned(),
+            });
         }
         Ok(Some(run_id))
     }
@@ -448,8 +460,8 @@ fn require_local(target: Option<&str>) -> Result<(), NativeV2CliError> {
     }
 }
 
-fn protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
-    NativeV2CliError::Protocol(error.to_string())
+fn protocol_error(error: ClientError) -> NativeV2CliError {
+    super::diagnostic::client_error(error)
 }
 
 fn local_error(error: impl std::fmt::Display) -> NativeV2CliError {

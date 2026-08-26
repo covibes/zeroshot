@@ -44,6 +44,9 @@ const RUST_PATHS = new Set([
   'scripts/rust-distribution.js',
 ]);
 
+const PYTHON_PREFIXES = ['sdks/python/'];
+const PYTHON_PATHS = new Set(['.github/workflows/release-python.yml']);
+
 const NODE_PREFIXES = [
   '.husky/',
   'bin/',
@@ -93,6 +96,9 @@ function classifyPath(pathname) {
   if (RUST_PATHS.has(normalized) || hasPrefix(normalized, RUST_PREFIXES)) {
     return 'rust';
   }
+  if (PYTHON_PATHS.has(normalized) || hasPrefix(normalized, PYTHON_PREFIXES)) {
+    return 'python';
+  }
   if (NODE_PATHS.has(normalized) || hasPrefix(normalized, NODE_PREFIXES)) {
     return 'node';
   }
@@ -102,23 +108,26 @@ function classifyPath(pathname) {
 }
 
 function classifyPaths(paths) {
-  const ownership = { node: [], rust: [], shared: [] };
+  const ownership = { node: [], rust: [], python: [], shared: [] };
+  const selected = new Set();
 
   for (const pathname of paths) {
     const normalized = normalizePath(pathname);
     if (normalized.length === 0) continue;
-    ownership[classifyPath(normalized)].push(normalized);
+    const kind = classifyPath(normalized);
+    ownership[kind].push(normalized);
+    selected.add(kind);
   }
 
-  const hasOwnedPath =
-    ownership.node.length > 0 || ownership.rust.length > 0 || ownership.shared.length > 0;
-  if (!hasOwnedPath) {
-    return { node: true, rust: true, ownership };
+  if (selected.size === 0) {
+    return { node: true, rust: true, python: true, ownership };
   }
 
   return {
-    node: ownership.node.length > 0 || ownership.shared.length > 0,
-    rust: ownership.rust.length > 0 || ownership.shared.length > 0,
+    node: selected.has('node') || selected.has('shared'),
+    rust: selected.has('rust') || selected.has('shared'),
+    // The SDK wraps the native executable, so every Rust or shared change rechecks Python.
+    python: selected.has('python') || selected.has('rust') || selected.has('shared'),
     ownership,
   };
 }
@@ -132,10 +141,10 @@ function changedPathsFromStdin() {
 
 function main() {
   const result = classifyPaths(changedPathsFromStdin());
-  const { node, rust, shared } = result.ownership;
-  process.stdout.write(`node=${result.node}\nrust=${result.rust}\n`);
+  const { node, rust, python, shared } = result.ownership;
+  process.stdout.write(`node=${result.node}\nrust=${result.rust}\npython=${result.python}\n`);
   process.stderr.write(
-    `CI ownership: node=${node.length}, rust=${rust.length}, shared=${shared.length}\n`
+    `CI ownership: node=${node.length}, rust=${rust.length}, python=${python.length}, shared=${shared.length}\n`
   );
 }
 

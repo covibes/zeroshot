@@ -203,6 +203,9 @@ Arguments:
           - software-change: A review, validation, and optional delivery workflow for code changes
 
 Options:
+      --delivery <MODE>
+          Materialize this Rust-owned delivery mode
+
       --pr
           Materialize pull-request delivery for the software-change template
 
@@ -235,7 +238,7 @@ Submit a graph run locally or to a named target.
 
 When --target is omitted, the run uses the current local repository. A foreground run follows NDJSON events until completion. --detach returns after submission; Ctrl-C also detaches from observation without stopping the run. Named-target runs send GH_TOKEN, when set, for source checkout and Git delivery; providers receive it only when the runtime declares GH_TOKEN.
 
-Usage: zeroshot-rust run [OPTIONS] --title <TITLE> --input <FILE> --runtime-config <FILE> <--graph <FILE>|--template <TEMPLATE>>
+Usage: zeroshot-rust run [OPTIONS] --title <TITLE> --input <FILE> <--graph <FILE>|--template <TEMPLATE>> <--runtime-config <FILE>|--uniform-runtime-config <FILE>>
 
 Options:
       --title <TITLE>
@@ -255,7 +258,10 @@ Options:
           Load the graph's initial input from this JSON file
 
       --runtime-config <FILE>
-          Load the secret-free runtime plan from this JSON file
+          Load an exact secret-free runtime plan from this JSON file
+
+      --uniform-runtime-config <FILE>
+          Expand one secret-free agent runtime across every executable graph node
 
       --target <NAME>
           Run on this named target; if omitted, run locally. Named targets receive GH_TOKEN when set.
@@ -271,11 +277,19 @@ Options:
   -d, --detach
           Return after submission instead of following NDJSON run events
 
+      --validate-only
+          Validate and materialize the run without submitting it or contacting a target
+
+      --delivery <MODE>
+          Materialize this Rust-owned delivery mode
+
       --pr
           Materialize pull-request delivery for the software-change template
 
       --ship
-          Materialize merge delivery for the software-change template
+          Materialize merge delivery for the software-change template.
+
+          Named-target runs forward GH_TOKEN for the generated GitHub merge operation.
 
   -h, --help
           Print help (see a summary with '-h')
@@ -311,6 +325,10 @@ RUNTIME CONFIGURATION
 
     Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
     template-owned delivery binding.
+
+    --uniform-runtime-config accepts the same harness, provider, size, model, effort, sessionScope,
+    and env fields without nodes. Rust expands that agent binding across every executable graph
+    node and supplies graph-visible Git delivery bindings itself.
 ```
 
 ### `zeroshot-rust list`
@@ -362,6 +380,9 @@ Options:
       --target <NAME>
           Use this named target. If omitted, use the local controller
 
+      --after <CURSOR>
+          Resume strictly after this durable cursor
+
   -h, --help
           Print help
 ```
@@ -380,6 +401,12 @@ Arguments:
 Options:
       --target <NAME>
           Use this named target. If omitted, use the local controller
+
+      --after <CURSOR>
+          Resume strictly after this durable cursor
+
+      --execution <EXECUTION_REF>
+          Return records only for this opaque execution selector
 
   -h, --help
           Print help

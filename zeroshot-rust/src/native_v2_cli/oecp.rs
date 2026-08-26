@@ -448,8 +448,8 @@ async fn forward<T, E, O>(
     }
 }
 
-fn protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
-    NativeV2CliError::Protocol(error.to_string())
+fn protocol_error(error: ClientError) -> NativeV2CliError {
+    super::diagnostic::client_error(error)
 }
 
 fn subscription_error(error: ClientError) -> NativeV2CliError {

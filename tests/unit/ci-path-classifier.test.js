@@ -17,8 +17,10 @@ it('classifies product-owned paths without starting the other lane', function ()
     ownership: {
       node: ['src/orchestrator.js', 'tests/cli-run-mode.test.js'],
       rust: [],
+      python: [],
       shared: [],
     },
+    python: false,
   });
 
   assert.equal(classifyPath('zeroshot-rust/src/main.rs'), 'rust');
@@ -30,9 +32,25 @@ it('classifies product-owned paths without starting the other lane', function ()
   assert.deepEqual(classifyPaths(['zeroshot-rust/src/main.rs', 'npm/zeroshot-rust/install.js']), {
     node: false,
     rust: true,
+    python: true,
     ownership: {
       node: [],
       rust: ['zeroshot-rust/src/main.rs', 'npm/zeroshot-rust/install.js'],
+      python: [],
+      shared: [],
+    },
+  });
+
+  assert.equal(classifyPath('sdks/python/src/zeroshot/client.py'), 'python');
+  assert.equal(classifyPath('.github/workflows/release-python.yml'), 'python');
+  assert.deepEqual(classifyPaths(['sdks/python/src/zeroshot/client.py']), {
+    node: false,
+    rust: false,
+    python: true,
+    ownership: {
+      node: [],
+      rust: [],
+      python: ['sdks/python/src/zeroshot/client.py'],
       shared: [],
     },
   });
@@ -53,8 +71,12 @@ it('runs both lanes for shared, mixed, unknown, and empty changes', function () 
   ]) {
     assert.equal(classifyPath(pathname), 'shared');
     assert.deepEqual(
-      { node: classifyPaths([pathname]).node, rust: classifyPaths([pathname]).rust },
-      { node: true, rust: true }
+      {
+        node: classifyPaths([pathname]).node,
+        rust: classifyPaths([pathname]).rust,
+        python: classifyPaths([pathname]).python,
+      },
+      { node: true, rust: true, python: true }
     );
   }
 
@@ -62,10 +84,17 @@ it('runs both lanes for shared, mixed, unknown, and empty changes', function () 
   assert.equal(classifyPath('.github/workflows/codeql.yml'), 'node');
 
   const mixed = classifyPaths(['src/orchestrator.js', 'zeroshot-rust/src/main.rs']);
-  assert.deepEqual({ node: mixed.node, rust: mixed.rust }, { node: true, rust: true });
   assert.deepEqual(
-    { node: classifyPaths([]).node, rust: classifyPaths([]).rust },
-    { node: true, rust: true }
+    { node: mixed.node, rust: mixed.rust, python: mixed.python },
+    { node: true, rust: true, python: true }
+  );
+  assert.deepEqual(
+    {
+      node: classifyPaths([]).node,
+      rust: classifyPaths([]).rust,
+      python: classifyPaths([]).python,
+    },
+    { node: true, rust: true, python: true }
   );
 });
 
@@ -77,7 +106,7 @@ it('emits GitHub outputs from null-delimited git paths', function () {
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, 'node=false\nrust=true\n');
+  assert.equal(result.stdout, 'node=false\nrust=true\npython=true\n');
 });
 
 it('keeps one always-starting classifier and one stable aggregate result', function () {
@@ -89,6 +118,7 @@ it('keeps one always-starting classifier and one stable aggregate result', funct
   assert.match(workflow, /node \.github\/ci-path-classifier\.js/);
   assert.match(workflow, /\n {2}node-check:\n[\s\S]*?needs: classify/);
   assert.match(workflow, /\n {2}rust-check:\n[\s\S]*?needs: classify/);
+  assert.match(workflow, /\n {2}python-check:\n[\s\S]*?needs: classify/);
   assert.match(
     workflow,
     /node-check:[\s\S]*?Opcore introduced-change gate[\s\S]*?if: needs\.classify\.outputs\.rust != 'true'/
@@ -101,6 +131,7 @@ it('keeps one always-starting classifier and one stable aggregate result', funct
   assert.match(workflow, /RUST_DOCKER_RESULT: \$\{\{ needs\.rust-docker\.result \}\}/);
   assert.match(workflow, /if \[\[ "\$NODE_SELECTED" == "true" \]\]/);
   assert.match(workflow, /if \[\[ "\$RUST_SELECTED" == "true" \]\]/);
+  assert.match(workflow, /if \[\[ "\$PYTHON_SELECTED" == "true" \]\]/);
   assert.doesNotMatch(triggers, /^\s+paths(?:-ignore)?:/m);
   assert.match(codeql, /node \.github\/ci-path-classifier\.js/);
   assert.match(codeql, /\n {2}analyze:\n[\s\S]*?needs: classify/);

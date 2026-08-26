@@ -85,8 +85,11 @@ pub(super) fn add_provider_args(argv: &mut Vec<String>, provider: CodexProvider)
     }
 }
 
-pub(super) fn add_local_execution_policy(argv: &mut Vec<String>, role: NodeRole, sandbox: &str) {
+pub(super) fn add_local_execution_policy(argv: &mut Vec<String>, sandbox: &str) {
     argv.extend(["--sandbox".to_owned(), sandbox.to_owned()]);
+}
+
+pub(super) fn add_local_execution_config(argv: &mut Vec<String>, role: NodeRole) {
     argv.extend([
         "--config".to_owned(),
         "approval_policy=\"never\"".to_owned(),

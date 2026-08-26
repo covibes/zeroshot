@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use openengine_cluster_protocol::{RunTitle, RuntimePlan};
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
 use serde_json::{json, Value};
 
 use super::*;
@@ -45,6 +46,7 @@ fn assert_cursor_calls(calls: &[Call], kind: CursorCallKind, expected: &[Option<
                     target,
                     run_id,
                     from_cursor,
+                    ..
                 },
             ) => Some((target, run_id, from_cursor)),
             _ => None,
@@ -93,6 +95,17 @@ fn run_args(graph: &Path, input: &Path, runtime: &Path, extra: &[&str]) -> Vec<O
     ];
     values.extend(extra.iter().map(OsString::from));
     values
+}
+
+async fn rejected_without_backend_contact(
+    command: NativeV2CliCommand,
+    backend: &FakeBackend,
+) -> NativeV2CliError {
+    let error = execute_native_v2_cli(command, backend, &mut NeverDetach, &mut Vec::new())
+        .await
+        .assert_error();
+    assert!(backend.calls().is_empty());
+    error
 }
 
 struct FixtureFiles {
@@ -360,8 +373,6 @@ async fn restarted_client_reconnects_with_public_run_id_only() {
     );
 }
 
-use openengine_cluster_testkit::assertions::AssertValue;
-
 #[tokio::test]
 async fn list_and_status_are_run_centric() {
     let backend = FakeBackend::default();
@@ -390,7 +401,16 @@ async fn list_and_status_are_run_centric() {
 async fn logs_attach_and_force_use_the_run_scoped_methods() {
     let backend = FakeBackend::default();
     for argv in [
-        args(&["logs", "run-1", "--target", "prod"]),
+        args(&[
+            "logs",
+            "run-1",
+            "--target",
+            "prod",
+            "--after",
+            "v2:7",
+            "--execution",
+            "exec-9",
+        ]),
         args(&["attach", "run-1", "exec-9", "--target", "prod"]),
         args(&["force-stop", "run-1", "--target", "prod"]),
     ] {
@@ -405,7 +425,8 @@ async fn logs_attach_and_force_use_the_run_scoped_methods() {
             Call::Logs {
                 target: Some("prod".to_owned()),
                 run_id: "run-1".to_owned(),
-                from_cursor: None,
+                from_cursor: Some("v2:7".to_owned()),
+                execution: Some("exec-9".to_owned()),
             },
             Call::Attach {
                 target: Some("prod".to_owned()),

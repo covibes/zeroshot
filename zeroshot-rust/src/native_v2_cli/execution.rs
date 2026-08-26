@@ -1,14 +1,16 @@
 use std::{io::Write, time::Duration};
+
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
     RunLogsParams, RunStatus, RunStatusParams, RunWatchParams, SubscriptionCloseReason,
     TerminalResult,
 };
 use serde::Serialize;
+
 use super::{
-    BuiltinGraphTemplate, CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal,
-    CliRunStatus, CliRunWatchEventNotification, NativeV2CliBackend, NativeV2CliCommand,
-    NativeV2CliError, RunCommand, RunSelector, TemplateDelivery,
+    CliOutcome, CliRunStatus, CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem,
+    DetachSignal, NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError, RunCommand,
+    RunLogsCommand, RunSelector, RunWatchCommand,
 };
 #[path = "execution/attach.rs"]
 mod attach;
@@ -18,9 +20,10 @@ mod context;
 mod status;
 #[path = "execution/submission.rs"]
 mod submission;
-use attach::{follow_attach, RoutedAttach};
+use attach::{RoutedAttach, follow_attach};
 pub(crate) use context::CliExecutionContext;
-use submission::prepare_submission_with_environment;
+pub use submission::{try_execute_native_v2_preflight, try_execute_native_v2_static};
+use submission::submit_run;
 use status::outcome_for_status;
 
 pub async fn execute_native_v2_cli<B, S, W>(
@@ -61,47 +64,6 @@ where
         NativeV2CliCommand::TargetServe(_) => Err(NativeV2CliError::ProcessCommand),
         command => execute_run_operation(command, context.backend, signal, output).await,
     }
-}
-
-/// Executes commands that need no target registry, credentials, or controller state.
-pub fn try_execute_native_v2_static(
-    command: &NativeV2CliCommand,
-    output: &mut impl Write,
-) -> Result<Option<CliOutcome>, NativeV2CliError> {
-    if let Some(text) = command.product_info() {
-        output.write_all(text.as_bytes())?;
-        output.flush()?;
-        return Ok(Some(CliOutcome::Completed));
-    }
-    let outcome = match command {
-        NativeV2CliCommand::TemplateList => execute_template_list(output)?,
-        NativeV2CliCommand::TemplateShow { template, delivery } => {
-            execute_template_show(*template, *delivery, output)?
-        }
-        _ => return Ok(None),
-    };
-    Ok(Some(outcome))
-}
-
-fn execute_template_list(output: &mut impl Write) -> Result<CliOutcome, NativeV2CliError> {
-    let names = BuiltinGraphTemplate::all()
-        .iter()
-        .map(|template| template.name())
-        .collect::<Vec<_>>();
-    write_json(output, &names)?;
-    Ok(CliOutcome::Completed)
-}
-
-fn execute_template_show(
-    template: BuiltinGraphTemplate,
-    delivery: TemplateDelivery,
-    output: &mut impl Write,
-) -> Result<CliOutcome, NativeV2CliError> {
-    let graph = template
-        .materialize(delivery)
-        .map_err(|error| NativeV2CliError::Usage(error.to_string()))?;
-    write_json(output, &graph)?;
-    Ok(CliOutcome::Completed)
 }
 
 async fn execute_target<B>(
@@ -211,26 +173,34 @@ where
     W: Write,
 {
     match command {
-        NativeV2CliCommand::Watch(run) => {
+        NativeV2CliCommand::Watch(RunWatchCommand { run, after }) => {
             follow_durable(
                 DurableFollow {
                     backend,
                     target: run.target.as_deref(),
                     run_id: run.run_id,
                     kind: DurableFollowKind::Watch,
+                    initial_cursor: after,
+                    execution: None,
                 },
                 signal,
                 output,
             )
             .await
         }
-        NativeV2CliCommand::Logs(run) => {
+        NativeV2CliCommand::Logs(RunLogsCommand {
+            run,
+            after,
+            execution,
+        }) => {
             follow_durable(
                 DurableFollow {
                     backend,
                     target: run.target.as_deref(),
                     run_id: run.run_id,
                     kind: DurableFollowKind::Logs,
+                    initial_cursor: after,
+                    execution,
                 },
                 signal,
                 output,
@@ -269,11 +239,10 @@ where
     S: DetachSignal,
     W: Write,
 {
-    let params = prepare_submission_with_environment(&run, context.environment)?;
-    let receipt = context
-        .backend
-        .run_submit(run.target.as_deref(), params)
-        .await?;
+    let Some(receipt) = submit_run(&run, context).await? else {
+        write_json(output, &serde_json::json!({ "valid": true }))?;
+        return Ok(CliOutcome::Completed);
+    };
     write_json(output, &receipt)?;
     if run.detach {
         return Ok(CliOutcome::Detached);
@@ -284,6 +253,8 @@ where
             target: run.target.as_deref(),
             run_id: receipt.run_id,
             kind: DurableFollowKind::Watch,
+            initial_cursor: None,
+            execution: None,
         },
         signal,
         output,
@@ -316,6 +287,8 @@ struct DurableFollow<'a, B> {
     target: Option<&'a str>,
     run_id: RunId,
     kind: DurableFollowKind,
+    initial_cursor: Option<Cursor>,
+    execution: Option<openengine_cluster_protocol::ExecutionRef>,
 }
 
 impl<B> DurableFollow<'_, B>
@@ -345,7 +318,7 @@ where
                     RunLogsParams {
                         run_id: self.run_id.clone(),
                         from_cursor,
-                        execution: None,
+                        execution: self.execution.clone(),
                     },
                 )
                 .await
@@ -408,7 +381,7 @@ where
     S: DetachSignal,
     W: Write,
 {
-    let mut from_cursor: Option<Cursor> = None;
+    let mut from_cursor = follow.initial_cursor.clone();
     let mut opened = false;
     loop {
         let subscription = tokio::select! {

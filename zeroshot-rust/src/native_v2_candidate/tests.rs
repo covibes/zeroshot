@@ -388,9 +388,10 @@ async fn submit_through_cli(
             title: RunTitle::new("Candidate end to end").assert_value_with("title"),
             graph: RunGraph::File(graph_path),
             input: input_path,
-            runtime_config: runtime_path,
+            runtime: crate::native_v2_cli::RunRuntime::Exact(runtime_path),
             branch: None,
             detach: true,
+            validate_only: false,
             submission_key: Some(
                 IdempotencyKey::new("candidate-e2e").assert_value_with("submission key"),
             ),

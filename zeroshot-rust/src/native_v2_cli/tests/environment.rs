@@ -13,10 +13,18 @@ fn runtime_with_environment() -> RuntimePlan {
         "provider":"openai",
         "size":"standard",
         "nodes":{
-            "one":{"kind":"agent","model":"gpt-5.6-sol","env":["DECLARED","SHARED"]},
-            "two":{"kind":"agent","model":"gpt-5.6-sol","env":["SHARED"]}
+            "worker":{"kind":"agent","model":"gpt-5.6-sol","env":["DECLARED","SHARED"]}
         }
     }))
+    .assert_value()
+}
+
+fn environment_graph() -> serde_json::Value {
+    serde_json::to_value(
+        BuiltinGraphTemplate::SingleWorker
+            .materialize(TemplateDelivery::None)
+            .assert_value(),
+    )
     .assert_value()
 }
 
@@ -34,6 +42,38 @@ fn software_change_runtime() -> RuntimePlan {
         }
     }))
     .assert_value()
+}
+
+fn environment_command(extra: &[&str]) -> (FixtureFiles, NativeV2CliCommand) {
+    let files = FixtureFiles::with_runtime(
+        environment_graph(),
+        json!({"task":"ship it"}),
+        runtime_with_environment(),
+    );
+    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &files.runtime, extra))
+        .assert_value();
+    (files, command)
+}
+
+async fn execute_with_environment(
+    command: NativeV2CliCommand,
+    backend: &FakeBackend,
+    environment: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<CliOutcome, NativeV2CliError> {
+    let context = CliExecutionContext::new(backend, environment);
+    execute_native_v2_cli_with_context(command, &context, &mut NeverDetach, &mut Vec::new()).await
+}
+
+async fn assert_declared_environment_rejected(
+    command: NativeV2CliCommand,
+    backend: &FakeBackend,
+    environment: &dyn Fn(&str) -> Option<OsString>,
+) {
+    let error = execute_with_environment(command, backend, environment)
+        .await
+        .assert_error();
+    assert!(error.to_string().contains("DECLARED"));
+    assert!(backend.calls().is_empty());
 }
 
 #[tokio::test]
@@ -63,8 +103,7 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
     .assert_value();
     let backend = FakeBackend::default();
     let available = |name: &str| (name == "GH_TOKEN").then(|| OsString::from("template-secret"));
-    let context = CliExecutionContext::new(&backend, &available);
-    execute_native_v2_cli_with_context(command, &context, &mut NeverDetach, &mut Vec::new())
+    execute_with_environment(command, &backend, &available)
         .await
         .assert_value();
     let calls = backend.calls();
@@ -111,26 +150,14 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
 
 #[tokio::test]
 async fn run_collects_only_the_distinct_declared_environment_before_submission() {
-    let files = FixtureFiles::with_runtime(
-        graph(),
-        json!({"task":"ship it"}),
-        runtime_with_environment(),
-    );
-    let command = parse_native_v2_args(run_args(
-        &files.graph,
-        &files.input,
-        &files.runtime,
-        &["--submission-key", "environment-key", "-d"],
-    ))
-    .assert_value();
+    let (_files, command) = environment_command(&["--submission-key", "environment-key", "-d"]);
     let requested = std::cell::RefCell::new(Vec::new());
     let backend = FakeBackend::default();
     let available = |name: &str| {
         requested.borrow_mut().push(name.to_owned());
         Some(OsString::from(format!("value-for-{name}")))
     };
-    let context = CliExecutionContext::new(&backend, &available);
-    execute_native_v2_cli_with_context(command, &context, &mut NeverDetach, &mut Vec::new())
+    execute_with_environment(command, &backend, &available)
         .await
         .assert_value();
 
@@ -162,27 +189,10 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
 
 #[tokio::test]
 async fn missing_declared_environment_fails_before_backend_contact() {
-    let files = FixtureFiles::with_runtime(
-        graph(),
-        json!({"task":"ship it"}),
-        runtime_with_environment(),
-    );
-    let command = parse_native_v2_args(run_args(
-        &files.graph,
-        &files.input,
-        &files.runtime,
-        &["--submission-key", "missing-environment", "-d"],
-    ))
-    .assert_value();
+    let (_files, command) = environment_command(&["--submission-key", "missing-environment", "-d"]);
     let backend = FakeBackend::default();
     let available = |_: &str| None;
-    let context = CliExecutionContext::new(&backend, &available);
-    let error =
-        execute_native_v2_cli_with_context(command, &context, &mut NeverDetach, &mut Vec::new())
-            .await
-            .assert_error();
-    assert!(error.to_string().contains("DECLARED"));
-    assert!(backend.calls().is_empty());
+    assert_declared_environment_rejected(command, &backend, &available).await;
 }
 
 #[cfg(unix)]
@@ -190,25 +200,79 @@ async fn missing_declared_environment_fails_before_backend_contact() {
 async fn non_utf8_declared_environment_fails_before_backend_contact() {
     use std::os::unix::ffi::OsStringExt as _;
 
-    let files = FixtureFiles::with_runtime(
-        graph(),
-        json!({"task":"ship it"}),
-        runtime_with_environment(),
+    let (_files, command) =
+        environment_command(&["--submission-key", "non-utf8-environment", "-d"]);
+    let backend = FakeBackend::default();
+    let available = |_: &str| Some(OsString::from_vec(vec![0xff]));
+    assert_declared_environment_rejected(command, &backend, &available).await;
+}
+
+#[tokio::test]
+async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
+    let files = FixtureFiles::new(graph(), json!({"task":"inspect it"}));
+    std::fs::write(
+        &files.runtime,
+        serde_json::to_vec(&json!({
+            "provider":"openrouter",
+            "model":"gpt-5.6-luna",
+            "effort":"max"
+        }))
+        .assert_value(),
+    )
+    .assert_value();
+    let command = parse_native_v2_args(args(&[
+        "run",
+        "--target",
+        "prod",
+        "--title",
+        "Uniform runtime",
+        "--template",
+        "single-worker",
+        "--input",
+        files.input.to_str().assert_value(),
+        "--uniform-runtime-config",
+        files.runtime.to_str().assert_value(),
+        "-d",
+    ]))
+    .assert_value();
+    let backend = FakeBackend::default();
+    let available =
+        |name: &str| (name == "OPENROUTER_API_KEY").then(|| OsString::from("provider-secret"));
+    execute_with_environment(command, &backend, &available)
+        .await
+        .assert_value();
+
+    let calls = backend.calls();
+    let runtime = match calls.as_slice() {
+        [Call::Submit { runtime, .. }] => Some(runtime),
+        _ => None,
+    }
+    .assert_value();
+    assert_eq!(
+        serde_json::to_value(runtime)
+            .assert_value()
+            .pointer("/nodes/worker/model"),
+        Some(&json!("gpt-5.6-luna"))
     );
+    assert_eq!(
+        serde_json::to_value(runtime)
+            .assert_value()
+            .pointer("/nodes/worker/env/0"),
+        Some(&json!("OPENROUTER_API_KEY"))
+    );
+}
+
+#[tokio::test]
+async fn validation_only_rejects_runtime_graph_mismatch_without_backend_contact() {
+    let files = FixtureFiles::new(environment_graph(), json!({"task":"inspect it"}));
     let command = parse_native_v2_args(run_args(
         &files.graph,
         &files.input,
         &files.runtime,
-        &["--submission-key", "non-utf8-environment", "-d"],
+        &["--validate-only"],
     ))
     .assert_value();
     let backend = FakeBackend::default();
-    let available = |_: &str| Some(OsString::from_vec(vec![0xff]));
-    let context = CliExecutionContext::new(&backend, &available);
-    let error =
-        execute_native_v2_cli_with_context(command, &context, &mut NeverDetach, &mut Vec::new())
-            .await
-            .assert_error();
-    assert!(error.to_string().contains("DECLARED"));
-    assert!(backend.calls().is_empty());
+    let error = rejected_without_backend_contact(command, &backend).await;
+    assert!(error.to_string().contains("worker"));
 }

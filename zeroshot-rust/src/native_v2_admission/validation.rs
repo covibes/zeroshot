@@ -58,6 +58,16 @@ pub(super) fn executable_declarations(root: &GraphNode) -> Vec<ExecutableDeclara
     declarations
 }
 
+pub(super) fn executable_runtime_roles(root: &GraphNode) -> Vec<(NodeName, bool)> {
+    executable_declarations(root)
+        .into_iter()
+        .map(|declaration| {
+            let delivery = is_git_delivery_worker(&declaration.worker);
+            (declaration.name, delivery)
+        })
+        .collect()
+}
+
 fn collect_declarations(node: &GraphNode, declarations: &mut Vec<ExecutableDeclaration>) {
     match node {
         GraphNode::Step(step) => declarations.push(ExecutableDeclaration {

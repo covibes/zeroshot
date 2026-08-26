@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeroshot-rust"
+dynamic = ["version"]
+description = "Async Python SDK for the Zeroshot Rust run engine"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "The Open Engine" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "build==1.3.0",
+  "mkdocs-material==9.6.20",
+  "mkdocstrings[python]==0.30.1",
+  "mypy==1.18.2",
+  "pre-commit==4.3.0",
+  "pydoclint==0.7.3",
+  "pytest==8.4.2",
+  "ruff==0.13.2",
+  "twine==6.2.0",
+]
+
+[project.urls]
+Repository = "https://github.com/the-open-engine/zeroshot"
+Issues = "https://github.com/the-open-engine/zeroshot/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+zeroshot = ["py.typed", "_bin/zeroshot-rust", "_bin/zeroshot-rust.exe"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["D", "E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
+ignore = ["D105", "D107", "D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/zeroshot/__init__.py" = ["F401"]
+"tests/**" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "examples"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

@@ -17,9 +17,12 @@ Operational rules and references for automated agents working on this repo. Inst
 - Pull request titles are Conventional Commit headers because squash merge makes the title the
   released commit. For Node-owned changes, `fix:`/`perf:` publish patches, `feat:` publishes minors,
   breaking syntax publishes majors, and `docs:`/`chore:` intentionally publish nothing.
-- Node and Zeroshot Rust release independently from `main`. Node owns `vX.Y.Z` and automatic
-  semantic releases. Rust uses explicit `zeroshot-rust-vX.Y.Z` releases and must never affect the
-  next Node version or generated Node notes.
+- Node, Zeroshot Rust, and the Python SDK release independently from `main`. Node owns `vX.Y.Z`
+  and automatic semantic releases. Rust uses explicit `zeroshot-rust-vX.Y.Z` releases. Python uses
+  `zeroshot-python-vRUST_SDK` tags and PEP 440 `RUST.postSDK` package versions; Rust releases
+  automatically publish SDK revision `1`, while later SDK revisions remain separately triggerable.
+  Its PyPI distribution is `zeroshot-rust`, while its import package remains `zeroshot`.
+  Rust and Python releases must never affect the next Node version or generated Node notes.
 - Checked-in publication manifests are non-authoritative development versions. Release tags, npm
   metadata, and GitHub Releases are authoritative; automation must never commit versions to `main`.
 - Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
@@ -124,6 +127,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native self-hosted target image           | `docker/zeroshot-rust-target/`                                                                                                   |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
+| Python SDK sidecar client/package         | `sdks/python/`                                                                                                                    |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
 | Native distribution decision              | `docs/zeroshot-rust-distribution.md`                                                                                             |
 | Full-v1 pure graph reducer                | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
@@ -204,6 +208,14 @@ graph first.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.
+The Python SDK is one typed async sidecar client for local and auth-less direct targets. Platform
+wheels bundle the exact released `zeroshot-rust` executable; Python must not project built-in graph
+catalogs or validation rules. Built-in discovery, uniform runtime expansion, and fail-fast
+graph/input/runtime validation remain Rust-owned. Python public docstrings are documentation source
+and must pass the SDK pre-commit/CI signature check and strict generated-docs build.
+The SDK requests the private `ZEROSHOT_RUST_ERROR_FORMAT=json` sidecar envelope. Rust owns its
+stable error codes, node/path/details projection, and secret-safe message; Python may redact again
+and map the envelope to exceptions, but must never classify native human-readable error text.
 Node and Rust CI lanes are selected by `.github/ci-path-classifier.js`; shared or unknown paths run
 both. Keep the aggregate `required` check stable. Node release analysis and notes must filter every
 Rust-only commit since the last Node tag, not just the triggering commit. Rust releases are manual,
