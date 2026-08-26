@@ -21,6 +21,7 @@ Operational rules and references for automated agents working on this repo. Inst
   and automatic semantic releases. Rust uses explicit `zeroshot-rust-vX.Y.Z` releases. Python uses
   `zeroshot-python-vRUST_SDK` tags and PEP 440 `RUST.postSDK` package versions; Rust releases
   automatically publish SDK revision `1`, while later SDK revisions remain separately triggerable.
+  Its PyPI distribution is `zeroshot-rust`, while its import package remains `zeroshot`.
   Rust and Python releases must never affect the next Node version or generated Node notes.
 - Checked-in publication manifests are non-authoritative development versions. Release tags, npm
   metadata, and GitHub Releases are authoritative; automation must never commit versions to `main`.

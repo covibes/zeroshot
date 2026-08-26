@@ -9,10 +9,12 @@ _ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_sdk_release_is_manual_and_rust_release_triggered() -> None:
+    package = (_ROOT / "sdks/python/pyproject.toml").read_text(encoding="utf-8")
     workflow = (_ROOT / ".github/workflows/release-python.yml").read_text(encoding="utf-8")
     rust_workflow = (_ROOT / ".github/workflows/release-rust.yml").read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "workflow_call:" in workflow
+    assert 'name = "zeroshot-rust"' in package
     assert 'sdk_tag="zeroshot-python-v${RUST_VERSION}_${SDK_REVISION}"' in workflow
     assert 'package_version="${RUST_VERSION}.post${SDK_REVISION}"' in workflow
     release_targets = json.loads(

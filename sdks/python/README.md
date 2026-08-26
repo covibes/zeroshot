@@ -1,5 +1,11 @@
 # Zeroshot Python SDK
 
+Install the `zeroshot-rust` distribution from PyPI and import it as `zeroshot`:
+
+```console
+pip install zeroshot-rust
+```
+
 `zeroshot` is a fully typed async client for the native Zeroshot Rust run engine. Each platform
 wheel contains the matching `zeroshot-rust` sidecar. Python owns ergonomic orchestration and typed
 projections; Rust remains the sole source of truth for templates, runtime materialization,
