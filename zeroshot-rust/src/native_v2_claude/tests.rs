@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+#[path = "tests/configuration.rs"]
+mod configuration;
 #[path = "tests/correction.rs"]
 mod correction;
 #[path = "tests/environment.rs"]
@@ -275,7 +277,10 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
             .nth(1)
             .and_then(|line| serde_json::from_str::<Value>(line).ok())
             .assert_value();
-        assert_eq!(schema["properties"]["response"], json!({"type":"string"}));
+        assert_eq!(
+            schema.pointer("/properties/response").assert_value(),
+            &json!({"type":"string"})
+        );
         assert!(arguments.contains("--effort\nmax\n--dangerously-skip-permissions\n"));
         assert!(!arguments.contains("--setting-sources"));
         assert!(arguments.contains("Authored instructions:\nExercise the Claude adapter."));
@@ -446,24 +451,6 @@ wait
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
     assert!(!Path::new(&format!("/proc/{child_pid}")).exists());
     assert!(!workspace.child("survivor.txt").exists());
-}
-
-#[test]
-fn supported_models_and_efforts_match_the_admission_catalog() {
-    assert!(validate_model_effort("claude-haiku-4-5", None).is_ok());
-    assert!(validate_model_effort("claude-haiku-4-5", Some(ReasoningEffort::Max)).is_err());
-    for model in ["claude-sonnet-5", "claude-opus-5", "claude-fable-5"] {
-        for effort in [
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::Xhigh,
-            ReasoningEffort::Max,
-        ] {
-            assert!(validate_model_effort(model, Some(effort)).is_ok());
-        }
-        assert!(validate_model_effort(model, None).is_err());
-    }
 }
 
 #[path = "tests/failure.rs"]

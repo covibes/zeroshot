@@ -1,8 +1,9 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use openengine_cluster_testkit::assertions::AssertValue;
 
-use super::{HostedProcessPool, HostedProcessScope};
+use super::{HostedProcessPool, HostedProcessScope, write_new_file};
+use crate::native_v2_candidate::test_support::TestDirectory;
 
 #[test]
 fn hosted_scopes_keep_loop_sessions_stable_and_executions_disjoint() {
@@ -55,6 +56,16 @@ fn active_run_slots_are_disjoint_from_source_and_each_other() {
     assert!(host.active_run_slot(u32::MAX, 65_536).is_err());
     let sentinel = HostedProcessPool::new(1, 1, u32::MAX - 4, 2).assert_value();
     assert!(sentinel.active_run_slot(0, 2).is_err());
+}
+
+#[test]
+fn new_file_writes_are_exclusive_and_complete() {
+    let directory = TestDirectory::new("process-new-file");
+    let path = directory.child("value");
+    write_new_file(&path, b"complete", 0o600).assert_value();
+    assert_eq!(fs::read(&path).assert_value(), b"complete");
+    assert!(write_new_file(&path, b"replacement", 0o600).is_err());
+    assert_eq!(fs::read(path).assert_value(), b"complete");
 }
 
 fn writer_identity(pool: HostedProcessPool) -> (u32, u32) {

@@ -226,6 +226,26 @@ async fn start(
         .assert_value()
 }
 
+fn assert_schema_capture(capture: &str) {
+    let schema = capture
+        .lines()
+        .find_map(|line| line.strip_prefix("schema="))
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .assert_value();
+    assert_eq!(
+        schema
+            .pointer("/properties/response/properties/answer")
+            .assert_value(),
+        &json!({"type":"integer"})
+    );
+    for path in capture
+        .lines()
+        .filter_map(|line| line.strip_prefix("schema_path="))
+    {
+        assert!(!Path::new(path).exists(), "schema file was not removed");
+    }
+}
+
 fn assert_openrouter_capture(capture: &str) {
     for expected in [
         "arg=model_provider=\"openrouter\"",
@@ -251,21 +271,7 @@ fn assert_openrouter_capture(capture: &str) {
             "missing capture evidence: {expected}"
         );
     }
-    let schema = capture
-        .lines()
-        .find_map(|line| line.strip_prefix("schema="))
-        .and_then(|line| serde_json::from_str::<Value>(line).ok())
-        .assert_value();
-    assert_eq!(
-        schema["properties"]["response"]["properties"]["answer"],
-        json!({"type":"integer"})
-    );
-    for path in capture
-        .lines()
-        .filter_map(|line| line.strip_prefix("schema_path="))
-    {
-        assert!(!Path::new(path).exists(), "schema file was not removed");
-    }
+    assert_schema_capture(&capture);
     for suppressed in ["--ignore-user-config", "--ignore-rules", "--strict-config"] {
         assert!(!capture.contains(suppressed));
     }
