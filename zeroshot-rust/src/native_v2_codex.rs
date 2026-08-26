@@ -9,6 +9,7 @@ mod output;
 mod schema_file;
 #[path = "native_v2_codex/session.rs"]
 mod session;
+mod turn;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ use command::{
 use output::{CodexOutput, CodexOutputDecoder};
 use schema_file::CodexSchemaFile;
 use session::CodexSession;
+use turn::{CodexCommandInput, CodexTurnProcess};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_CODEX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
@@ -317,17 +319,6 @@ struct CodexTurn<'a> {
     session: &'a CodexSession,
     control: &'a DriverControl,
     deadline: Instant,
-}
-
-struct CodexCommandInput<'a> {
-    resume: Option<&'a str>,
-    runtime_home: &'a Path,
-    schema_path: &'a Path,
-}
-
-struct CodexTurnProcess {
-    process: ProcessSession,
-    _schema: CodexSchemaFile,
 }
 
 struct CodexRunState {
