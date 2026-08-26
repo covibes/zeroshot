@@ -213,7 +213,7 @@ fn openai_normalizes_optional_nulls_recursively() {
 }
 
 #[test]
-fn openai_preserves_optional_null_payloads() {
+fn openai_distinguishes_optional_null_values_from_omission() {
     let contract = NodeResponseContract::Worker {
         output: serde_json::from_value(json!({
             "kind": "record",
@@ -229,7 +229,16 @@ fn openai_preserves_optional_null_payloads() {
         schema
             .pointer("/properties/response/properties/nothing")
             .assert_value(),
-        &json!({ "type": "null" })
+        &json!({
+            "anyOf": [
+                { "type": "null" },
+                {
+                    "type": "string",
+                    "enum": [OPENAI_OPTIONAL_NULL_OMISSION],
+                    "description": "Use this sentinel when the optional field is omitted."
+                }
+            ]
+        })
     );
     assert!(matches!(
         resolve_agent_response_with_dialect(
@@ -240,6 +249,21 @@ fn openai_preserves_optional_null_payloads() {
         .assert_value(),
         AgentResponse::Complete(WorkerOutcome::Verified { output, .. })
             if output == json!({"nothing": null})
+    ));
+
+    let omitted = serde_json::to_string(&json!({
+        "response": { "nothing": OPENAI_OPTIONAL_NULL_OMISSION }
+    }))
+    .assert_value();
+    assert!(matches!(
+        resolve_agent_response_with_dialect(
+            &contract,
+            &omitted,
+            ProviderSchemaDialect::OpenAiStrict,
+        )
+        .assert_value(),
+        AgentResponse::Complete(WorkerOutcome::Verified { output, .. })
+            if output == json!({})
     ));
 }
 

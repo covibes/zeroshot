@@ -11,6 +11,7 @@ use super::{DriverControl, LiveOutput, LiveOutputStream, NodeRunnerError};
 
 const MAX_RESPONSE_ERROR_BYTES: usize = 8 * 1024;
 const MAX_OUTPUT_CORRECTIONS: usize = 2;
+const OPENAI_OPTIONAL_NULL_OMISSION: &str = "__zeroshot_omitted_optional_null__";
 
 /// Ephemeral response contract derived from the admitted graph leaf.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -358,14 +359,12 @@ fn payload_schema(payload: &PayloadType, dialect: ProviderSchemaDialect) -> Valu
                 .iter()
                 .map(|(name, field)| {
                     let schema = payload_schema(&field.value_type, dialect);
-                    let schema = if !field.required
-                        && dialect == ProviderSchemaDialect::OpenAiStrict
-                        && !matches!(&field.value_type, PayloadType::Null)
-                    {
-                        json!({ "anyOf": [schema, { "type": "null" }] })
-                    } else {
-                        schema
-                    };
+                    let schema =
+                        if !field.required && dialect == ProviderSchemaDialect::OpenAiStrict {
+                            openai_optional_schema(&field.value_type, schema)
+                        } else {
+                            schema
+                        };
                     (name.as_str().to_owned(), schema)
                 })
                 .collect::<BTreeMap<_, _>>();
@@ -385,15 +384,31 @@ fn payload_schema(payload: &PayloadType, dialect: ProviderSchemaDialect) -> Valu
     }
 }
 
+fn openai_optional_schema(payload: &PayloadType, schema: Value) -> Value {
+    let omission = match payload {
+        PayloadType::Null => json!({
+            "type": "string",
+            "enum": [OPENAI_OPTIONAL_NULL_OMISSION],
+            "description": "Use this sentinel when the optional field is omitted."
+        }),
+        _ => json!({ "type": "null" }),
+    };
+    json!({ "anyOf": [schema, omission] })
+}
+
+fn openai_value_is_omitted(payload: &PayloadType, value: Option<&Value>) -> bool {
+    match payload {
+        PayloadType::Null => value.and_then(Value::as_str) == Some(OPENAI_OPTIONAL_NULL_OMISSION),
+        _ => value.is_some_and(Value::is_null),
+    }
+}
+
 fn normalize_openai_payload(payload: &PayloadType, value: &mut Value) {
     match (payload, value) {
         (PayloadType::Record { fields }, Value::Object(values)) => {
             for (name, field) in fields {
                 let name = name.as_str();
-                if !field.required
-                    && !matches!(&field.value_type, PayloadType::Null)
-                    && values.get(name).is_some_and(Value::is_null)
-                {
+                if !field.required && openai_value_is_omitted(&field.value_type, values.get(name)) {
                     values.remove(name);
                     continue;
                 }
