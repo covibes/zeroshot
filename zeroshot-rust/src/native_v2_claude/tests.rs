@@ -287,22 +287,30 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
         assert!(arguments.contains("Input JSON:\n\"perform the node task\""));
         assert!(arguments.contains("Runtime-owned response contract:\n{\"kind\":\"worker\""));
         assert_eq!(workspace.read("ambient.txt").trim(), "unset");
-        match provider {
-            ClaudeProvider::Anthropic => {
-                assert_eq!(workspace.read("anthropic-key.txt").trim(), provider_value);
-                assert_eq!(workspace.read("anthropic-token.txt").trim(), "unset");
-                assert_eq!(workspace.read("anthropic-base-url.txt").trim(), "unset");
-                assert_eq!(workspace.read("openrouter-key.txt").trim(), "unset");
-            }
-            ClaudeProvider::OpenRouter => {
-                assert_eq!(workspace.read("anthropic-key.txt"), "\n");
-                assert_eq!(workspace.read("anthropic-token.txt").trim(), provider_value);
-                assert_eq!(
-                    workspace.read("anthropic-base-url.txt").trim(),
-                    OPENROUTER_BASE_URL
-                );
-                assert_eq!(workspace.read("openrouter-key.txt").trim(), provider_value);
-            }
+        assert_provider_environment(&workspace, provider, provider_value);
+    }
+}
+
+fn assert_provider_environment(
+    workspace: &TestDirectory,
+    provider: ClaudeProvider,
+    provider_value: &str,
+) {
+    match provider {
+        ClaudeProvider::Anthropic => {
+            assert_eq!(workspace.read("anthropic-key.txt").trim(), provider_value);
+            assert_eq!(workspace.read("anthropic-token.txt").trim(), "unset");
+            assert_eq!(workspace.read("anthropic-base-url.txt").trim(), "unset");
+            assert_eq!(workspace.read("openrouter-key.txt").trim(), "unset");
+        }
+        ClaudeProvider::OpenRouter => {
+            assert_eq!(workspace.read("anthropic-key.txt"), "\n");
+            assert_eq!(workspace.read("anthropic-token.txt").trim(), provider_value);
+            assert_eq!(
+                workspace.read("anthropic-base-url.txt").trim(),
+                OPENROUTER_BASE_URL
+            );
+            assert_eq!(workspace.read("openrouter-key.txt").trim(), provider_value);
         }
     }
 }
