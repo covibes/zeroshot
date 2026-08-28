@@ -90,6 +90,18 @@ fn resolved_source_has_one_unambiguous_wire_shape() {
 }
 
 #[test]
+fn legacy_run_sizes_reopen_and_serialize_with_current_names() {
+    for (legacy, current, expected) in [
+        ("tiny", "small", RunSize::Small),
+        ("standard", "medium", RunSize::Medium),
+    ] {
+        let size: RunSize = serde_json::from_value(json!(legacy)).assert_value();
+        assert_eq!(size, expected);
+        assert_eq!(serde_json::to_value(size).assert_value(), json!(current));
+    }
+}
+
+#[test]
 fn submit_rejects_removed_ship_and_inventory_is_closed() {
     let mut wire = json!({ "runId": "run-1", "submission": submission() });
     json_insert::json_insert(&mut wire, "", "ship", json!(false));
