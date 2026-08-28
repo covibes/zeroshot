@@ -2,7 +2,7 @@
   "event": {
     "cursor": "v2:8",
     "runId": "run-1",
-    "size": "standard",
+    "size": "medium",
     "source": {
       "branch": "main",
       "repository": "open-engine/zeroshot",

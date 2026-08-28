@@ -169,7 +169,7 @@ fn runtime() -> RuntimePlan {
     serde_json::from_value(json!({
         "harness":"codex",
         "provider":"openai",
-        "size":"standard",
+        "size":"medium",
         "nodes":{}
     }))
     .assert_value()
@@ -188,7 +188,7 @@ fn status(run_id: &str, phase: &str) -> CliRunStatusResult {
         "runId":run_id,
         "title":"Repair checkout",
         "source":source(),
-        "size":"standard",
+        "size":"medium",
         "atCursor":"v2:1",
         "status":{"phase":phase}
     }))

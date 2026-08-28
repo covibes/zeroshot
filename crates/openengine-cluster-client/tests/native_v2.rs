@@ -20,7 +20,7 @@ fn response(method: &str) -> Value {
                     "repository":"open-engine/zeroshot","branch":"main",
                     "revision":"0123456789abcdef0123456789abcdef01234567"
                 },
-                "size":"tiny","atCursor":"v2:1","status":{"phase":"admitted"}
+                "size":"small","atCursor":"v2:1","status":{"phase":"admitted"}
             }),
         ),
         (
@@ -31,7 +31,7 @@ fn response(method: &str) -> Value {
                     "repository":"open-engine/zeroshot","branch":"main",
                     "revision":"0123456789abcdef0123456789abcdef01234567"
                 },
-                "size":"tiny","atCursor":"v2:2",
+                "size":"small","atCursor":"v2:2",
                 "status":{"phase":"stopping","activeExecutions":[]}
             }),
         ),
@@ -56,7 +56,7 @@ fn submit() -> RunSubmitParams {
             },
             "initialInput":null,
             "runtime":{
-                "harness":"codex","provider":"openai","size":"tiny","nodes":{}
+                "harness":"codex","provider":"openai","size":"small","nodes":{}
             },
             "source":{
                 "repository":"open-engine/zeroshot","branch":"main",

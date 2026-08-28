@@ -56,7 +56,7 @@ async fn admitted_with_delivery() -> AdmittedRun {
     ]);
     let runtime = RuntimePlan::Codex {
         provider: CodexProvider::OpenAi,
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         nodes: BTreeMap::from([
             (NodeName::new("worker").assert_value(), agent_binding()),
             (
@@ -92,7 +92,7 @@ async fn admitted_without_delivery() -> AdmittedRun {
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
                 provider: CodexProvider::OpenAi,
-                size: RunSize::Standard,
+                size: RunSize::Medium,
                 nodes: BTreeMap::new(),
             },
             source: source(),

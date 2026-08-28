@@ -57,7 +57,7 @@ fn status(phase: RunStatus, at: u64) -> RunStatusResult {
         run_id: run_id(),
         title: title(),
         source: native_v2_source_fixture(),
-        size: RunSize::Tiny,
+        size: RunSize::Small,
         at_cursor: cursor(at),
         status: phase,
     }
@@ -139,7 +139,7 @@ impl ClusterBackend for FakeBackend {
                     run_id: run_id(),
                     title: title(),
                     source: native_v2_source_fixture(),
-                    size: RunSize::Tiny,
+                    size: RunSize::Small,
                     cursor: cursor(3),
                     status: RunStatus::Running {
                         active_executions: vec![],
@@ -153,7 +153,7 @@ impl ClusterBackend for FakeBackend {
                     run_id: run_id(),
                     title: title(),
                     source: native_v2_source_fixture(),
-                    size: RunSize::Tiny,
+                    size: RunSize::Small,
                     cursor: cursor(99),
                     status: RunStatus::Running {
                         active_executions: vec![],
@@ -255,7 +255,7 @@ fn submission() -> Value {
         "runtime": {
             "harness": "codex",
             "provider": "openai",
-            "size": "tiny",
+            "size": "small",
             "nodes": {}
         },
         "source": {

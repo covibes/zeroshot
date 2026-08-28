@@ -35,7 +35,7 @@ fn submission() -> Value {
         "runtime": {
             "harness": "codex",
             "provider": "openai",
-            "size": "tiny",
+            "size": "small",
             "nodes": {}
         },
         "source": {
@@ -120,7 +120,7 @@ fn submit_and_list_results_expose_only_public_run_identity_and_status() {
                 revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
                     .assert_value(),
             },
-            size: RunSize::Tiny,
+            size: RunSize::Small,
             at_cursor: openengine_cluster_protocol::Cursor::new("v2:1"),
             status: RunStatus::Admitted {},
         }],

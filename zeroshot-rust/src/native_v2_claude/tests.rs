@@ -78,7 +78,7 @@ async fn runner(
 ) -> NativeNodeRunner {
     let runtime = RuntimePlan::Claude {
         provider,
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         nodes: BTreeMap::from([(NodeName::new("agent").assert_value(), binding)]),
     };
     let admitted = admit(RunSubmission {

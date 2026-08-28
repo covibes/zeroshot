@@ -147,7 +147,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
             "runId": "run-hosted",
             "title": "Hosted queue test",
             "source": source(),
-            "size": "standard",
+            "size": "medium",
             "atCursor": "cloud:1",
             "status": {"phase": "queued"}
         })
@@ -163,7 +163,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "runId": "run-hosted",
                     "title": "Hosted queue test",
                     "source": source(),
-                    "size": "standard",
+                    "size": "medium",
                     "cursor": "cloud:1",
                     "status": {"phase": "queued"}
                 }
@@ -180,7 +180,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                     "runId": "run-hosted",
                     "title": "Hosted queue test",
                     "source": source(),
-                    "size": "standard",
+                    "size": "medium",
                     "cursor": "v2:3",
                     "status": {
                         "phase": "finished",

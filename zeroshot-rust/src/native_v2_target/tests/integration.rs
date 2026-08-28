@@ -288,7 +288,7 @@ fn assert_submit_and_session_requests(requests: &[CapturedHttpRequest], run_id: 
     );
     assert_eq!(
         request.pointer("/submission/runtime/size").assert_value(),
-        "standard"
+        "medium"
     );
     assert_eq!(request.pointer("/runId").assert_value(), run_id.as_str());
     assert_eq!(

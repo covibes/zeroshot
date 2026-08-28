@@ -321,7 +321,7 @@ async fn admitted(repo: &TempRepo, mode: DeliveryMode) -> crate::native_v2_contr
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
                 provider: CodexProvider::OpenAi,
-                size: RunSize::Standard,
+                size: RunSize::Medium,
                 nodes: BTreeMap::from([(NodeName::new("deliver").assert_value(), binding)]),
             },
             source: ResolvedSource {

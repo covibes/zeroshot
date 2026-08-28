@@ -31,7 +31,7 @@ fn admitted_run() -> AdmittedRun {
         initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
-            size: RunSize::Standard,
+            size: RunSize::Medium,
             nodes: Default::default(),
         },
         source: ResolvedSource {

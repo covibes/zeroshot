@@ -61,7 +61,7 @@ pub(super) fn runtime_for(
     }
     RuntimePlan::Codex {
         provider: CodexProvider::OpenAi,
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         nodes,
     }
 }

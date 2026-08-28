@@ -39,12 +39,12 @@ pub(super) fn runtime(kind: RuntimePlanKind) -> RuntimePlan {
     match kind {
         RuntimePlanKind::Codex => RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
-            size: RunSize::Standard,
+            size: RunSize::Medium,
             nodes,
         },
         RuntimePlanKind::Claude => RuntimePlan::Claude {
             provider: crate::native_v2_contract::ClaudeProvider::Anthropic,
-            size: RunSize::Standard,
+            size: RunSize::Medium,
             nodes,
         },
     }

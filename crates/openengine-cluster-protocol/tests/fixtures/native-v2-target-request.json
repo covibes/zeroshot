@@ -17,7 +17,7 @@
     "runtime": {
       "harness": "codex",
       "provider": "openai",
-      "size": "tiny",
+      "size": "small",
       "nodes": {}
     },
     "source": {

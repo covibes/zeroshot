@@ -273,7 +273,7 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         "runtime": {
             "harness": "codex",
             "provider": "openai",
-            "size": "standard",
+            "size": "medium",
             "nodes": runtime_nodes
         },
         "source": {

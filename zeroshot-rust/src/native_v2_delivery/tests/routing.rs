@@ -226,7 +226,7 @@ async fn admitted_routing_graph(base_revision: &str) -> crate::native_v2_contrac
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
                 provider: crate::native_v2_contract::CodexProvider::OpenAi,
-                size: RunSize::Standard,
+                size: RunSize::Medium,
                 nodes: BTreeMap::from([
                     (NodeName::new("deliver").assert_value(), delivery),
                     (NodeName::new("repair").assert_value(), repair),

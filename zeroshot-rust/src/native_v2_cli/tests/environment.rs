@@ -11,7 +11,7 @@ fn runtime_with_environment() -> RuntimePlan {
     serde_json::from_value(json!({
         "harness":"codex",
         "provider":"openai",
-        "size":"standard",
+        "size":"medium",
         "nodes":{
             "worker":{"kind":"agent","model":"gpt-5.6-sol","env":["DECLARED","SHARED"]}
         }
@@ -32,7 +32,7 @@ fn software_change_runtime() -> RuntimePlan {
     serde_json::from_value(json!({
         "harness":"codex",
         "provider":"openai",
-        "size":"standard",
+        "size":"medium",
         "nodes":{
             "worker":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
             "acceptance":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
@@ -248,18 +248,16 @@ async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
         _ => None,
     }
     .assert_value();
+    let runtime = serde_json::to_value(runtime).assert_value();
     assert_eq!(
-        serde_json::to_value(runtime)
-            .assert_value()
-            .pointer("/nodes/worker/model"),
+        runtime.pointer("/nodes/worker/model"),
         Some(&json!("gpt-5.6-luna"))
     );
     assert_eq!(
-        serde_json::to_value(runtime)
-            .assert_value()
-            .pointer("/nodes/worker/env/0"),
+        runtime.pointer("/nodes/worker/env/0"),
         Some(&json!("OPENROUTER_API_KEY"))
     );
+    assert_eq!(runtime.pointer("/size"), Some(&json!("medium")));
 }
 
 #[tokio::test]

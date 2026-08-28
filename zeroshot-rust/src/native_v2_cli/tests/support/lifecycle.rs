@@ -74,7 +74,7 @@ fn watch_event(
             "runId":params.run_id,
             "title":"Repair checkout",
             "source":source(),
-            "size":"standard",
+            "size":"medium",
             "cursor":cursor,
             "status":status
         }))

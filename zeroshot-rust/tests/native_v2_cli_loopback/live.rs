@@ -131,7 +131,7 @@ fn live_runtime(lane: LiveLane, scenario: LiveScenario) -> serde_json::Value {
     json!({
         "harness":lane.harness(),
         "provider":lane.provider(),
-        "size":"standard",
+        "size":"medium",
         "nodes":nodes
     })
 }

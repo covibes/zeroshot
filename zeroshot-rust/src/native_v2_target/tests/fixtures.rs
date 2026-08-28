@@ -290,7 +290,7 @@ pub(super) fn run_intent() -> TargetRunIntent {
         "runtime":{
             "harness":"codex",
             "provider":"openai",
-            "size":"standard",
+            "size":"medium",
             "nodes":{}
         },
         "branch":"feature",
