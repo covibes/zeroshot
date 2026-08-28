@@ -12,7 +12,7 @@ import type { FrameRecord } from './frames.js';
 import { BoundedQueue } from './queue.js';
 import { addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
-import { assertDefinition, assertMethodResult } from './validators.js';
+import { assertDefinition, assertMethodResult, normalizeInboundSubscriptionFrame } from './validators.js';
 import {
   CONNECTION_TRANSITIONS,
   PROTOCOL_DIAGNOSTIC_CAPACITY,
@@ -193,7 +193,7 @@ export class Connection {
     if (!('result' in frame)) {
       entry.reject(new ClusterProtocolError('response has neither result nor error', 'INVALID_RESPONSE')); return;
     }
-    try { assertMethodResult(entry.method, frame.result); }
+    let validatedResult: unknown; try { validatedResult = assertMethodResult(entry.method, frame.result); }
     catch (error) {
       if (entry.subscriptionKind && isRecord(frame.result) && typeof frame.result.subscriptionId === 'string') {
         void this.#sendNotification('subscription/cancel', { subscriptionId: frame.result.subscriptionId })
@@ -201,8 +201,8 @@ export class Connection {
       }
       entry.reject(error); return;
     }
-    if (!entry.subscriptionKind) { entry.resolve(frame.result); return; }
-    const result = frame.result as ClusterMethodResults[SubscriptionMethod];
+    if (!entry.subscriptionKind) { entry.resolve(validatedResult); return; }
+    const result = validatedResult as ClusterMethodResults[SubscriptionMethod];
     const registration: SubscriptionRegistration = {
       id: result.subscriptionId, kind: entry.subscriptionKind,
       queue: new BoundedQueue<FrameRecord>(), overflowed: false, cancelSent: false,
@@ -232,14 +232,14 @@ export class Connection {
     if (registration.abortSignal && registration.abortHandler) {
       registration.abortSignal.removeEventListener('abort', registration.abortHandler);
     }
-    delete registration.abortSignal;
-    delete registration.abortHandler;
+    delete registration.abortSignal; delete registration.abortHandler;
   }
   #routeNotification(method: string, params: FrameRecord, frame: FrameRecord, bytes: number): void {
     const subscriptionId = params.subscriptionId;
     if (typeof subscriptionId !== 'string') { this.#recordProtocolError('subscription notification has no subscriptionId'); return; }
     const registration = this.#subscriptions.get(subscriptionId); if (!registration) return;
-    const terminal = method === 'subscription/closed'; const outcome = registration.queue.push(frame, bytes);
+    const routedFrame = normalizeInboundSubscriptionFrame(registration.kind, method, frame);
+    const terminal = method === 'subscription/closed'; const outcome = registration.queue.push(routedFrame, bytes);
     if (outcome === 'overflow') {
       registration.overflowed = true; this.unregisterSubscription(subscriptionId, registration); registration.queue.endRetainingBuffer();
       if (!terminal) void this.cancelSubscription(registration).catch((error: unknown) => this.recordDiagnostic(error));
