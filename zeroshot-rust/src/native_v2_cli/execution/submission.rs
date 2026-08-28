@@ -281,7 +281,7 @@ struct UniformRuntimePlan {
     #[serde(default)]
     harness: Option<UniformHarness>,
     provider: UniformProvider,
-    #[serde(default = "standard_size")]
+    #[serde(default = "medium_size")]
     size: RunSize,
     model: ModelId,
     #[serde(default)]
@@ -292,8 +292,8 @@ struct UniformRuntimePlan {
     env: Option<DeclaredEnvironment>,
 }
 
-const fn standard_size() -> RunSize {
-    RunSize::Standard
+const fn medium_size() -> RunSize {
+    RunSize::Medium
 }
 
 impl UniformRuntimePlan {

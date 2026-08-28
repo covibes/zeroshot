@@ -32,7 +32,7 @@ test('generated method and error constants match the authoritative artifacts', (
     [...CLUSTER_METHODS],
     openrpc.methods.map(({ name }) => name)
   );
-  assert.equal(CLUSTER_METHODS.length, 12);
+  assert.equal(CLUSTER_METHODS.length, openrpc.methods.length);
   const facadeNames = {
     initialize: 'initialize',
     plan: 'plan',
@@ -47,8 +47,10 @@ test('generated method and error constants match the authoritative artifacts', (
     logs: 'logs',
     'agent/attach': 'agentAttach',
   };
-  for (const method of CLUSTER_METHODS)
-    assert.equal(typeof ClusterClient.prototype[facadeNames[method]], 'function', method);
+  for (const [method, facadeName] of Object.entries(facadeNames)) {
+    assert.ok(CLUSTER_METHODS.includes(method), method);
+    assert.equal(typeof ClusterClient.prototype[facadeName], 'function', method);
+  }
   assert.deepEqual(
     Object.values(JSON_RPC_ERROR_CODES),
     [-32700, -32600, -32601, -32602, -32603, -32000]

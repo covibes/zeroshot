@@ -55,7 +55,7 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
         run_id: RunId::new("run-1"),
         title: title(),
         source: source(),
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         at_cursor: Cursor::new("v2:7"),
         status: running_status(),
     };
@@ -71,7 +71,7 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
                 "branch": "main",
                 "revision": "0123456789abcdef0123456789abcdef01234567"
             },
-            "size": "standard",
+            "size": "medium",
             "atCursor": "v2:7",
             "status": {
                 "phase": "running",
@@ -95,7 +95,7 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
                 "branch": "main",
                 "revision": "0123456789abcdef0123456789abcdef01234567"
             },
-            "size": "standard",
+            "size": "medium",
             "atCursor": "v2:7",
             "status": {
                 "phase": "running",
@@ -162,7 +162,7 @@ fn durable_events_carry_run_and_stable_cursor() {
         run_id: RunId::new("run-1"),
         title: title(),
         source: source(),
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         cursor: Cursor::new("v2:8"),
         status: RunStatus::Finished {
             terminal_result: TerminalResult::Succeeded {
@@ -185,7 +185,7 @@ fn durable_events_carry_run_and_stable_cursor() {
         json_read::json_at(&value, "/title"),
         &json!("Repair checkout flow")
     );
-    assert_eq!(json_read::json_at(&value, "/size"), &json!("standard"));
+    assert_eq!(json_read::json_at(&value, "/size"), &json!("medium"));
     assert_eq!(
         json_read::json_at(&value, "/status/terminalResult/output"),
         &terminal_output
@@ -276,7 +276,7 @@ fn force_is_the_only_stop_shape_and_returns_durable_status() {
         run_id: RunId::new("run-1"),
         title: title(),
         source: source(),
-        size: RunSize::Standard,
+        size: RunSize::Medium,
         at_cursor: Cursor::new("v2:10"),
         status: RunStatus::Stopping {
             active_executions: vec![active("opaque-verifier-b", "verify-b")],

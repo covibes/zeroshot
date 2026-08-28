@@ -32,6 +32,64 @@ test('one connection owns collision-free ids across clients and subscriptions', 
   assertClean(connection);
 });
 
+test('legacy run sizes are normalized only on inbound projections', async () => {
+  const socket = new FakeWebSocket();
+  const connection = new Connection(socket);
+  const projection = (runId, size) => ({
+    runId,
+    title: 'Legacy run',
+    source: { repository: 'owner/repo', revision: 'a'.repeat(40), branch: 'main' },
+    size,
+    atCursor: 'cursor-1',
+    status: { phase: 'admitted' },
+  });
+
+  const statusPending = connection.call('run/status', { runId: 'run-tiny' });
+  await settle();
+  socket.respond(socket.request('run/status').id, projection('run-tiny', 'tiny'));
+  assert.equal((await statusPending).size, 'small');
+
+  const forcePending = connection.call('run/force', { runId: 'run-standard' });
+  await settle();
+  socket.respond(socket.request('run/force').id, projection('run-standard', 'standard'));
+  assert.equal((await forcePending).size, 'medium');
+
+  const listPending = connection.call('run/list', {});
+  await settle();
+  socket.respond(socket.request('run/list').id, {
+    runs: [projection('run-list-tiny', 'tiny'), projection('run-list-standard', 'standard')],
+  });
+  assert.deepEqual(
+    (await listPending).runs.map(({ size }) => size),
+    ['small', 'medium']
+  );
+
+  const watchPending = connection.openSubscription('run/watch', { runId: 'run-watch' });
+  await settle();
+  socket.respond(socket.request('run/watch').id, {
+    subscriptionId: 'run-watch-subscription',
+    runId: 'run-watch',
+    atCursor: 'cursor-0',
+  });
+  const watch = await watchPending;
+  const legacyWatch = projection('run-watch', 'tiny');
+  socket.notify('event', {
+    subscriptionId: 'run-watch-subscription',
+    runId: legacyWatch.runId,
+    title: legacyWatch.title,
+    source: legacyWatch.source,
+    size: legacyWatch.size,
+    cursor: 'cursor-1',
+    status: legacyWatch.status,
+  });
+  const queued = await watch.registration.queue.recv();
+  assert.equal(queued.done, false);
+  assert.equal(queued.value.params.size, 'small');
+  await connection.cancelSubscription(watch.registration);
+  connection.unregisterSubscription(watch.registration.id, watch.registration);
+  await connection.close();
+});
+
 test('failed sends remove only their exact pending entry', async () => {
   const socket = new FakeWebSocket();
   const connection = new Connection(socket);

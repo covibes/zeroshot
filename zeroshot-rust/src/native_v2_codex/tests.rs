@@ -161,7 +161,7 @@ async fn admitted(binding: NodeRuntimeBinding, provider: CodexProvider) -> Admit
         initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider,
-            size: RunSize::Standard,
+            size: RunSize::Medium,
             nodes: BTreeMap::from([(NodeName::new("work").assert_value(), binding)]),
         },
         source: serde_json::from_value(json!({

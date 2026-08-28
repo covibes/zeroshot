@@ -9,7 +9,7 @@ pub(crate) fn write_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf, PathBuf
         serde_json::to_vec(&json!({
             "harness":"codex",
             "provider":"openai",
-            "size":"standard",
+            "size":"medium",
             "nodes":{
                 "worker":{
                     "kind":"agent",
@@ -48,7 +48,7 @@ pub(crate) fn write_delivery_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf
     let runtime_value = json!({
         "harness":"codex",
         "provider":"openai",
-        "size":"standard",
+        "size":"medium",
         "nodes":{
             "deliver":{"kind":"git_delivery","env":[GITHUB_TOKEN_ENV]},
             "repair":{

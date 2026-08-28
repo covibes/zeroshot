@@ -35,7 +35,7 @@ fn submission() -> Value {
         "runtime": {
             "harness": "codex",
             "provider": "openai",
-            "size": "tiny",
+            "size": "small",
             "nodes": {}
         },
         "source": {
@@ -90,6 +90,18 @@ fn resolved_source_has_one_unambiguous_wire_shape() {
 }
 
 #[test]
+fn legacy_run_sizes_reopen_and_serialize_with_current_names() {
+    for (legacy, current, expected) in [
+        ("tiny", "small", RunSize::Small),
+        ("standard", "medium", RunSize::Medium),
+    ] {
+        let size: RunSize = serde_json::from_value(json!(legacy)).assert_value();
+        assert_eq!(size, expected);
+        assert_eq!(serde_json::to_value(size).assert_value(), json!(current));
+    }
+}
+
+#[test]
 fn submit_rejects_removed_ship_and_inventory_is_closed() {
     let mut wire = json!({ "runId": "run-1", "submission": submission() });
     json_insert::json_insert(&mut wire, "", "ship", json!(false));
@@ -120,7 +132,7 @@ fn submit_and_list_results_expose_only_public_run_identity_and_status() {
                 revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
                     .assert_value(),
             },
-            size: RunSize::Tiny,
+            size: RunSize::Small,
             at_cursor: openengine_cluster_protocol::Cursor::new("v2:1"),
             status: RunStatus::Admitted {},
         }],

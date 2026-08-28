@@ -86,9 +86,8 @@ fn help_explains_runtime_configuration() {
         ClaudeProvider::OpenRouter,
     ]));
     let sizes = serialized_names(&exhaustive_values!(RunSize => [
-        RunSize::Tiny,
         RunSize::Small,
-        RunSize::Standard,
+        RunSize::Medium,
         RunSize::Large,
     ]));
     let efforts = serialized_names(&exhaustive_values!(ReasoningEffort => [

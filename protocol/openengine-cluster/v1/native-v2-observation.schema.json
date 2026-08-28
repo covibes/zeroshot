@@ -753,9 +753,8 @@
     },
     "RunSize": {
       "enum": [
-        "tiny",
         "small",
-        "standard",
+        "medium",
         "large"
       ],
       "type": "string"

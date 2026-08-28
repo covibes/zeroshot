@@ -222,7 +222,7 @@ struct TemplateShowArgs {
       {
         "harness": "codex",
         "provider": "openrouter",
-        "size": "standard",
+        "size": "medium",
         "nodes": {
           "worker": {
             "kind": "agent",
@@ -236,7 +236,7 @@ struct TemplateShowArgs {
       codex: openai or openrouter
       claude: anthropic or openrouter
 
-    Sizes are tiny, small, standard, and large. Codex models are gpt-5.6, gpt-5.6-sol,
+    Sizes are small, medium, and large. Codex models are gpt-5.6, gpt-5.6-sol,
     gpt-5.6-terra, and gpt-5.6-luna. Claude models are claude-haiku-4-5, claude-sonnet-5,
     claude-opus-5, and claude-fable-5.
 

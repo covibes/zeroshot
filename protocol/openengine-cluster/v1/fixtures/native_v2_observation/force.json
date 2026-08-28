@@ -5,7 +5,7 @@
   "result": {
     "atCursor": "v2:10",
     "runId": "run-1",
-    "size": "standard",
+    "size": "medium",
     "source": {
       "branch": "main",
       "repository": "open-engine/zeroshot",

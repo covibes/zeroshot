@@ -160,7 +160,7 @@ fn request() -> TargetRunRequest {
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
                 provider: CodexProvider::OpenAi,
-                size: RunSize::Tiny,
+                size: RunSize::Small,
                 nodes: BTreeMap::new(),
             },
             source: ResolvedSource {

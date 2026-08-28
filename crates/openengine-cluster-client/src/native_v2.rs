@@ -399,7 +399,7 @@ mod tests {
                             "branch":"main",
                             "revision":"0123456789abcdef0123456789abcdef01234567"
                         },
-                        "size":"tiny",
+                        "size":"small",
                         "status":{"phase":"running","activeExecutions":[]}
                     }
                 }),
@@ -417,7 +417,7 @@ mod tests {
                             "branch":"main",
                             "revision":"0123456789abcdef0123456789abcdef01234567"
                         },
-                        "size":"tiny",
+                        "size":"small",
                         "status":{"phase":"running","activeExecutions":[]}
                     }
                 }),

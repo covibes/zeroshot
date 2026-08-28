@@ -251,7 +251,7 @@ mod tests {
             "runtime": {
                 "harness": "codex",
                 "provider": "openai",
-                "size": "standard",
+                "size": "medium",
                 "nodes": {
                     "worker": {
                         "kind": "agent",

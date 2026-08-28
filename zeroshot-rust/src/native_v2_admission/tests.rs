@@ -122,7 +122,7 @@ fn submission(graph: GraphSpec, nodes: BTreeMap<NodeName, NodeRuntimeBinding>) -
         initial_input: json!({"items":[null]}),
         runtime: RuntimePlan::Claude {
             provider: ClaudeProvider::Anthropic,
-            size: RunSize::Standard,
+            size: RunSize::Medium,
             nodes,
         },
         source: resolved_source(),

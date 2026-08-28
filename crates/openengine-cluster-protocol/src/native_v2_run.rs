@@ -303,9 +303,10 @@ pub struct ResolvedSource {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RunSize {
-    Tiny,
+    #[serde(alias = "tiny")]
     Small,
-    Standard,
+    #[serde(alias = "standard")]
+    Medium,
     Large,
 }
 

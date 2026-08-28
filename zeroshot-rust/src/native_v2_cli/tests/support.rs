@@ -345,7 +345,7 @@ impl NativeV2CliBackend for FakeBackend {
                         "runId":params.run_id,
                         "title":"Repair checkout",
                         "source":source(),
-                        "size":"standard",
+                        "size":"medium",
                         "cursor":"v2:1",
                         "status":{"phase":"running","activeExecutions":[]}
                     }))
@@ -364,7 +364,7 @@ impl NativeV2CliBackend for FakeBackend {
                 "runId":params.run_id,
                 "title":"Repair checkout",
                 "source":source(),
-                "size":"standard",
+                "size":"medium",
                 "cursor":"v2:2",
                 "status":{"phase":"finished","terminalResult":terminal_result,"metadata":{}}
             }))
@@ -482,7 +482,7 @@ impl NativeV2CliBackend for FakeBackend {
             "runId":params.run_id,
             "title":"Repair checkout",
             "source":source(),
-            "size":"standard",
+            "size":"medium",
             "atCursor":"v2:3",
             "status":{"phase":"stopping","activeExecutions":[]}
         }))
