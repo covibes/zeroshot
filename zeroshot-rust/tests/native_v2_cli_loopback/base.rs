@@ -260,6 +260,7 @@ pub(crate) async fn submit_test_run(
         run_id,
         submission,
         connections,
+        connection_resolver: _,
         github_token,
     } = request;
     let exact_environment = RunEnvironment::exact(&submission.runtime, connections)

@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, watch};
 
 use crate::execution::process::HostedProcessPool;
 use crate::native_v2_candidate::{
-    NativeV2CandidateConfig, NativeV2HarnessConfig, build_native_v2_candidate_with_github_token,
+    NativeV2CandidateConfig, NativeV2HarnessConfig, build_native_v2_candidate,
 };
 use crate::native_v2_capsule::{
     CapsuleFilesystem, CapsuleFilesystemSpec, NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunner,
@@ -134,7 +134,7 @@ impl ProductionCapsuleAllocator {
             gh_program: self.config.gh_program.clone(),
             ..GhCliAuthorityConfig::hosted(runtime_home)
         };
-        let candidate = build_native_v2_candidate_with_github_token(
+        let candidate = build_native_v2_candidate(
             admitted,
             NativeV2CandidateConfig {
                 harness: self.harness(admitted, &filesystem, active_process_pool)?,
@@ -144,7 +144,6 @@ impl ProductionCapsuleAllocator {
                 ),
                 github: Arc::new(GhCliDeliveryAuthority::new(github_config)),
             },
-            github_token.map(Arc::<str>::from),
         )
         .map_err(|_| CapsuleAllocationUnavailable)?;
         let workspace_identity = WorkspaceIdentity::capture(&filesystem.workspace)

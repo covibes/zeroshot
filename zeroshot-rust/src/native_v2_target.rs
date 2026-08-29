@@ -317,6 +317,7 @@ where
                 submission_key: request.intent.submission_key,
             },
             connections: request.connections,
+            connection_resolver: None,
             github_token: request.github_token,
         };
         self.authority

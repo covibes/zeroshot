@@ -172,6 +172,7 @@ fn request() -> TargetRunRequest {
             submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
         },
         connections: BTreeMap::new(),
+        connection_resolver: None,
         github_token: None,
     }
 }

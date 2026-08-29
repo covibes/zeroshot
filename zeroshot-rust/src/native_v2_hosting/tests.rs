@@ -58,6 +58,7 @@ fn run_environment_is_exact_and_request_debug_is_redacted() {
             "redacted-request",
         ),
         connections: supplied,
+        connection_resolver: None,
         github_token: Some("github-secret".to_owned()),
     };
     let debug = format!("{request:?}");
@@ -115,6 +116,7 @@ async fn invalid_submission_fails_before_run_allocation() {
                 run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
                 submission: sourceful,
                 connections: BTreeMap::new(),
+                connection_resolver: None,
                 github_token: None,
             },
         )
@@ -154,6 +156,7 @@ async fn invalid_run_environment_fails_before_allocation() {
                 run_id: RunId::new("018f5e78-7f96-7c22-8d98-3f15af20c991"),
                 submission: sourceful,
                 connections: BTreeMap::new(),
+                connection_resolver: None,
                 github_token: None,
             },
         )

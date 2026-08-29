@@ -279,7 +279,8 @@ fn hosted_discovery(origin: &str) -> String {
                 "routeTemplates": {
                     "list": "/native-v2/connections/list",
                     "set": "/native-v2/connections/set",
-                    "delete": "/native-v2/connections/delete"
+                    "delete": "/native-v2/connections/delete",
+                    "resolve": "/native-v2/connections/resolve"
                 },
                 "dynamicKinds": ["github_app"]
             }

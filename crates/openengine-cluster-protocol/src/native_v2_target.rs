@@ -162,6 +162,45 @@ pub struct ConnectionDeleteResult {
 /// different connections to use the same environment name on different nodes without conflation.
 pub type RunConnectionValues = BTreeMap<ConnectionKey, StaticConnectionValues>;
 
+/// Exact fields requested from dynamic connections at one resolution point.
+pub type RunConnectionRequirements = BTreeMap<ConnectionKey, Vec<EnvironmentVariableName>>;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionResolveRequest {
+    pub run_id: RunId,
+    pub connections: RunConnectionRequirements,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionResolveResult {
+    pub connections: RunConnectionValues,
+}
+
+/// Run-scoped callback authority for dynamic connection keys.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetConnectionResolver {
+    pub endpoint: String,
+    pub bearer_token: String,
+    pub keys: Vec<ConnectionKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_connection: Option<ConnectionKey>,
+}
+
+impl fmt::Debug for TargetConnectionResolver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TargetConnectionResolver")
+            .field("endpoint", &self.endpoint)
+            .field("bearer_token", &"[REDACTED]")
+            .field("keys", &self.keys)
+            .field("source_connection", &self.source_connection)
+            .finish()
+    }
+}
+
 /// One run envelope. Explicit secret values are ephemeral and excluded from submission identity.
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -169,6 +208,8 @@ pub struct TargetRunRequest {
     pub run_id: RunId,
     pub submission: RunSubmission,
     pub connections: RunConnectionValues,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_resolver: Option<TargetConnectionResolver>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }
@@ -188,6 +229,7 @@ impl fmt::Debug for TargetRunRequest {
                     .collect::<BTreeMap<_, _>>(),
             )
             .field("connection_values", &"[REDACTED]")
+            .field("connection_resolver", &self.connection_resolver)
             .field(
                 "github_token",
                 &self.github_token.as_ref().map(|_| "[REDACTED]"),
@@ -293,6 +335,7 @@ pub struct TargetConnectionRoutes {
     pub list: String,
     pub set: String,
     pub delete: String,
+    pub resolve: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -413,6 +456,7 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(!debug.contains("environment-secret"));
         assert!(!debug.contains("github-secret"));
+        assert!(!debug.contains("resolver-secret"));
         assert!(debug.contains("OPENAI_API_KEY"));
     }
 

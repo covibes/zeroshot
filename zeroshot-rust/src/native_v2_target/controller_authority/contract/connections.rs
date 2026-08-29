@@ -24,6 +24,10 @@ pub(super) fn build_connections_descriptor(
     };
     validate_capability(wire)?;
     let base_url = connection_base_url(origin, wire)?;
+    // The CLI does not call the target's run-scoped resolver, but discovery must prove that the
+    // advertised callback route is a bounded same-origin literal before accepting the dynamic
+    // connection capability.
+    compile_route(&base_url, &wire.route_templates.resolve)?;
     Ok(Some(ConnectionsDescriptor {
         list: compile_route(&base_url, &wire.route_templates.list)?,
         set: compile_route(&base_url, &wire.route_templates.set)?,
@@ -103,7 +107,8 @@ mod tests {
                 "routeTemplates": {
                     "list": "/connections/list",
                     "set": "/connections/set",
-                    "delete": "/connections/delete"
+                    "delete": "/connections/delete",
+                    "resolve": "/connections/resolve"
                 },
                 "dynamicKinds": ["github_app"]
             }
