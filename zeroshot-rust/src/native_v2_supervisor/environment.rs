@@ -199,19 +199,20 @@ mod tests {
         CodexProvider, DeclaredConnections, DeclaredEnvironment, ModelId, NodeName, RunSize,
         SessionScope,
     };
+    use openengine_cluster_testkit::assertions::AssertValue;
 
     #[test]
     fn same_environment_name_can_resolve_from_different_keys_on_different_nodes() {
-        let name = EnvironmentVariableName::new("TOKEN").expect("valid environment name");
+        let name = EnvironmentVariableName::new("TOKEN").assert_value();
         let binding = |key: &str| NodeRuntimeBinding::Agent {
-            model: ModelId::new("gpt-5.6").expect("valid model"),
+            model: ModelId::new("gpt-5.6").assert_value(),
             effort: None,
             session_scope: SessionScope::Execution,
             connections: DeclaredConnections::single(
                 key,
-                DeclaredEnvironment::new([name.clone()]).expect("valid environment"),
+                DeclaredEnvironment::new([name.clone()]).assert_value(),
             )
-            .expect("valid connection"),
+            .assert_value(),
         };
         let first = binding("first");
         let second = binding("second");
@@ -219,41 +220,35 @@ mod tests {
             provider: CodexProvider::OpenAi,
             size: RunSize::Small,
             nodes: BTreeMap::from([
-                (NodeName::new("one").expect("valid node"), first.clone()),
-                (NodeName::new("two").expect("valid node"), second.clone()),
+                (NodeName::new("one").assert_value(), first.clone()),
+                (NodeName::new("two").assert_value(), second.clone()),
             ]),
         };
         let connection = |value: &str| {
             StaticConnectionValues::new(BTreeMap::from([(name.clone(), value.to_owned())]))
-                .expect("valid values")
+                .assert_value()
         };
         let environment = RunEnvironment::exact(
             &runtime,
             BTreeMap::from([
                 (
-                    ConnectionKey::new("first").expect("valid key"),
+                    ConnectionKey::new("first").assert_value(),
                     connection("first-secret"),
                 ),
                 (
-                    ConnectionKey::new("second").expect("valid key"),
+                    ConnectionKey::new("second").assert_value(),
                     connection("second-secret"),
                 ),
             ]),
         )
-        .expect("valid run connections");
+        .assert_value();
 
         assert_eq!(
-            environment
-                .resolve(&first)
-                .expect("first environment")
-                .get(&name),
+            environment.resolve(&first).assert_value().get(&name),
             Some("first-secret")
         );
         assert_eq!(
-            environment
-                .resolve(&second)
-                .expect("second environment")
-                .get(&name),
+            environment.resolve(&second).assert_value().get(&name),
             Some("second-secret")
         );
     }

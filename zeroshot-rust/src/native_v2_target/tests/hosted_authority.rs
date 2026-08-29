@@ -6,14 +6,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-use super::super::controller_authority::credentials::CredentialStorePreparation;
-use super::super::controller_authority::TargetCredentialStore;
-use super::super::*;
+use super::super::{
+    *,
+    controller_authority::{TargetCredentialStore, credentials::CredentialStorePreparation},
+};
+
+#[path = "hosted_authority/connections.rs"]
+mod connections;
+pub(super) use connections::test_authority;
 
 pub(super) struct RotatingCredentialStore {
     state: Mutex<RotatingCredentialState>,
 }
-
 pub(super) struct LoginBlockingCredentialStore {
     value: Mutex<String>,
     prepare_started: Notify,
@@ -116,7 +120,7 @@ fn authority_response(
     if let Some(response) = hosted_run_response(request) {
         return response;
     }
-    if let Some(response) = connection_response(request) {
+    if let Some(response) = connections::response(request) {
         return response;
     }
     if let Some(response) = controller_response(request, address) {
@@ -141,35 +145,6 @@ fn authority_response(
         .to_string(),
         unexpected => None::<String>
             .assert_value_with(&format!("unexpected authority request: {unexpected:?}")),
-    }
-}
-
-fn connection_response(request: &CapturedHttpRequest) -> Option<String> {
-    match (request.method.as_str(), request.path.as_str()) {
-        ("POST", "/native-v2/connections/list") => Some(
-            json!({
-                "connections": [{
-                    "key": "github",
-                    "scope": "user",
-                    "kind": "static",
-                    "fields": ["GH_TOKEN"]
-                }]
-            })
-            .to_string(),
-        ),
-        ("POST", "/native-v2/connections/set") => Some(
-            json!({
-                "connection": {
-                    "key": "github",
-                    "scope": "user",
-                    "kind": "static",
-                    "fields": ["GH_TOKEN"]
-                }
-            })
-            .to_string(),
-        ),
-        ("POST", "/native-v2/connections/delete") => Some(json!({"deleted": true}).to_string()),
-        _ => None,
     }
 }
 

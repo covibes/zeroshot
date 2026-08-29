@@ -1,5 +1,7 @@
 #[path = "tests/authentication.rs"]
 mod authentication;
+#[path = "tests/connections.rs"]
+mod connections;
 #[path = "tests/contracts.rs"]
 mod contracts;
 #[path = "tests/fixtures.rs"]

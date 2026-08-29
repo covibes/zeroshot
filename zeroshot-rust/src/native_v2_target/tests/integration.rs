@@ -1,10 +1,6 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use openengine_cluster_protocol::{
-    ConnectionDeleteRequest, ConnectionKey, ConnectionListRequest, ConnectionScope,
-    ConnectionSetRequest, EnvironmentVariableName, RunId, StaticConnectionValues,
-};
+use openengine_cluster_protocol::RunId;
 use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -197,83 +193,6 @@ async fn hosted_authority_uses_unified_discovery_and_run_scoped_oecp() {
     );
     assert_device_exchange(&requests);
     assert_submit_and_session_requests(&requests, &request.run_id);
-}
-
-#[tokio::test]
-async fn hosted_connection_crud_uses_only_the_advertised_authenticated_routes() {
-    let root = temp_root();
-    let (origin, server) = spawn_target_authority(15).await;
-    let credentials = Arc::new(MemoryCredentialStore::default());
-    let authority = TargetHttpControlAuthority::with_dependencies(
-        credentials.clone(),
-        Arc::new(MemoryDeviceCodeNotifier::default()),
-        root.path("refresh-locks"),
-    );
-    let target = hosted_target("local", origin);
-    credentials
-        .set(&target.id, "refresh-0")
-        .await
-        .assert_value();
-
-    let listed = authority
-        .connection_list(
-            &target,
-            ConnectionListRequest {
-                scope: ConnectionScope::User,
-            },
-        )
-        .await
-        .assert_value();
-    assert_eq!(listed.connections.assert_at(0).key.as_str(), "github");
-    let values = StaticConnectionValues::new(BTreeMap::from([(
-        EnvironmentVariableName::new("GH_TOKEN").assert_value(),
-        "secret-token".to_owned(),
-    )]))
-    .assert_value();
-    authority
-        .connection_set(
-            &target,
-            ConnectionSetRequest {
-                key: ConnectionKey::new("github").assert_value(),
-                scope: ConnectionScope::User,
-                values,
-            },
-        )
-        .await
-        .assert_value();
-    let deleted = authority
-        .connection_delete(
-            &target,
-            ConnectionDeleteRequest {
-                key: ConnectionKey::new("github").assert_value(),
-                scope: ConnectionScope::User,
-            },
-        )
-        .await;
-    assert!(deleted.is_ok(), "connection delete failed: {deleted:?}");
-
-    let requests = server.await.assert_value();
-    for route in [
-        "/native-v2/connections/list",
-        "/native-v2/connections/set",
-        "/native-v2/connections/delete",
-    ] {
-        let request = requests
-            .iter()
-            .find(|request| request.path == route)
-            .assert_value_with(route);
-        assert!(
-            request
-                .authorization
-                .as_deref()
-                .is_some_and(|value| value.starts_with("Bearer "))
-        );
-    }
-    let set = requests
-        .iter()
-        .find(|request| request.path == "/native-v2/connections/set")
-        .assert_value();
-    assert!(set.body.contains("secret-token"));
 }
 
 #[tokio::test]

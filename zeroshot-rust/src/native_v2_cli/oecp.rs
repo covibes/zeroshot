@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_client::{
-    ClientError, ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
+    ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
 };
 use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
@@ -19,6 +19,10 @@ use super::{
     CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
     NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
 };
+
+#[path = "oecp/errors.rs"]
+mod errors;
+use errors::{protocol as protocol_error, require_named_target, subscription as subscription_error};
 
 pub struct BoxedSubscription<E> {
     inner: Box<dyn CliSubscription<E>>,
@@ -492,21 +496,4 @@ async fn forward<T, E, O>(
             return;
         }
     }
-}
-
-fn protocol_error(error: ClientError) -> NativeV2CliError {
-    super::diagnostic::client_error(error)
-}
-
-fn subscription_error(error: ClientError) -> NativeV2CliError {
-    match error {
-        ClientError::Transport(_) => NativeV2CliError::Disconnected,
-        error => protocol_error(error),
-    }
-}
-
-fn require_named_target(target: Option<&str>) -> Result<&str, NativeV2CliError> {
-    target.ok_or_else(|| {
-        NativeV2CliError::Target("local controller composition is unavailable".to_owned())
-    })
 }
