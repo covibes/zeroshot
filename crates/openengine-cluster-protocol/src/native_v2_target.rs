@@ -23,6 +23,8 @@ pub const TARGET_CONTROLLER_AUDIENCE: &str = "controller";
 pub const HOSTED_RUNS_KIND: &str = "zeroshot.hosted-runs/v1";
 pub const CONNECTIONS_KIND: &str = "zeroshot.connections/v1";
 pub const STATIC_CONNECTION_KIND: &str = "static";
+/// A GitHub App installation whose repository-scoped token is minted by the hosted target.
+pub const GITHUB_APP_INSTALLATION_CONNECTION_KIND: &str = "github-app-installation";
 
 const MAX_CONNECTION_VALUE_BYTES: usize = 64 * 1024;
 const MAX_CONNECTION_BYTES: usize = 256 * 1024;
