@@ -136,7 +136,7 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
         let TargetRunRequest {
             run_id,
             submission,
-            environment,
+            connections,
             github_token,
         } = request;
         let digest = submission_digest(&submission)
@@ -150,7 +150,7 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
                 run_id: receipt.run_id,
             });
         }
-        let environment = RunEnvironment::exact(&submission.runtime, environment)
+        let environment = RunEnvironment::exact(&submission.runtime, connections)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
         let receipt = controller
             .submit_with_exact_environment_and_github_token(

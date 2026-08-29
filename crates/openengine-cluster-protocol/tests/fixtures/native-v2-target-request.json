@@ -27,6 +27,8 @@
     },
     "submissionKey": "debug-fixture"
   },
-  "environment": { "OPENAI_API_KEY": "environment-secret" },
+  "connections": {
+    "openai": { "OPENAI_API_KEY": "environment-secret" }
+  },
   "githubToken": "github-secret"
 }

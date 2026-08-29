@@ -6,7 +6,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{NodeName, RunId, RunSize, RuntimePlan, WorkerRef};
+use openengine_cluster_protocol::{
+    ConnectionKey, NodeName, RunId, RunSize, RuntimePlan, StaticConnectionValues, WorkerRef,
+};
 use serde_json::Value;
 
 use super::*;
@@ -36,9 +38,13 @@ fn run_environment_is_exact_and_request_debug_is_redacted() {
     ]);
     let selected = RunEnvironment::from_available(&runtime, &available)
         .assert_value_with("select declared environment");
+    let supplied = BTreeMap::from([(
+        ConnectionKey::new("provider").assert_value_with("connection key"),
+        StaticConnectionValues::new(available.clone()).assert_value_with("connection values"),
+    )]);
     assert!(matches!(
-        RunEnvironment::exact(&runtime, available.clone()),
-        Err(RunEnvironmentError::Undeclared(_))
+        RunEnvironment::exact(&runtime, supplied.clone()),
+        Err(RunEnvironmentError::UndeclaredField(_, _))
     ));
     let selected_debug = format!("{selected:?}");
     assert!(!selected_debug.contains("openai-secret"));
@@ -51,7 +57,7 @@ fn run_environment_is_exact_and_request_debug_is_redacted() {
             "0123456789abcdef0123456789abcdef01234567",
             "redacted-request",
         ),
-        environment: available,
+        connections: supplied,
         github_token: Some("github-secret".to_owned()),
     };
     let debug = format!("{request:?}");
@@ -108,7 +114,7 @@ async fn invalid_submission_fails_before_run_allocation() {
             crate::native_v2_target_authority::TargetRunRequest {
                 run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
                 submission: sourceful,
-                environment: BTreeMap::new(),
+                connections: BTreeMap::new(),
                 github_token: None,
             },
         )
@@ -147,7 +153,7 @@ async fn invalid_run_environment_fails_before_allocation() {
             crate::native_v2_target_authority::TargetRunRequest {
                 run_id: RunId::new("018f5e78-7f96-7c22-8d98-3f15af20c991"),
                 submission: sourceful,
-                environment: BTreeMap::new(),
+                connections: BTreeMap::new(),
                 github_token: None,
             },
         )

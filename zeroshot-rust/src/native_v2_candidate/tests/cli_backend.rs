@@ -63,7 +63,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
         let PreparedRunRequest {
             run_id,
             intent,
-            environment,
+            connections,
             ..
         } = request;
         let params = RunSubmitParams {
@@ -83,7 +83,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
                 submission_key: intent.submission_key,
             },
         };
-        let environment = RunEnvironment::exact(&params.submission.runtime, environment)
+        let environment = RunEnvironment::exact(&params.submission.runtime, connections)
             .map_err(cli_protocol_error)?;
         self.controller
             .submit_with_exact_environment(params, environment)

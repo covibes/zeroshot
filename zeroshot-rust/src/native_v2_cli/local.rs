@@ -168,8 +168,8 @@ impl LocalCliBackend {
             .validate_intent(&request.intent, DeliveryPolicy::Optional)
             .await
             .map_err(NativeV2CliError::InvalidRun)?;
-        request.environment = LocalConnectionStore::new(self.state_root.clone())
-            .resolve(&request.intent.runtime, &request.environment)?
+        request.connections = LocalConnectionStore::new(self.state_root.clone())
+            .resolve(&request.intent.runtime, &request.connections)?
             .bootstrap_values();
         let prepared = prepare_local_run(request, &self.current_directory, &self.git_program)
             .map_err(local_error)?;

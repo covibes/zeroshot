@@ -4,7 +4,6 @@
 //! contacted. The named-target connector resolves a mutable branch selector before sending the
 //! immutable sourceful submission to the target.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -15,7 +14,8 @@ use openengine_cluster_protocol::{
     ConnectionListResult, ConnectionMutationResult, ConnectionScope, ConnectionSetRequest, Cursor,
     EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunId,
-    RunStatusParams, RunTitle, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
+    RunConnectionValues, RunStatusParams, RunTitle, RunWatchParams, SourceBranchId,
+    SubscriptionCloseReason,
 };
 use thiserror::Error;
 
@@ -130,7 +130,7 @@ pub enum RunRuntime {
 pub struct PreparedRunRequest {
     pub run_id: RunId,
     pub intent: TargetRunIntent,
-    pub environment: BTreeMap<EnvironmentVariableName, String>,
+    pub connections: RunConnectionValues,
     pub github_token: Option<String>,
 }
 
@@ -140,11 +140,8 @@ impl fmt::Debug for PreparedRunRequest {
             .debug_struct("PreparedRunRequest")
             .field("run_id", &self.run_id)
             .field("intent", &self.intent)
-            .field(
-                "environment_names",
-                &self.environment.keys().collect::<Vec<_>>(),
-            )
-            .field("environment_values", &"[REDACTED]")
+            .field("connections", &self.connections.keys().collect::<Vec<_>>())
+            .field("connection_values", &"[REDACTED]")
             .field(
                 "github_token",
                 &self.github_token.as_ref().map(|_| "[REDACTED]"),

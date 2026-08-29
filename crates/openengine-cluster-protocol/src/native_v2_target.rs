@@ -152,15 +152,21 @@ pub struct ConnectionDeleteResult {
     pub deleted: bool,
 }
 
+/// Ephemeral, keyed connection snapshots supplied with one run.
+///
+/// Each included key carries only fields declared for that key by the runtime. A hosted target may
+/// receive a partial map and resolve omitted keys from its user and organization stores. A direct
+/// target requires an exact map before dispatch. Keeping values keyed until node start allows two
+/// different connections to use the same environment name on different nodes without conflation.
+pub type RunConnectionValues = BTreeMap<ConnectionKey, StaticConnectionValues>;
+
 /// One run envelope. Explicit secret values are ephemeral and excluded from submission identity.
-/// Direct targets require an exact environment; hosted targets may resolve omitted connection
-/// fields from their user and organization stores before dispatch.
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetRunRequest {
     pub run_id: RunId,
     pub submission: RunSubmission,
-    pub environment: BTreeMap<EnvironmentVariableName, String>,
+    pub connections: RunConnectionValues,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
 }
@@ -172,10 +178,14 @@ impl fmt::Debug for TargetRunRequest {
             .field("run_id", &self.run_id)
             .field("submission", &self.submission)
             .field(
-                "environment_names",
-                &self.environment.keys().collect::<Vec<_>>(),
+                "connections",
+                &self
+                    .connections
+                    .iter()
+                    .map(|(key, values)| (key, values.field_names()))
+                    .collect::<BTreeMap<_, _>>(),
             )
-            .field("environment_values", &"[REDACTED]")
+            .field("connection_values", &"[REDACTED]")
             .field(
                 "github_token",
                 &self.github_token.as_ref().map(|_| "[REDACTED]"),

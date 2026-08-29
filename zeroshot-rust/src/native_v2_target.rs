@@ -394,7 +394,7 @@ where
                 source,
                 submission_key: request.intent.submission_key,
             },
-            environment: request.environment,
+            connections: request.connections,
             github_token: request.github_token,
         };
         self.authority

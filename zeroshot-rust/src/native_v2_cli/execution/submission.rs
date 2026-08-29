@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
@@ -7,7 +7,8 @@ use std::path::Path;
 use openengine_cluster_protocol::{
     ClaudeProvider, CodexProvider, DeclaredConnections, DeclaredEnvironment,
     EnvironmentVariableName, GraphProfile, GraphSpec, IdempotencyKey, ModelId, NodeName,
-    NodeRuntimeBinding, ReasoningEffort, RunSize, RunSubmitResult, RuntimePlan, SessionScope,
+    NodeRuntimeBinding, ReasoningEffort, RunConnectionValues, RunSize, RunSubmitResult,
+    RuntimePlan, SessionScope, StaticConnectionValues,
 };
 use serde::Deserialize;
 
@@ -97,7 +98,7 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     let intent = prepare_intent(run)?;
-    let environment = select_environment(&intent.runtime, &available)?;
+    let connections = select_connections(&intent.runtime, &available)?;
     let github_token = run
         .target
         .as_ref()
@@ -113,7 +114,7 @@ where
     Ok(PreparedRunRequest {
         run_id: openengine_cluster_protocol::RunId::new(uuid::Uuid::now_v7().to_string()),
         intent,
-        environment,
+        connections,
         github_token,
     })
 }
@@ -183,32 +184,34 @@ fn prepare_intent(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError>
     })
 }
 
-fn select_environment<F>(
+fn select_connections<F>(
     runtime: &RuntimePlan,
     available: F,
-) -> Result<BTreeMap<EnvironmentVariableName, String>, NativeV2CliError>
+) -> Result<RunConnectionValues, NativeV2CliError>
 where
     F: Fn(&str) -> Option<OsString>,
 {
     let mut selected = BTreeMap::new();
-    for name in declared_environment_names(runtime) {
-        let Some(value) = available(name.as_str()) else {
-            continue;
-        };
-        let value = value
-            .into_string()
-            .map_err(|_| NativeV2CliError::Environment(name.clone()))?;
-        selected.insert(name, value);
+    for (key, fields) in runtime.connection_requirements() {
+        let mut values = BTreeMap::new();
+        for name in fields {
+            let Some(value) = available(name.as_str()) else {
+                continue;
+            };
+            let value = value
+                .into_string()
+                .map_err(|_| NativeV2CliError::Environment(name.clone()))?;
+            values.insert(name, value);
+        }
+        if !values.is_empty() {
+            selected.insert(
+                key,
+                StaticConnectionValues::new(values)
+                    .map_err(|error| NativeV2CliError::Usage(error.to_string()))?,
+            );
+        }
     }
     Ok(selected)
-}
-
-fn declared_environment_names(runtime: &RuntimePlan) -> BTreeSet<EnvironmentVariableName> {
-    runtime
-        .nodes()
-        .values()
-        .flat_map(|binding| binding.declared_connections().environment_names().cloned())
-        .collect()
 }
 
 fn materialize_initial_input(

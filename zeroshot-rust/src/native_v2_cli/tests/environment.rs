@@ -112,10 +112,10 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
             Call::Submit {
                 runtime,
                 input,
-                environment,
+                connections,
                 ..
             },
-        ] => Some((runtime, input, environment)),
+        ] => Some((runtime, input, connections)),
         _ => None,
     }
     .assert_value();
@@ -141,8 +141,8 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
     assert_eq!(
         submitted
             .2
-            .iter()
-            .next()
+            .get(&ConnectionKey::new("github").assert_value())
+            .and_then(|values| values.as_map().iter().next())
             .map(|(name, value)| (name.as_str(), value.as_str())),
         Some(("GH_TOKEN", "template-secret"))
     );
@@ -163,20 +163,23 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
 
     assert_eq!(requested.into_inner(), ["DECLARED", "SHARED", "GH_TOKEN"]);
     let calls = backend.calls();
-    let (environment, github_token) = match calls.as_slice() {
+    let (connections, github_token) = match calls.as_slice() {
         [
             Call::Submit {
-                environment,
+                connections,
                 github_token,
                 ..
             },
-        ] => Some((environment, github_token)),
+        ] => Some((connections, github_token)),
         _ => None,
     }
     .assert_value();
     assert_eq!(github_token.as_deref(), Some("value-for-GH_TOKEN"));
     assert_eq!(
-        environment
+        connections
+            .get(&ConnectionKey::new("test").assert_value())
+            .assert_value()
+            .as_map()
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>(),
@@ -198,7 +201,7 @@ async fn missing_inline_environment_is_left_for_connection_resolution() {
     let calls = backend.calls();
     assert!(matches!(
         calls.as_slice(),
-        [Call::Submit { environment, .. }] if environment.is_empty()
+        [Call::Submit { connections, .. }] if connections.is_empty()
     ));
 }
 

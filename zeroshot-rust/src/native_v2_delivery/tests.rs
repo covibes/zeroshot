@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest, TerminalResult,
-    WorkerErrorCode, WorkerOutcome, WorkerRef,
+    ConnectionKey, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
+    StaticConnectionValues, TerminalResult, WorkerErrorCode, WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
 use serde_json::{json, Value};

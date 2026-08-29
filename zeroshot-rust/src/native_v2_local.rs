@@ -77,10 +77,10 @@ pub fn prepare_local_run(
     let PreparedRunRequest {
         run_id,
         intent,
-        environment,
+        connections,
         github_token,
     } = request;
-    let environment = RunEnvironment::exact(&intent.runtime, environment)?;
+    let environment = RunEnvironment::exact(&intent.runtime, connections)?;
     let (workspace, source) = local_resolved_source(current_directory, git_program)?;
     Ok(PreparedLocalRun {
         run_id,

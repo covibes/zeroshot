@@ -333,7 +333,7 @@ pub(super) fn run_request() -> PreparedRunRequest {
     PreparedRunRequest {
         run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
         intent: run_intent(),
-        environment: BTreeMap::new(),
+        connections: BTreeMap::new(),
         github_token: None,
     }
 }
@@ -355,7 +355,7 @@ pub(super) fn exact_run_request() -> TargetRunRequest {
             },
             submission_key: request.intent.submission_key,
         },
-        environment: request.environment,
+        connections: request.connections,
         github_token: request.github_token,
     }
 }

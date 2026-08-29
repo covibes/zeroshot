@@ -8,8 +8,8 @@ use fs2::FileExt;
 use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionKey, ConnectionListRequest,
     ConnectionListResult, ConnectionMutationResult, ConnectionScope, ConnectionSetRequest,
-    ConnectionSummary, EnvironmentVariableName, RuntimePlan, StaticConnectionValues,
-    STATIC_CONNECTION_KIND,
+    ConnectionSummary, EnvironmentVariableName, RunConnectionValues, RuntimePlan,
+    StaticConnectionValues, STATIC_CONNECTION_KIND,
 };
 
 use super::{NativeV2CliError, local_io, local_message, prepare_private_directory};
@@ -79,15 +79,19 @@ impl LocalConnectionStore {
     pub(super) fn resolve(
         &self,
         runtime: &RuntimePlan,
-        explicit: &BTreeMap<EnvironmentVariableName, String>,
+        explicit: &RunConnectionValues,
     ) -> Result<RunEnvironment, NativeV2CliError> {
-        let requirements = connection_requirements(runtime);
+        let requirements = runtime.connection_requirements();
         let lock = self.lock()?;
         FileExt::lock_shared(&lock).map_err(local_io)?;
         let stored = self.read()?;
-        let mut resolved = BTreeMap::new();
+        let mut resolved = RunConnectionValues::new();
         for (key, fields) in requirements {
-            resolved.extend(resolve_connection(&key, &fields, explicit, &stored)?);
+            resolved.insert(
+                key.clone(),
+                StaticConnectionValues::new(resolve_connection(&key, &fields, explicit, &stored)?)
+                    .map_err(|_| local_message("resolved connection shape is invalid"))?,
+            );
         }
         RunEnvironment::exact(runtime, resolved).map_err(Into::into)
     }
@@ -162,24 +166,22 @@ impl LocalConnectionStore {
 fn resolve_connection(
     key: &ConnectionKey,
     fields: &BTreeSet<EnvironmentVariableName>,
-    explicit: &BTreeMap<EnvironmentVariableName, String>,
+    explicit: &RunConnectionValues,
     stored: &StoredConnections,
 ) -> Result<BTreeMap<EnvironmentVariableName, String>, NativeV2CliError> {
-    let explicit_count = fields
-        .iter()
-        .filter(|field| explicit.contains_key(*field))
-        .count();
-    let source = match explicit_count {
-        0 => stored
-            .get(key)
-            .map(StaticConnectionValues::as_map)
-            .ok_or_else(|| local_message(format!("required connection {key} is unavailable")))?,
-        count if count == fields.len() => explicit,
-        _ => {
+    let source = if let Some(values) = explicit.get(key) {
+        let source = values.as_map();
+        if source.len() != fields.len() || fields.iter().any(|field| !source.contains_key(field)) {
             return Err(local_message(format!(
-                "explicit environment only partially defines connection {key}"
+                "explicit connection {key} does not exactly define its required fields"
             )));
         }
+        source
+    } else {
+        stored
+            .get(key)
+            .map(StaticConnectionValues::as_map)
+            .ok_or_else(|| local_message(format!("required connection {key} is unavailable")))?
     };
     fields
         .iter()
@@ -215,21 +217,6 @@ fn summary(key: ConnectionKey, fields: Vec<EnvironmentVariableName>) -> Connecti
         kind: STATIC_CONNECTION_KIND.to_owned(),
         fields,
     }
-}
-
-fn connection_requirements(
-    runtime: &RuntimePlan,
-) -> BTreeMap<ConnectionKey, BTreeSet<EnvironmentVariableName>> {
-    let mut requirements = BTreeMap::<ConnectionKey, BTreeSet<EnvironmentVariableName>>::new();
-    for binding in runtime.nodes().values() {
-        for (key, fields) in binding.declared_connections().iter() {
-            requirements
-                .entry(key.clone())
-                .or_default()
-                .extend(fields.iter().cloned());
-        }
-    }
-    requirements
 }
 
 #[cfg(test)]
@@ -366,17 +353,17 @@ mod tests {
             .assert_value();
         assert_eq!(
             resolved.bootstrap_values(),
-            BTreeMap::from([(field("OPENAI_API_KEY"), "stored-key".to_owned())])
+            BTreeMap::from([(key("provider"), values(&[("OPENAI_API_KEY", "stored-key")]),)])
         );
 
         let runtime = runtime(&["OPENAI_API_KEY", "OPENAI_ORG"]);
         let error = store
             .resolve(
                 &runtime,
-                &BTreeMap::from([(field("OPENAI_API_KEY"), "inline".to_owned())]),
+                &BTreeMap::from([(key("provider"), values(&[("OPENAI_API_KEY", "inline")]))]),
             )
             .assert_error();
-        assert!(error.to_string().contains("partially defines"));
+        assert!(error.to_string().contains("does not exactly define"));
     }
 
     #[test]

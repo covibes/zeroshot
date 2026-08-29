@@ -74,8 +74,12 @@ async fn create_delivery_run(
         RunEnvironment::exact(
             &admitted.runtime,
             BTreeMap::from([(
-                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
-                "test-token".to_owned(),
+                ConnectionKey::new("github").assert_value(),
+                StaticConnectionValues::new(BTreeMap::from([(
+                    EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
+                    "test-token".to_owned(),
+                )]))
+                .assert_value(),
             )]),
         )
         .assert_value_with("resolve delivery run environment"),
