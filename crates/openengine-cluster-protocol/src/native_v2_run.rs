@@ -389,21 +389,20 @@ pub use wire::{
 
 #[cfg(test)]
 mod tests {
+    use openengine_cluster_testkit::assertions::AssertValue;
+
     use super::*;
 
     #[test]
     fn node_connections_reject_ambiguous_or_empty_shapes() {
-        let token = EnvironmentVariableName::new("TOKEN").expect("valid environment name");
-        let environment = DeclaredEnvironment::new([token.clone()]).expect("valid environment");
+        let token = EnvironmentVariableName::new("TOKEN").assert_value();
+        let environment = DeclaredEnvironment::new([token.clone()]).assert_value();
         let ambiguous = DeclaredConnections::new([
             (
-                ConnectionKey::new("left").expect("valid connection key"),
+                ConnectionKey::new("left").assert_value(),
                 environment.clone(),
             ),
-            (
-                ConnectionKey::new("right").expect("valid connection key"),
-                environment,
-            ),
+            (ConnectionKey::new("right").assert_value(), environment),
         ]);
         assert!(ambiguous.is_err());
         assert!(DeclaredConnections::single("empty", DeclaredEnvironment::empty()).is_err());
@@ -419,7 +418,7 @@ mod tests {
             }
         }));
         assert!(binding.is_ok());
-        let encoded = serde_json::to_value(binding.expect("valid binding")).expect("serializable");
+        let encoded = serde_json::to_value(binding.assert_value()).assert_value();
         assert_eq!(
             encoded.pointer("/connections/provider/0"),
             Some(&serde_json::json!("API_KEY"))

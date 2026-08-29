@@ -383,6 +383,8 @@ pub fn is_canonical_uuid_v7(run_id: &RunId) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use openengine_cluster_testkit::assertions::AssertValue;
+
     use super::*;
 
     #[test]
@@ -417,10 +419,10 @@ mod tests {
     #[test]
     fn static_connection_debug_redacts_values_and_validates_shape() {
         let values = StaticConnectionValues::new(BTreeMap::from([(
-            EnvironmentVariableName::new("TOKEN").expect("valid field"),
+            EnvironmentVariableName::new("TOKEN").assert_value(),
             "secret-value".to_owned(),
         )]))
-        .expect("valid static connection");
+        .assert_value();
         let debug = format!("{values:?}");
         assert!(debug.contains("TOKEN"));
         assert!(!debug.contains("secret-value"));
