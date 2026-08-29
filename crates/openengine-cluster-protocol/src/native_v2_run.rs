@@ -1,11 +1,12 @@
 //! Public native-v2 run admission and inventory values.
 //!
 //! The protocol carries the immutable resolved source, graph, actual initial value, runtime plan,
-//! run title, and existing submission-key seam. Runtime plans declare environment names only;
-//! resolved values and provider credentials remain private host input.
+//! run title, and existing submission-key seam. Runtime plans declare connection keys and their
+//! required environment shape only; resolved values and provider credentials remain private host
+//! input.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -21,9 +22,10 @@ pub const RUN_ATTACH_METHOD: &str = "run/attach";
 pub const RUN_FORCE_METHOD: &str = "run/force";
 
 pub const MAX_DECLARED_ENVIRONMENT_NAMES: usize = 64;
+pub const MAX_DECLARED_CONNECTIONS: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeV2RunValueError(&'static str);
+pub struct NativeV2RunValueError(pub(crate) &'static str);
 
 impl fmt::Display for NativeV2RunValueError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -214,6 +216,14 @@ fn validate_environment_name(value: &str) -> Result<(), NativeV2RunValueError> {
     }
 }
 
+fn validate_connection_key(value: &str) -> Result<(), NativeV2RunValueError> {
+    validate_non_control_bytes(
+        value,
+        128,
+        "connection key must be 1..=128 non-control bytes",
+    )
+}
+
 fn validate_non_control_text(
     value: &str,
     maximum: usize,
@@ -287,6 +297,17 @@ native_v2_string_kind!(
         "minLength": 1,
         "maxLength": 128,
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    })
+);
+native_v2_string_kind!(
+    ConnectionKeyKind,
+    ConnectionKey,
+    validate_connection_key,
+    json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^[^\u0000-\u001f\u007f-\u009f]+$"
     })
 );
 
@@ -434,6 +455,111 @@ impl JsonSchema for DeclaredEnvironment {
     }
 }
 
+/// Secret-free connection requirements declared by one executable node.
+///
+/// Keys select stored connections. Values define the exact environment fields the node requires
+/// from each selected connection. One environment name cannot be supplied by two connection keys
+/// in the same node binding.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct DeclaredConnections(BTreeMap<ConnectionKey, DeclaredEnvironment>);
+
+impl DeclaredConnections {
+    pub fn new(
+        values: impl IntoIterator<Item = (ConnectionKey, DeclaredEnvironment)>,
+    ) -> Result<Self, NativeV2RunValueError> {
+        let values = values.into_iter().collect::<Vec<_>>();
+        if values.len() > MAX_DECLARED_CONNECTIONS {
+            return Err(NativeV2RunValueError(
+                "node declares more than 64 connections",
+            ));
+        }
+        let unique = values.iter().cloned().collect::<BTreeMap<_, _>>();
+        if unique.len() != values.len() {
+            return Err(NativeV2RunValueError(
+                "node declares a duplicate connection key",
+            ));
+        }
+        if unique.values().any(DeclaredEnvironment::is_empty) {
+            return Err(NativeV2RunValueError(
+                "declared connection must require at least one environment name",
+            ));
+        }
+        let names = unique
+            .values()
+            .flat_map(DeclaredEnvironment::iter)
+            .collect::<Vec<_>>();
+        if names.len() > MAX_DECLARED_ENVIRONMENT_NAMES {
+            return Err(NativeV2RunValueError(
+                "node connections declare more than 64 environment names",
+            ));
+        }
+        if names.iter().copied().collect::<BTreeSet<_>>().len() != names.len() {
+            return Err(NativeV2RunValueError(
+                "an environment name cannot be declared by two node connections",
+            ));
+        }
+        Ok(Self(unique))
+    }
+
+    pub fn single(
+        key: impl Into<String>,
+        environment: DeclaredEnvironment,
+    ) -> Result<Self, NativeV2RunValueError> {
+        Self::new([(ConnectionKey::new(key)?, environment)])
+    }
+
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub const fn as_map(&self) -> &BTreeMap<ConnectionKey, DeclaredEnvironment> {
+        &self.0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&ConnectionKey, &DeclaredEnvironment)> {
+        self.0.iter()
+    }
+
+    pub fn environment_names(&self) -> impl Iterator<Item = &EnvironmentVariableName> {
+        self.0.values().flat_map(DeclaredEnvironment::iter)
+    }
+}
+
+impl<'de> Deserialize<'de> for DeclaredConnections {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(BTreeMap::<ConnectionKey, DeclaredEnvironment>::deserialize(
+            deserializer,
+        )?)
+        .map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for DeclaredConnections {
+    fn schema_name() -> Cow<'static, str> {
+        "DeclaredConnections".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let value = generator.subschema_for::<DeclaredEnvironment>();
+        json_schema!({
+            "type": "object",
+            "additionalProperties": value,
+            "maxProperties": 64
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub enum NodeRuntimeBinding {
@@ -447,12 +573,12 @@ pub enum NodeRuntimeBinding {
             skip_serializing_if = "is_execution_scope"
         )]
         session_scope: SessionScope,
-        #[serde(default, skip_serializing_if = "DeclaredEnvironment::is_empty")]
-        env: DeclaredEnvironment,
+        #[serde(default, skip_serializing_if = "DeclaredConnections::is_empty")]
+        connections: DeclaredConnections,
     },
     GitDelivery {
-        #[serde(default, skip_serializing_if = "DeclaredEnvironment::is_empty")]
-        env: DeclaredEnvironment,
+        #[serde(default, skip_serializing_if = "DeclaredConnections::is_empty")]
+        connections: DeclaredConnections,
     },
 }
 
@@ -462,9 +588,9 @@ fn is_execution_scope(scope: &SessionScope) -> bool {
 
 impl NodeRuntimeBinding {
     #[must_use]
-    pub const fn declared_environment(&self) -> &DeclaredEnvironment {
+    pub const fn declared_connections(&self) -> &DeclaredConnections {
         match self {
-            Self::Agent { env, .. } | Self::GitDelivery { env } => env,
+            Self::Agent { connections, .. } | Self::GitDelivery { connections } => connections,
         }
     }
 }
@@ -473,3 +599,44 @@ mod wire;
 pub use wire::{
     RunListParams, RunListResult, RunSubmission, RunSubmitParams, RunSubmitResult, RuntimePlan,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_connections_reject_ambiguous_or_empty_shapes() {
+        let token = EnvironmentVariableName::new("TOKEN").expect("valid environment name");
+        let environment = DeclaredEnvironment::new([token.clone()]).expect("valid environment");
+        let ambiguous = DeclaredConnections::new([
+            (
+                ConnectionKey::new("left").expect("valid connection key"),
+                environment.clone(),
+            ),
+            (
+                ConnectionKey::new("right").expect("valid connection key"),
+                environment,
+            ),
+        ]);
+        assert!(ambiguous.is_err());
+        assert!(DeclaredConnections::single("empty", DeclaredEnvironment::empty()).is_err());
+    }
+
+    #[test]
+    fn node_connection_wire_shape_is_keyed_and_secret_free() {
+        let binding = serde_json::from_value::<NodeRuntimeBinding>(serde_json::json!({
+            "kind": "agent",
+            "model": "gpt-5.6",
+            "connections": {
+                "provider": ["API_KEY"]
+            }
+        }));
+        assert!(binding.is_ok());
+        let encoded = serde_json::to_value(binding.expect("valid binding")).expect("serializable");
+        assert_eq!(
+            encoded.pointer("/connections/provider/0"),
+            Some(&serde_json::json!("API_KEY"))
+        );
+        assert!(encoded.get("env").is_none());
+    }
+}

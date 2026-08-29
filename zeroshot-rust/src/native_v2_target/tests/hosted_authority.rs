@@ -116,6 +116,9 @@ fn authority_response(
     if let Some(response) = hosted_run_response(request) {
         return response;
     }
+    if let Some(response) = connection_response(request) {
+        return response;
+    }
     if let Some(response) = controller_response(request, address) {
         return response;
     }
@@ -138,6 +141,35 @@ fn authority_response(
         .to_string(),
         unexpected => None::<String>
             .assert_value_with(&format!("unexpected authority request: {unexpected:?}")),
+    }
+}
+
+fn connection_response(request: &CapturedHttpRequest) -> Option<String> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/native-v2/connections/list") => Some(
+            json!({
+                "connections": [{
+                    "key": "github",
+                    "scope": "user",
+                    "kind": "static",
+                    "fields": ["GH_TOKEN"]
+                }]
+            })
+            .to_string(),
+        ),
+        ("POST", "/native-v2/connections/set") => Some(
+            json!({
+                "connection": {
+                    "key": "github",
+                    "scope": "user",
+                    "kind": "static",
+                    "fields": ["GH_TOKEN"]
+                }
+            })
+            .to_string(),
+        ),
+        ("POST", "/native-v2/connections/delete") => Some(json!({"deleted": true}).to_string()),
+        _ => None,
     }
 }
 
@@ -265,6 +297,16 @@ fn hosted_discovery(origin: &str) -> String {
                 "kind": "zeroshot.hosted-runs/v1",
                 "base_url": origin,
                 "route_templates": hosted_run_routes()
+            },
+            "connections": {
+                "kind": "zeroshot.connections/v1",
+                "baseUrl": origin,
+                "routeTemplates": {
+                    "list": "/native-v2/connections/list",
+                    "set": "/native-v2/connections/set",
+                    "delete": "/native-v2/connections/delete"
+                },
+                "dynamicKinds": ["github_app"]
             }
         }
     })

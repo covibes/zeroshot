@@ -4,7 +4,10 @@ use openengine_cluster_protocol::{GraphSpec, NodeName};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::native_v2_contract::{DeclaredEnvironment, EnvironmentVariableName, NodeRuntimeBinding};
+use crate::native_v2_contract::{
+    ConnectionKey, DeclaredConnections, DeclaredEnvironment, EnvironmentVariableName,
+    GITHUB_CONNECTION_KEY, NodeRuntimeBinding,
+};
 use crate::native_v2_delivery::GITHUB_TOKEN_ENV;
 
 use super::{
@@ -64,10 +67,12 @@ impl BuiltinGraphTemplate {
             return Ok(None);
         }
         let environment_name = static_value(EnvironmentVariableName::new(GITHUB_TOKEN_ENV))?;
-        let env = static_value(DeclaredEnvironment::new([environment_name]))?;
+        let environment = static_value(DeclaredEnvironment::new([environment_name]))?;
+        let connection_key = static_value(ConnectionKey::new(GITHUB_CONNECTION_KEY))?;
+        let connections = static_value(DeclaredConnections::new([(connection_key, environment)]))?;
         Ok(Some((
             node_name(DELIVERY_NODE)?,
-            NodeRuntimeBinding::GitDelivery { env },
+            NodeRuntimeBinding::GitDelivery { connections },
         )))
     }
 

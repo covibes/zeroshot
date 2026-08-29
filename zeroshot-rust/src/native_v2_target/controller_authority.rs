@@ -1,3 +1,4 @@
+mod connections;
 mod contract;
 mod control;
 pub(super) mod credentials;

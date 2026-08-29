@@ -7,9 +7,10 @@ use openengine_cluster_client::{
     ClientError, ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
 };
 use openengine_cluster_protocol::{
-    Cursor, RunAttachEventNotification, RunAttachParams, RunForceParams, RunListParams,
-    RunLogEventNotification, RunLogsParams, RunStatus, RunStatusParams, RunSubmitResult,
-    RunWatchParams,
+    ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
+    ConnectionMutationResult, ConnectionSetRequest, Cursor, RunAttachEventNotification,
+    RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
+    RunStatus, RunStatusParams, RunSubmitResult, RunWatchParams,
 };
 use tokio::sync::mpsc;
 
@@ -49,6 +50,21 @@ pub trait TargetConnector: Send + Sync {
     async fn add(&self, request: TargetAdd) -> Result<(), NativeV2CliError>;
     async fn login(&self, name: &str) -> Result<(), NativeV2CliError>;
     async fn setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError>;
+    async fn connection_list(
+        &self,
+        name: &str,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, NativeV2CliError>;
+    async fn connection_set(
+        &self,
+        name: &str,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, NativeV2CliError>;
+    async fn connection_delete(
+        &self,
+        name: &str,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, NativeV2CliError>;
     async fn submit(
         &self,
         name: &str,
@@ -176,6 +192,36 @@ where
 
     async fn target_setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError> {
         self.connector.setup(request).await
+    }
+
+    async fn connection_list(
+        &self,
+        target: Option<&str>,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, NativeV2CliError> {
+        self.connector
+            .connection_list(require_named_target(target)?, request)
+            .await
+    }
+
+    async fn connection_set(
+        &self,
+        target: Option<&str>,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, NativeV2CliError> {
+        self.connector
+            .connection_set(require_named_target(target)?, request)
+            .await
+    }
+
+    async fn connection_delete(
+        &self,
+        target: Option<&str>,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
+        self.connector
+            .connection_delete(require_named_target(target)?, request)
+            .await
     }
 
     async fn run_submit(

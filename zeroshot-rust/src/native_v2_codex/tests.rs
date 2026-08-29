@@ -26,8 +26,8 @@ use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
 use crate::native_v2_contract::{
-    AdmittedRun, DeclaredEnvironment, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission,
-    RuntimePlan,
+    AdmittedRun, DeclaredConnections, DeclaredEnvironment, EnvironmentVariableName,
+    NodeRuntimeBinding, RunSubmission, RuntimePlan,
 };
 use crate::native_v2_runner::{
     AttachReceiveError, NativeNodeRunner, NodeHandle, NodeRunRequest, NodeRunner,
@@ -134,11 +134,16 @@ fn environment_names(names: &[&str]) -> DeclaredEnvironment {
 }
 
 fn binding(scope: SessionScope, environment: &[&str]) -> NodeRuntimeBinding {
+    let connections = if environment.is_empty() {
+        DeclaredConnections::empty()
+    } else {
+        DeclaredConnections::single("provider", environment_names(environment)).assert_value()
+    };
     NodeRuntimeBinding::Agent {
         model: worker_catalog::ModelId::new("gpt-5.6-sol").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
-        env: environment_names(environment),
+        connections,
     }
 }
 

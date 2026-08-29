@@ -2,16 +2,19 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::Parser;
-use openengine_cluster_protocol::{Cursor, ExecutionRef, IdempotencyKey, RunTitle, SourceBranchId};
+use openengine_cluster_protocol::{
+    ConnectionKey, ConnectionScope, Cursor, EnvironmentVariableName, ExecutionRef, IdempotencyKey,
+    RunTitle, SourceBranchId,
+};
 
 use super::{
-    AttachArgs, Cli, CliCommand, RunArgs, RunLogsArgs, RunSelectorArgs, RunWatchArgs,
-    TargetCommand, TemplateCommand, TemplateName, UtilityCommand,
+    AttachArgs, Cli, CliCommand, ConnectionCommand, ConnectionScopeArg, RunArgs, RunLogsArgs,
+    RunSelectorArgs, RunWatchArgs, TargetCommand, TemplateCommand, TemplateName, UtilityCommand,
 };
 use crate::native_v2_cli::{
-    BuiltinGraphTemplate, NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph,
-    RunLogsCommand, RunRuntime, RunSelector, RunWatchCommand, TargetAdd, TargetServe, TargetSetup,
-    TemplateDelivery,
+    BuiltinGraphTemplate, ConnectionInput, ConnectionRoute, ConnectionSetCommand,
+    NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph, RunLogsCommand, RunRuntime,
+    RunSelector, RunWatchCommand, TargetAdd, TargetServe, TargetSetup, TemplateDelivery,
 };
 
 /// Parse the public native-v2 command surface from arguments after the executable name.
@@ -52,11 +55,78 @@ impl CliCommand {
     fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
         match self {
             Self::Target { command } => command.into_command(),
+            Self::Connection { command } => command.into_command(),
             Self::Template { command } => command.into_command(),
             Self::Run(args) => args.into_command(),
             Self::Utility(command) => command.into_command(),
         }
     }
+}
+
+impl ConnectionCommand {
+    fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
+        match self {
+            Self::List(args) => Ok(NativeV2CliCommand::ConnectionList(connection_route(
+                args.target,
+                args.scope,
+            )?)),
+            Self::Set(args) => connection_set_command(args),
+            Self::Delete(args) => Ok(NativeV2CliCommand::ConnectionDelete {
+                route: connection_route(args.route.target, args.route.scope)?,
+                key: ConnectionKey::new(args.key)
+                    .map_err(|error| usage(format!("invalid connection key: {error}")))?,
+            }),
+        }
+    }
+}
+
+fn connection_set_command(
+    args: super::ConnectionSetArgs,
+) -> Result<NativeV2CliCommand, NativeV2CliError> {
+    let key = ConnectionKey::new(args.key)
+        .map_err(|error| usage(format!("invalid connection key: {error}")))?;
+    let input = if args.json_stdin {
+        ConnectionInput::JsonStdin
+    } else {
+        ConnectionInput::Prompt(connection_fields(args.field)?)
+    };
+    Ok(NativeV2CliCommand::ConnectionSet(ConnectionSetCommand {
+        route: connection_route(args.route.target, args.route.scope)?,
+        key,
+        input,
+    }))
+}
+
+fn connection_fields(
+    fields: Vec<String>,
+) -> Result<Vec<EnvironmentVariableName>, NativeV2CliError> {
+    let fields = fields
+        .into_iter()
+        .map(EnvironmentVariableName::new)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| usage(format!("invalid connection field: {error}")))?;
+    if fields
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != fields.len()
+    {
+        return Err(usage("connection fields must be unique"));
+    }
+    Ok(fields)
+}
+
+fn connection_route(
+    target: Option<String>,
+    scope: ConnectionScopeArg,
+) -> Result<ConnectionRoute, NativeV2CliError> {
+    Ok(ConnectionRoute {
+        target: validated_target(target)?,
+        scope: match scope {
+            ConnectionScopeArg::User => ConnectionScope::User,
+            ConnectionScopeArg::Org => ConnectionScope::Org,
+        },
+    })
 }
 
 impl UtilityCommand {

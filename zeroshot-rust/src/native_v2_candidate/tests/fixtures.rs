@@ -18,13 +18,17 @@ pub(super) fn runtime(kind: RuntimePlanKind) -> RuntimePlan {
         .assert_value_with("model"),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     };
     let delivery = NodeRuntimeBinding::GitDelivery {
-        env: DeclaredEnvironment::new([
-            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name")
-        ])
-        .assert_value_with("delivery environment"),
+        connections: DeclaredConnections::single(
+            "github",
+            DeclaredEnvironment::new([
+                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name")
+            ])
+            .assert_value_with("delivery environment"),
+        )
+        .assert_value_with("delivery connection"),
     };
     let nodes = BTreeMap::from([
         (

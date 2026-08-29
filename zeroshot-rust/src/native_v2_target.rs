@@ -16,8 +16,10 @@ use zeroshot_engine::native_v2_cli::{
     NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
 };
 use openengine_cluster_protocol::{
-    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunSubmission, RunSubmitResult, RunWatchParams, TargetOecpSessionRequest, TargetRunRequest,
+    ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
+    ConnectionMutationResult, ConnectionSetRequest, RunForceParams, RunListParams,
+    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmission, RunSubmitResult,
+    RunWatchParams, TargetOecpSessionRequest, TargetRunRequest,
 };
 
 mod contract;
@@ -57,6 +59,24 @@ pub trait TargetControlAuthority: Send + Sync {
         target: &TargetRecord,
         request: &TargetOecpSessionRequest,
     ) -> Result<TargetOecpAccess, TargetAuthorityError>;
+
+    async fn connection_list(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, TargetAuthorityError>;
+
+    async fn connection_set(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, TargetAuthorityError>;
+
+    async fn connection_delete(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, TargetAuthorityError>;
 
     async fn hosted_run_list(
         &self,
@@ -298,6 +318,45 @@ where
         validate_target_name(&request.name).map_err(cli_target_error)?;
         self.registry
             .setup(&request.name, setup.repository, setup.default_branch)
+            .map_err(cli_target_error)
+    }
+
+    async fn connection_list(
+        &self,
+        name: &str,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        self.authority
+            .connection_list(&target, request)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn connection_set(
+        &self,
+        name: &str,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        self.authority
+            .connection_set(&target, request)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn connection_delete(
+        &self,
+        name: &str,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        self.authority
+            .connection_delete(&target, request)
+            .await
             .map_err(cli_target_error)
     }
 

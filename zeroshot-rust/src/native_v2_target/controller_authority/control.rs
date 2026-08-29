@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunSubmitResult, RunWatchParams,
+    ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
+    ConnectionMutationResult, ConnectionSetRequest, RunForceParams, RunListParams,
+    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult, RunWatchParams,
 };
 use reqwest::header::ACCEPT;
 use zeroshot_engine::native_v2_cli::oecp::BoxedSubscription;
@@ -100,6 +101,30 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
         let session: TargetOecpSession = read_json(response, "target OECP session").await?;
         TargetOecpAccess::new(session.endpoint, session.bearer_token, &target.access)
             .map_err(|_| authority_error("target OECP session response is malformed"))
+    }
+
+    async fn connection_list(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::connection_list(self, target, request).await
+    }
+
+    async fn connection_set(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::connection_set(self, target, request).await
+    }
+
+    async fn connection_delete(
+        &self,
+        target: &TargetRecord,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::connection_delete(self, target, request).await
     }
 
     async fn hosted_run_list(

@@ -1,16 +1,19 @@
-use std::{io::Write, time::Duration};
+use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::time::Duration;
 
 use openengine_cluster_protocol::{
+    ConnectionDeleteRequest, ConnectionListRequest, ConnectionSetRequest, EnvironmentVariableName,
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
-    RunLogsParams, RunStatus, RunStatusParams, RunWatchParams, SubscriptionCloseReason,
-    TerminalResult,
+    RunLogsParams, RunStatus, RunStatusParams, RunWatchParams, StaticConnectionValues,
+    SubscriptionCloseReason, TerminalResult,
 };
 use serde::Serialize;
 
 use super::{
     CliOutcome, CliRunStatus, CliRunWatchEventNotification, CliSubscription, CliSubscriptionItem,
-    DetachSignal, NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError, RunCommand,
-    RunLogsCommand, RunSelector, RunWatchCommand,
+    ConnectionInput, ConnectionSetCommand, DetachSignal, NativeV2CliBackend, NativeV2CliCommand,
+    NativeV2CliError, RunCommand, RunLogsCommand, RunSelector, RunWatchCommand,
 };
 #[path = "execution/attach.rs"]
 mod attach;
@@ -56,14 +59,105 @@ where
     if let Some(outcome) = try_execute_native_v2_static(&command, output)? {
         return Ok(outcome);
     }
+    if command.is_connection_operation() {
+        return execute_connection(command, context.backend, output).await;
+    }
+    if command.is_target_operation() {
+        return execute_target(command, context.backend).await;
+    }
     match command {
         NativeV2CliCommand::Run(run) => execute_run(run, context, signal, output).await,
-        command @ (NativeV2CliCommand::TargetAdd(_)
-        | NativeV2CliCommand::TargetLogin { .. }
-        | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, context.backend).await,
         NativeV2CliCommand::TargetServe(_) => Err(NativeV2CliError::ProcessCommand),
         command => execute_run_operation(command, context.backend, signal, output).await,
     }
+}
+
+async fn execute_connection<B, W>(
+    command: NativeV2CliCommand,
+    backend: &B,
+    output: &mut W,
+) -> Result<CliOutcome, NativeV2CliError>
+where
+    B: NativeV2CliBackend,
+    W: Write,
+{
+    match command {
+        NativeV2CliCommand::ConnectionList(route) => {
+            let result = backend
+                .connection_list(
+                    route.target.as_deref(),
+                    ConnectionListRequest { scope: route.scope },
+                )
+                .await?;
+            write_json(output, &result)?;
+            Ok(CliOutcome::Completed)
+        }
+        NativeV2CliCommand::ConnectionSet(command) => {
+            execute_connection_set(command, backend, output).await
+        }
+        NativeV2CliCommand::ConnectionDelete { route, key } => {
+            let result = backend
+                .connection_delete(
+                    route.target.as_deref(),
+                    ConnectionDeleteRequest {
+                        key,
+                        scope: route.scope,
+                    },
+                )
+                .await?;
+            write_json(output, &result)?;
+            Ok(CliOutcome::Completed)
+        }
+        _ => Err(NativeV2CliError::Usage(
+            "expected a connection operation".to_owned(),
+        )),
+    }
+}
+
+async fn execute_connection_set<B, W>(
+    command: ConnectionSetCommand,
+    backend: &B,
+    output: &mut W,
+) -> Result<CliOutcome, NativeV2CliError>
+where
+    B: NativeV2CliBackend,
+    W: Write,
+{
+    let values = read_connection_values(command.input)?;
+    let result = backend
+        .connection_set(
+            command.route.target.as_deref(),
+            ConnectionSetRequest {
+                key: command.key,
+                scope: command.route.scope,
+                values,
+            },
+        )
+        .await?;
+    write_json(output, &result)?;
+    Ok(CliOutcome::Completed)
+}
+
+fn read_connection_values(
+    input: ConnectionInput,
+) -> Result<StaticConnectionValues, NativeV2CliError> {
+    let values = match input {
+        ConnectionInput::Prompt(fields) => fields
+            .into_iter()
+            .map(|field| {
+                let value = rpassword::prompt_password(format!("{}: ", field.as_str()))?;
+                Ok((field, value))
+            })
+            .collect::<Result<BTreeMap<_, _>, std::io::Error>>()?,
+        ConnectionInput::JsonStdin => {
+            let mut encoded = String::new();
+            std::io::stdin().lock().read_to_string(&mut encoded)?;
+            serde_json::from_str::<BTreeMap<EnvironmentVariableName, String>>(&encoded).map_err(
+                |error| NativeV2CliError::Usage(format!("connection JSON is invalid: {error}")),
+            )?
+        }
+    };
+    StaticConnectionValues::new(values).map_err(|error| NativeV2CliError::Usage(error.to_string()))
 }
 
 async fn execute_target<B>(

@@ -143,6 +143,36 @@ impl TargetControlAuthority for FakeAuthority {
         .map_err(|error| TargetAuthorityError::new(error.to_string()))
     }
 
+    async fn connection_list(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
+    async fn connection_set(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
+    async fn connection_delete(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
     async fn hosted_run_list(
         &self,
         _target: &TargetRecord,

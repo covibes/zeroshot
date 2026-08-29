@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use openengine_cluster_protocol::{
-    CodexProvider, DeclaredEnvironment, EnumLabel, FieldName, IdempotencyKey, NodeName,
+    CodexProvider, DeclaredConnections, EnumLabel, FieldName, IdempotencyKey, NodeName,
     PositiveInteger, RunId, RunSize, RunTitle, SessionScope, SourceBranchId, SourceRepositoryId,
     SourceRevisionId, ResolvedSource, TerminalResult, WorkerOutcome,
 };
@@ -24,7 +24,7 @@ fn agent_binding() -> NodeRuntimeBinding {
         model: crate::worker_catalog::ModelId::new("gpt-5.6-sol").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     }
 }
 
@@ -62,7 +62,7 @@ async fn admitted_with_delivery() -> AdmittedRun {
             (
                 NodeName::new("deliver").assert_value(),
                 NodeRuntimeBinding::GitDelivery {
-                    env: DeclaredEnvironment::empty(),
+                    connections: DeclaredConnections::empty(),
                 },
             ),
             (NodeName::new("verify").assert_value(), agent_binding()),

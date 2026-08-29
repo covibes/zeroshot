@@ -31,6 +31,12 @@ enum CliCommand {
         command: TargetCommand,
     },
 
+    /// Manage static credentials by connection key.
+    Connection {
+        #[command(subcommand)]
+        command: ConnectionCommand,
+    },
+
     /// Inspect built-in graph templates.
     Template {
         #[command(subcommand)]
@@ -97,6 +103,65 @@ enum TargetCommand {
     /// bootstrap key, the server enables private authenticated access and consumes and removes the
     /// key file while starting.
     Serve(TargetServeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ConnectionCommand {
+    /// List connection metadata without secret values.
+    List(ConnectionRouteArgs),
+
+    /// Create or replace one static connection.
+    Set(ConnectionSetArgs),
+
+    /// Delete one connection.
+    Delete(ConnectionDeleteArgs),
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum ConnectionScopeArg {
+    #[default]
+    User,
+    Org,
+}
+
+#[derive(Debug, Args)]
+struct ConnectionRouteArgs {
+    /// Use this named hosted target. If omitted, use local connections.
+    #[arg(long, value_name = "NAME")]
+    target: Option<String>,
+
+    /// Select user- or organization-scoped connections.
+    #[arg(long, value_enum, default_value_t)]
+    scope: ConnectionScopeArg,
+}
+
+#[derive(Debug, Args)]
+#[command(group = ArgGroup::new("connection_input").args(["field", "json_stdin"]).required(true).multiple(false))]
+struct ConnectionSetArgs {
+    /// Unique connection key within the selected scope.
+    #[arg(value_name = "KEY")]
+    key: String,
+
+    /// Prompt without echo for this environment field. Repeat for multiple fields.
+    #[arg(long, value_name = "ENV", action = clap::ArgAction::Append)]
+    field: Vec<String>,
+
+    /// Read one JSON object of environment field names to secret values from standard input.
+    #[arg(long)]
+    json_stdin: bool,
+
+    #[command(flatten)]
+    route: ConnectionRouteArgs,
+}
+
+#[derive(Debug, Args)]
+struct ConnectionDeleteArgs {
+    /// Unique connection key within the selected scope.
+    #[arg(value_name = "KEY")]
+    key: String,
+
+    #[command(flatten)]
+    route: ConnectionRouteArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -227,7 +292,7 @@ struct TemplateShowArgs {
           "worker": {
             "kind": "agent",
             "model": "gpt-5.6-sol",
-            "env": ["OPENROUTER_API_KEY"]
+            "connections": {"openrouter": ["OPENROUTER_API_KEY"]}
           }
         }
       }
@@ -242,15 +307,15 @@ struct TemplateShowArgs {
 
     Every executable graph node needs a same-named binding. Agent bindings require kind and model.
     Optional fields are effort (low, medium, high, xhigh, or max when supported), sessionScope
-    (execution or node_instance), and env. env lists variable names copied from the submitting
-    process; never put values in this file.
+    (execution or node_instance), and connections. Each connection key maps to the exact
+    environment variable names required by that node; never put values in this file.
 
     Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
     template-owned delivery binding.
 
     --uniform-runtime-config accepts the same harness, provider, size, model, effort, sessionScope,
-    and env fields without nodes. Rust expands that agent binding across every executable graph
-    node and supplies graph-visible Git delivery bindings itself."#)]
+    and connections fields without nodes. Rust expands that agent binding across every executable
+    graph node and supplies graph-visible Git delivery bindings itself."#)]
 struct RunArgs {
     /// Human-readable title recorded with the run.
     #[arg(long, value_name = "TITLE")]

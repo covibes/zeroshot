@@ -5,10 +5,13 @@ use zeroshot_engine::native_v2_target_authority::{
     CONTROLLER_AUDIENCE, DISCOVERY_KIND, TargetAuthentication, TargetDiscoveryDocument,
 };
 
+mod connections;
 mod hosted_runs;
 
 use hosted_runs::build_hosted_runs_descriptor;
 pub(super) use hosted_runs::HostedRunsDescriptor;
+use connections::build_connections_descriptor;
+pub(super) use connections::ConnectionsDescriptor;
 
 use super::DEVICE_GRANT;
 use crate::native_v2_target::TargetAuthorityError;
@@ -32,6 +35,7 @@ pub(super) struct HostedAuthDescriptor {
     pub(super) device_grant_type: String,
     pub(super) session_endpoint: Url,
     pub(super) hosted_runs: HostedRunsDescriptor,
+    pub(super) connections: Option<ConnectionsDescriptor>,
 }
 
 pub(super) struct ControllerDescriptor {
@@ -142,6 +146,14 @@ pub(super) fn same_origin_path(origin: &Url, path: &str) -> Result<Url, TargetAu
     same_origin_url(origin, url.as_str())
 }
 
+pub(super) fn valid_literal_route_segment(value: &str) -> bool {
+    !value.is_empty()
+        && !matches!(value, "." | "..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+}
+
 pub(super) fn require_response_route(
     response: &reqwest::Response,
     expected: &Url,
@@ -214,6 +226,7 @@ pub(super) fn build_auth_descriptor(
         .as_ref()
         .ok_or_else(|| authority_error("hosted target discovery is incompatible"))?;
     let hosted_runs = build_hosted_runs_descriptor(origin, &wire.extensions)?;
+    let connections = build_connections_descriptor(origin, &wire.extensions)?;
     let (metadata_url, device_authorization_endpoint, token_endpoint, revocation_endpoint) =
         oauth_routes(origin, oauth)?;
     Ok(HostedAuthDescriptor {
@@ -225,6 +238,7 @@ pub(super) fn build_auth_descriptor(
         device_grant_type: oauth.device_grant_type.clone(),
         session_endpoint: same_origin_path(origin, &session.route_template)?,
         hosted_runs,
+        connections,
     })
 }
 

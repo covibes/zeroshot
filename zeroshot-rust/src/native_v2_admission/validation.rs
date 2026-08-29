@@ -291,7 +291,7 @@ fn validate_declared_environment(
 ) -> Result<(), NativeV2AdmissionError> {
     let declared = bindings
         .values()
-        .flat_map(|binding| binding.declared_environment().iter())
+        .flat_map(|binding| binding.declared_connections().environment_names())
         .collect::<BTreeSet<_>>();
     if declared.len() > MAX_DECLARED_ENVIRONMENT_NAMES {
         return Err(NativeV2AdmissionError::DeclaredEnvironmentTooLarge {

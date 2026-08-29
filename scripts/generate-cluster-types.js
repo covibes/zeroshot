@@ -117,6 +117,23 @@ function parenthesize(value) {
   return value.includes(' | ') || value.includes(' & ') ? `(${value})` : value;
 }
 
+function renderAlias(name, definition) {
+  const inline = `export type ${name} = ${schemaType(definition)};`;
+  if (Buffer.byteLength(inline) <= 120) return inline;
+  const multiline = schemaType(definition).replaceAll('; ', ';\n  ').replaceAll(' | ', '\n  | ');
+  return `export type ${name} =\n  ${multiline};`;
+}
+
+function renderSchemaModule(schema) {
+  const encoded = JSON.stringify(schema);
+  const chunks = encoded.match(/[\s\S]{1,72}/g) ?? [];
+  const expression = chunks.map((chunk) => `  ${JSON.stringify(chunk)}`).join(' +\n');
+  return (
+    '// Generated from protocol/openengine-cluster/v1/schema.json. Do not edit.\n' +
+    `export const CLUSTER_PROTOCOL_SCHEMA: unknown = JSON.parse(\n${expression}\n);\n`
+  );
+}
+
 function generate() {
   const openrpc = readJson(OPENRPC_PATH);
   const schema = readJson(SCHEMA_PATH);
@@ -137,7 +154,7 @@ function generate() {
     openrpc.methods.map((method) => [method.name, method.result.schema.$ref.split('/').at(-1)])
   );
   const aliases = Object.entries(schema.$defs)
-    .map(([name, definition]) => `export type ${name} = ${schemaType(definition)};`)
+    .map(([name, definition]) => renderAlias(name, definition))
     .join('\n');
 
   return (
@@ -194,7 +211,7 @@ function generate() {
 }
 
 const expected = generate();
-const schemaExpected = `// Generated from protocol/openengine-cluster/v1/schema.json. Do not edit.\nexport const CLUSTER_PROTOCOL_SCHEMA: unknown = ${JSON.stringify(readJson(SCHEMA_PATH))};\n`;
+const schemaExpected = renderSchemaModule(readJson(SCHEMA_PATH));
 const check = process.argv.includes('--check');
 const outputs = [
   [OUTPUT_PATH, expected],

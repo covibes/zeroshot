@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, NodeRuntimeBinding, RunForceParams,
-    RunId, RunSize, RunStatus, RunStatusParams, RunSubmitParams, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource, TerminalResult,
-    WorkerOutcome,
+    DeclaredConnections, DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName,
+    NodeRuntimeBinding, RunForceParams, RunId, RunSize, RunStatus, RunStatusParams,
+    RunSubmitParams, RunTitle, RuntimePlan, SourceBranchId, SourceRepositoryId, SourceRevisionId,
+    ResolvedSource, TerminalResult, WorkerOutcome,
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;

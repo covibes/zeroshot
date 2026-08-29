@@ -13,7 +13,7 @@ fn runtime_with_environment() -> RuntimePlan {
         "provider":"openai",
         "size":"medium",
         "nodes":{
-            "worker":{"kind":"agent","model":"gpt-5.6-sol","env":["DECLARED","SHARED"]}
+            "worker":{"kind":"agent","model":"gpt-5.6-sol","connections":{"test":["DECLARED","SHARED"]}}
         }
     }))
     .assert_value()
@@ -135,7 +135,7 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
         Some(&json!("git_delivery"))
     );
     assert_eq!(
-        runtime.pointer("/nodes/deliver/env/0"),
+        runtime.pointer("/nodes/deliver/connections/github/0"),
         Some(&json!("GH_TOKEN"))
     );
     assert_eq!(
@@ -188,11 +188,18 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
 }
 
 #[tokio::test]
-async fn missing_declared_environment_fails_before_backend_contact() {
+async fn missing_inline_environment_is_left_for_connection_resolution() {
     let (_files, command) = environment_command(&["--submission-key", "missing-environment", "-d"]);
     let backend = FakeBackend::default();
     let available = |_: &str| None;
-    assert_declared_environment_rejected(command, &backend, &available).await;
+    execute_with_environment(command, &backend, &available)
+        .await
+        .assert_value();
+    let calls = backend.calls();
+    assert!(matches!(
+        calls.as_slice(),
+        [Call::Submit { environment, .. }] if environment.is_empty()
+    ));
 }
 
 #[cfg(unix)]
@@ -254,7 +261,7 @@ async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
         Some(&json!("gpt-5.6-luna"))
     );
     assert_eq!(
-        runtime.pointer("/nodes/worker/env/0"),
+        runtime.pointer("/nodes/worker/connections/openrouter/0"),
         Some(&json!("OPENROUTER_API_KEY"))
     );
     assert_eq!(runtime.pointer("/size"), Some(&json!("medium")));

@@ -261,7 +261,7 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
                     "kind": "agent",
                     "model": "gpt-5.6",
                     "effort": "max",
-                    "env": []
+                    "connections": {}
                 }),
             )
         })

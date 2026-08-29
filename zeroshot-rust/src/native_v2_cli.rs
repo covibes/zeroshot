@@ -11,7 +11,9 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    Cursor, EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
+    ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionKey, ConnectionListRequest,
+    ConnectionListResult, ConnectionMutationResult, ConnectionScope, ConnectionSetRequest, Cursor,
+    EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunId,
     RunStatusParams, RunTitle, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
@@ -80,6 +82,25 @@ pub struct TargetServe {
     pub public_origin: String,
     pub storage: PathBuf,
     pub bootstrap_key_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectionRoute {
+    pub target: Option<String>,
+    pub scope: ConnectionScope,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConnectionInput {
+    Prompt(Vec<EnvironmentVariableName>),
+    JsonStdin,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConnectionSetCommand {
+    pub route: ConnectionRoute,
+    pub key: ConnectionKey,
+    pub input: ConnectionInput,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -170,6 +191,12 @@ pub enum NativeV2CliCommand {
     },
     TargetSetup(TargetSetup),
     TargetServe(TargetServe),
+    ConnectionList(ConnectionRoute),
+    ConnectionSet(ConnectionSetCommand),
+    ConnectionDelete {
+        route: ConnectionRoute,
+        key: ConnectionKey,
+    },
     TemplateList,
     TemplateShow {
         template: BuiltinGraphTemplate,
@@ -196,6 +223,20 @@ impl NativeV2CliCommand {
             Self::Version => Some(VERSION),
             _ => None,
         }
+    }
+
+    fn is_connection_operation(&self) -> bool {
+        matches!(
+            self,
+            Self::ConnectionList(_) | Self::ConnectionSet(_) | Self::ConnectionDelete { .. }
+        )
+    }
+
+    fn is_target_operation(&self) -> bool {
+        matches!(
+            self,
+            Self::TargetAdd(_) | Self::TargetLogin { .. } | Self::TargetSetup(_)
+        )
     }
 }
 
@@ -306,6 +347,36 @@ pub trait NativeV2CliBackend: Send + Sync {
     async fn target_add(&self, request: TargetAdd) -> Result<(), NativeV2CliError>;
     async fn target_login(&self, name: &str) -> Result<(), NativeV2CliError>;
     async fn target_setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError>;
+
+    async fn connection_list(
+        &self,
+        _target: Option<&str>,
+        _request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise connection management".to_owned(),
+        ))
+    }
+
+    async fn connection_set(
+        &self,
+        _target: Option<&str>,
+        _request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise connection management".to_owned(),
+        ))
+    }
+
+    async fn connection_delete(
+        &self,
+        _target: Option<&str>,
+        _request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise connection management".to_owned(),
+        ))
+    }
 
     async fn run_submit(
         &self,

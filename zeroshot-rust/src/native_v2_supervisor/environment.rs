@@ -31,7 +31,7 @@ impl RunEnvironment {
         let declared = runtime
             .nodes()
             .values()
-            .flat_map(|binding| binding.declared_environment().iter().cloned())
+            .flat_map(|binding| binding.declared_connections().environment_names().cloned())
             .collect::<BTreeSet<_>>();
         if declared.len() > MAX_DECLARED_ENVIRONMENT_NAMES {
             return Err(RunEnvironmentError::TooManyNames);
@@ -71,7 +71,7 @@ impl RunEnvironment {
         let names = runtime
             .nodes()
             .values()
-            .flat_map(|binding| binding.declared_environment().iter());
+            .flat_map(|binding| binding.declared_connections().environment_names());
         let values = select_environment_values(names, available)?;
         Self::exact(runtime, values)
     }
@@ -89,8 +89,10 @@ impl RunEnvironment {
         &self,
         binding: &NodeRuntimeBinding,
     ) -> Result<ResolvedEnvironment, RunEnvironmentError> {
-        let values =
-            select_environment_values(binding.declared_environment().iter(), self.values.as_ref())?;
+        let values = select_environment_values(
+            binding.declared_connections().environment_names(),
+            self.values.as_ref(),
+        )?;
         ResolvedEnvironment::exact(binding, values).map_err(|_| RunEnvironmentError::InvalidPlan)
     }
 }

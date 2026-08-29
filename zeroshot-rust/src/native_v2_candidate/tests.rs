@@ -37,8 +37,9 @@ use crate::native_v2_cloud::{
     ExclusiveControllerClaim, NativeV2CloudController,
 };
 use crate::native_v2_contract::{
-    CodexProvider, DeclaredEnvironment, EnvironmentVariableName, NodeInvocation, RunSize,
-    RunSubmission, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
+    CodexProvider, DeclaredConnections, DeclaredEnvironment, EnvironmentVariableName,
+    NodeInvocation, RunSize, RunSubmission, RunTitle, SourceBranchId, SourceRepositoryId,
+    SourceRevisionId, ResolvedSource,
 };
 use crate::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,

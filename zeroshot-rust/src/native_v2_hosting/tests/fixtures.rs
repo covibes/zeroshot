@@ -6,8 +6,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, RunSize, RunTitle, RuntimePlan,
-    SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
+    DeclaredConnections, DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, RunSize,
+    RunTitle, RuntimePlan, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
 };
 use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{Value, json};
@@ -117,6 +117,15 @@ pub(super) fn submission(runtime: RuntimePlan, revision: &str, key: &str) -> Run
 }
 
 pub(super) fn runtime(environment: BTreeSet<EnvironmentVariableName>) -> RuntimePlan {
+    let connections = if environment.is_empty() {
+        DeclaredConnections::empty()
+    } else {
+        DeclaredConnections::single(
+            "provider",
+            DeclaredEnvironment::new(environment).assert_value_with("declared environment"),
+        )
+        .assert_value_with("declared connection")
+    };
     RuntimePlan::Codex {
         provider: CodexProvider::OpenAi,
         size: RunSize::Small,
@@ -126,8 +135,7 @@ pub(super) fn runtime(environment: BTreeSet<EnvironmentVariableName>) -> Runtime
                 model: worker_catalog::ModelId::new("gpt-5.6").assert_value_with("model"),
                 effort: None,
                 session_scope: SessionScope::Execution,
-                env: DeclaredEnvironment::new(environment)
-                    .assert_value_with("declared environment"),
+                connections,
             },
         )]),
     }
@@ -143,7 +151,7 @@ pub(super) fn claude_runtime() -> RuntimePlan {
                 model: worker_catalog::ModelId::new("claude-sonnet-5").assert_value_with("model"),
                 effort: Some(ReasoningEffort::Max),
                 session_scope: SessionScope::Execution,
-                env: DeclaredEnvironment::empty(),
+                connections: DeclaredConnections::empty(),
             },
         )]),
     }

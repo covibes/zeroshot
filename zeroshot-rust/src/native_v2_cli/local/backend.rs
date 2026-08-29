@@ -24,6 +24,33 @@ impl NativeV2CliBackend for LocalCliBackend {
         ))
     }
 
+    async fn connection_list(
+        &self,
+        target: Option<&str>,
+        request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalConnectionStore::new(self.state_root.clone()).list(request)
+    }
+
+    async fn connection_set(
+        &self,
+        target: Option<&str>,
+        request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalConnectionStore::new(self.state_root.clone()).set(request)
+    }
+
+    async fn connection_delete(
+        &self,
+        target: Option<&str>,
+        request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalConnectionStore::new(self.state_root.clone()).delete(request)
+    }
+
     async fn run_submit(
         &self,
         target: Option<&str>,

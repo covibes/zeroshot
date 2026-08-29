@@ -2,7 +2,7 @@ use openengine_cluster_protocol::{Cursor, ExecutionRef, RunId};
 use reqwest::Url;
 use openengine_cluster_protocol::TargetDiscoveryExtensions;
 
-use super::{authority_error, same_origin_url};
+use super::{authority_error, same_origin_url, valid_literal_route_segment};
 use crate::native_v2_target::TargetAuthorityError;
 
 const HOSTED_RUNS_KIND: &str = "zeroshot.hosted-runs/v1";
@@ -257,14 +257,6 @@ fn split_route_query(value: &str) -> Result<(&str, Vec<HostedRunQuery>), TargetA
         return Err(authority_error("hosted run route template is invalid"));
     }
     Ok((value, Vec::new()))
-}
-
-fn valid_literal_route_segment(value: &str) -> bool {
-    !value.is_empty()
-        && !matches!(value, "." | "..")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
 }
 
 #[cfg(test)]

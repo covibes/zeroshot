@@ -8,7 +8,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EnvironmentVariableName, RunId, RunSubmission};
+use crate::{
+    ConnectionKey, EnvironmentVariableName, NativeV2RunValueError, RunId, RunSubmission,
+    MAX_DECLARED_ENVIRONMENT_NAMES,
+};
 
 pub const TARGET_DISCOVERY_PATH: &str = "/.well-known/zeroshot-native-v2";
 pub const TARGET_RUN_PATH: &str = "/native-v2/run";
@@ -18,8 +21,140 @@ pub const TARGET_PRIVATE_BOOTSTRAP_PATH: &str = "/native-v2/private-bootstrap";
 pub const TARGET_DISCOVERY_KIND: &str = "zeroshot.native-v2-target/v2";
 pub const TARGET_CONTROLLER_AUDIENCE: &str = "controller";
 pub const HOSTED_RUNS_KIND: &str = "zeroshot.hosted-runs/v1";
+pub const CONNECTIONS_KIND: &str = "zeroshot.connections/v1";
+pub const STATIC_CONNECTION_KIND: &str = "static";
 
-/// One exact run envelope. Secret values are ephemeral and excluded from submission identity.
+const MAX_CONNECTION_VALUE_BYTES: usize = 64 * 1024;
+const MAX_CONNECTION_BYTES: usize = 256 * 1024;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionScope {
+    User,
+    Org,
+}
+
+/// Bounded static credential fields. Debug output exposes field names, never secret values.
+#[derive(Clone, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct StaticConnectionValues(BTreeMap<EnvironmentVariableName, String>);
+
+impl StaticConnectionValues {
+    pub fn new(
+        values: BTreeMap<EnvironmentVariableName, String>,
+    ) -> Result<Self, NativeV2RunValueError> {
+        if values.is_empty() || values.len() > MAX_DECLARED_ENVIRONMENT_NAMES {
+            return Err(NativeV2RunValueError(
+                "static connection must contain 1..=64 fields",
+            ));
+        }
+        let mut total = 0_usize;
+        for (name, value) in &values {
+            if value.is_empty() || value.contains('\0') || value.len() > MAX_CONNECTION_VALUE_BYTES
+            {
+                return Err(NativeV2RunValueError(
+                    "static connection values must be non-empty, NUL-free, and at most 64 KiB",
+                ));
+            }
+            total = total
+                .checked_add(name.as_str().len())
+                .and_then(|size| size.checked_add(value.len()))
+                .ok_or(NativeV2RunValueError(
+                    "static connection exceeds the aggregate size bound",
+                ))?;
+        }
+        if total > MAX_CONNECTION_BYTES {
+            return Err(NativeV2RunValueError(
+                "static connection exceeds the aggregate size bound",
+            ));
+        }
+        Ok(Self(values))
+    }
+
+    #[must_use]
+    pub const fn as_map(&self) -> &BTreeMap<EnvironmentVariableName, String> {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn field_names(&self) -> Vec<EnvironmentVariableName> {
+        self.0.keys().cloned().collect()
+    }
+}
+
+impl<'de> Deserialize<'de> for StaticConnectionValues {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(BTreeMap::<EnvironmentVariableName, String>::deserialize(
+            deserializer,
+        )?)
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl fmt::Debug for StaticConnectionValues {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StaticConnectionValues")
+            .field("fields", &self.0.keys().collect::<Vec<_>>())
+            .field("values", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionSetRequest {
+    pub key: ConnectionKey,
+    pub scope: ConnectionScope,
+    pub values: StaticConnectionValues,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionDeleteRequest {
+    pub key: ConnectionKey,
+    pub scope: ConnectionScope,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionListRequest {
+    pub scope: ConnectionScope,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionSummary {
+    pub key: ConnectionKey,
+    pub scope: ConnectionScope,
+    pub kind: String,
+    pub fields: Vec<EnvironmentVariableName>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionListResult {
+    pub connections: Vec<ConnectionSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionMutationResult {
+    pub connection: ConnectionSummary,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ConnectionDeleteResult {
+    pub deleted: bool,
+}
+
+/// One run envelope. Explicit secret values are ephemeral and excluded from submission identity.
+/// Direct targets require an exact environment; hosted targets may resolve omitted connection
+/// fields from their user and organization stores before dispatch.
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetRunRequest {
@@ -140,11 +275,31 @@ pub struct TargetHostedRunsDiscovery {
     pub route_templates: TargetHostedRunRoutes,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetConnectionRoutes {
+    pub list: String,
+    pub set: String,
+    pub delete: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetConnectionsDiscovery {
+    pub kind: String,
+    pub base_url: String,
+    pub route_templates: TargetConnectionRoutes,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dynamic_kinds: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct TargetDiscoveryExtensions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hosted_runs: Option<TargetHostedRunsDiscovery>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections: Option<TargetConnectionsDiscovery>,
 }
 
 /// One discovery document for direct Docker targets and OAuth-hosted targets.
@@ -170,7 +325,7 @@ pub struct TargetDiscoveryDocument {
 impl TargetDiscoveryExtensions {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.hosted_runs.is_none()
+        self.hosted_runs.is_none() && self.connections.is_none()
     }
 }
 
@@ -245,5 +400,18 @@ mod tests {
         assert!(!debug.contains("environment-secret"));
         assert!(!debug.contains("github-secret"));
         assert!(debug.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn static_connection_debug_redacts_values_and_validates_shape() {
+        let values = StaticConnectionValues::new(BTreeMap::from([(
+            EnvironmentVariableName::new("TOKEN").expect("valid field"),
+            "secret-value".to_owned(),
+        )]))
+        .expect("valid static connection");
+        let debug = format!("{values:?}");
+        assert!(debug.contains("TOKEN"));
+        assert!(!debug.contains("secret-value"));
+        assert!(StaticConnectionValues::new(BTreeMap::new()).is_err());
     }
 }

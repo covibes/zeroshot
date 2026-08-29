@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    CompiledGraphIr, DeclaredEnvironment, NodeName, NonEmptyVec, PositiveInteger, RunId, RunSize,
+    CompiledGraphIr, DeclaredConnections, NodeName, NonEmptyVec, PositiveInteger, RunId, RunSize,
     RunTitle, ResolvedSource, StructuralBounds, TerminationWitness, WorkerRef,
 };
 use serde_json::{json, Value};
@@ -43,7 +43,7 @@ pub(crate) fn binding(scope: SessionScope) -> NodeRuntimeBinding {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     }
 }
 

@@ -14,10 +14,10 @@ use openengine_cluster_protocol::{
     WorkerOutcome, WorkerRef,
 };
 pub use openengine_cluster_protocol::{
-    ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, ModelId,
-    NodeRuntimeBinding, ReasoningEffort, RunSize, RunSubmission, RunTitle, RuntimePlan,
-    SessionScope, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
-    MAX_DECLARED_ENVIRONMENT_NAMES,
+    ClaudeProvider, CodexProvider, ConnectionKey, DeclaredConnections, DeclaredEnvironment,
+    EnvironmentVariableName, ModelId, NodeRuntimeBinding, ReasoningEffort, ResolvedSource, RunSize,
+    RunSubmission, RunTitle, RuntimePlan, SessionScope, SourceBranchId, SourceRepositoryId,
+    SourceRevisionId, MAX_DECLARED_CONNECTIONS, MAX_DECLARED_ENVIRONMENT_NAMES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +27,8 @@ use thiserror::Error;
 pub const GIT_DELIVERY_PR_WORKER_REF: &str = "builtin.git-delivery.pr@1";
 /// Graph-visible merge delivery worker backed by the shared Git delivery implementation.
 pub const GIT_DELIVERY_MERGE_WORKER_REF: &str = "builtin.git-delivery.merge@1";
+/// Conventional connection key used by built-in GitHub checkout and delivery behavior.
+pub const GITHUB_CONNECTION_KEY: &str = "github";
 
 /// Identity-neutral request used before a host resolves mutable source selection.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -257,7 +259,10 @@ mod tests {
                         "kind": "agent",
                         "model": "gpt-5.6",
                         "effort": "max",
-                        "env": ["GH_TOKEN", "OPENAI_API_KEY"]
+                        "connections": {
+                            "github": ["GH_TOKEN"],
+                            "openai": ["OPENAI_API_KEY"]
+                        }
                     }
                 }
             },
@@ -328,7 +333,7 @@ mod tests {
     fn environment_values_and_graph_runtime_fields_are_rejected() {
         let mut secret_fixture = canonical_submission();
         *secret_fixture
-            .pointer_mut("/runtime/nodes/worker/env")
+            .pointer_mut("/runtime/nodes/worker/connections/openai")
             .assert_value() = json!({ "OPENAI_API_KEY": "secret" });
         assert!(serde_json::from_value::<RunSubmission>(secret_fixture).is_err());
 
@@ -388,13 +393,13 @@ mod tests {
     fn declared_environment_rejects_duplicates_and_per_node_overflow() {
         let mut duplicate = canonical_submission();
         *duplicate
-            .pointer_mut("/runtime/nodes/worker/env")
+            .pointer_mut("/runtime/nodes/worker/connections/openai")
             .assert_value() = json!(["OPENAI_API_KEY", "OPENAI_API_KEY"]);
         assert!(serde_json::from_value::<RunSubmission>(duplicate).is_err());
 
         let mut overflow = canonical_submission();
         *overflow
-            .pointer_mut("/runtime/nodes/worker/env")
+            .pointer_mut("/runtime/nodes/worker/connections/openai")
             .assert_value() = Value::Array(
             (0..=MAX_DECLARED_ENVIRONMENT_NAMES)
                 .map(|index| json!(format!("ENV_{index}")))
