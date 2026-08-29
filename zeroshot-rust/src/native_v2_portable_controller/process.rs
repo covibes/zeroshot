@@ -1,11 +1,10 @@
-use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_client::NdjsonTransport;
-use openengine_cluster_protocol::{RunId, RunSubmission};
+use openengine_cluster_protocol::{RunConnectionValues, RunId, RunSubmission};
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
@@ -15,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::execution::process::write_new_file;
 use crate::native_v2_admission::DeliveryPolicy;
-use crate::native_v2_contract::EnvironmentVariableName;
 use crate::native_v2_supervisor::RunEnvironment;
 
 use super::controller::PortableRunController;
@@ -34,7 +32,7 @@ const READY_KIND: &str = "zeroshot.portable-controller-ready/v1";
 struct PortableBootstrapDocument {
     run_id: RunId,
     submission: RunSubmission,
-    environment: BTreeMap<EnvironmentVariableName, String>,
+    connections: RunConnectionValues,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     github_token: Option<String>,
     workspace: PathBuf,
@@ -48,7 +46,7 @@ impl PortableBootstrapDocument {
         require_absolute(&self.workspace)?;
         require_absolute(&self.workspace_lease)?;
         require_absolute(&self.storage)?;
-        let environment = RunEnvironment::exact(&self.submission.runtime, self.environment)?;
+        let environment = RunEnvironment::exact(&self.submission.runtime, self.connections)?;
         Ok(PortableControllerBootstrap {
             run_id: self.run_id,
             submission: self.submission,
@@ -165,7 +163,7 @@ fn encode_bootstrap(
     let document = PortableBootstrapDocument {
         run_id: bootstrap.run_id.clone(),
         submission: bootstrap.submission.clone(),
-        environment: environment.bootstrap_values(),
+        connections: environment.bootstrap_values(),
         github_token: bootstrap.github_token.clone(),
         workspace: bootstrap.workspace.clone(),
         workspace_lease: bootstrap.workspace_lease.clone(),

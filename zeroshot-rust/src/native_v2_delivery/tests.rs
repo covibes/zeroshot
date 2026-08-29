@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest, TerminalResult,
-    WorkerErrorCode, WorkerOutcome, WorkerRef,
+    ConnectionKey, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
+    StaticConnectionValues, TerminalResult, WorkerErrorCode, WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
 use serde_json::{json, Value};
@@ -20,9 +20,10 @@ use crate::full_v1_reducer::{
 use crate::native_v2_admission::NativeV2Admission;
 use crate::native_v2_candidate::test_support::{TestGitRepository, full_graph, git, success_node};
 use crate::native_v2_contract::{
-    self, CodexProvider, DeclaredEnvironment, ExecutionRef, NodeInvocation, NodeRuntimeBinding,
-    RunSize, RunSubmission, RunTitle, RuntimePlan, SourceBranchId, SourceRepositoryId,
-    SourceRevisionId, ResolvedSource, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
+    self, CodexProvider, DeclaredConnections, DeclaredEnvironment, ExecutionRef, NodeInvocation,
+    NodeRuntimeBinding, RunSize, RunSubmission, RunTitle, RuntimePlan, SourceBranchId,
+    SourceRepositoryId, SourceRevisionId, ResolvedSource, GIT_DELIVERY_MERGE_WORKER_REF,
+    GIT_DELIVERY_PR_WORKER_REF,
 };
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, NativeNodeRunner, NodeDriver, NodeRunRequest, NodeRunner,
@@ -309,9 +310,13 @@ async fn run_delivery_with_id(
 async fn admitted(repo: &TempRepo, mode: DeliveryMode) -> crate::native_v2_contract::AdmittedRun {
     let graph = full_graph(vec![delivery_node(mode), success_node()]);
     let binding = NodeRuntimeBinding::GitDelivery {
-        env: DeclaredEnvironment::new([
-            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
-        ])
+        connections: DeclaredConnections::single(
+            "github",
+            DeclaredEnvironment::new([
+                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
+            ])
+            .assert_value(),
+        )
         .assert_value(),
     };
     NativeV2Admission

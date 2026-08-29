@@ -264,12 +264,16 @@ implementation-specific vectors are not represented as portable external certifi
 `zeroshot-rust/` ships one portable native-v2 engine/library for exactly one run and a private
 controller-process mode around the same engine. The CLI assigns a canonical lowercase UUIDv7
 `RunId`, resolves the selected repository branch to one exact immutable revision, and submits the
-exact sourceful run plus its bounded run-scoped environment. Run branch selection overrides the
-local target-profile default; otherwise the remote default branch is used. `target setup` mutates
-only the local named-target registry and never calls a remote setup route. The target validates the
-exact environment map. Its separate ephemeral `githubToken` is trusted only for source checkout and
-Git delivery; a provider receives `GH_TOKEN` only when the materialized runtime declares it.
-Admission, the ledger, observations, and target configuration never retain secret values. Exact
+sourceful run plus any explicitly available declared environment values. Runtime node bindings map
+connection keys to their exact required environment names; the runner injects only the names
+declared by that node. Local runs resolve missing values from the private user connection store,
+hosted targets may resolve them from advertised user or organization connection management, and
+direct targets still require an exact environment without advertising connection management. Run
+branch selection overrides the local target-profile default; otherwise the remote default branch is
+used. `target setup` mutates only the local named-target registry and never calls a remote setup
+route. The separate ephemeral `githubToken` remains trusted only for source checkout and Git
+delivery; a provider receives `GH_TOKEN` only when the materialized runtime declares it. Admission,
+the ledger, observations, and target configuration never retain secret values. Exact
 submission retry identity covers the sourceful submission (including the resolved revision) while
 excluding `runId` and all secrets; an exact replay keeps the original run and its first secret
 envelope. The controller does not allocate identity, authenticate users, inspect target-wide

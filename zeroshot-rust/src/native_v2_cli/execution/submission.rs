@@ -1,13 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
 
 use openengine_cluster_protocol::{
-    ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, GraphProfile,
-    GraphSpec, IdempotencyKey, ModelId, NodeName, NodeRuntimeBinding, ReasoningEffort, RunSize,
-    RunSubmitResult, RuntimePlan, SessionScope,
+    ClaudeProvider, CodexProvider, DeclaredConnections, DeclaredEnvironment,
+    EnvironmentVariableName, GraphProfile, GraphSpec, IdempotencyKey, ModelId, NodeName,
+    NodeRuntimeBinding, ReasoningEffort, RunConnectionValues, RunSize, RunSubmitResult,
+    RuntimePlan, SessionScope, StaticConnectionValues,
 };
 use serde::Deserialize;
 
@@ -20,7 +21,6 @@ use crate::native_v2_admission::{
     CLAUDE_MODELS, CODEX_MODELS, DeliveryPolicy, NativeV2Admission, executable_runtime_roles,
 };
 use crate::native_v2_delivery::GITHUB_TOKEN_ENV;
-use crate::native_v2_supervisor::RunEnvironment;
 
 /// Executes commands that need no target registry, credentials, or controller state.
 pub async fn try_execute_native_v2_preflight(
@@ -98,8 +98,7 @@ where
     F: Fn(&str) -> Option<OsString>,
 {
     let intent = prepare_intent(run)?;
-    let environment = select_environment(&intent.runtime, &available)?;
-    let environment = RunEnvironment::exact(&intent.runtime, environment)?.bootstrap_values();
+    let connections = select_connections(&intent.runtime, &available)?;
     let github_token = run
         .target
         .as_ref()
@@ -115,7 +114,7 @@ where
     Ok(PreparedRunRequest {
         run_id: openengine_cluster_protocol::RunId::new(uuid::Uuid::now_v7().to_string()),
         intent,
-        environment,
+        connections,
         github_token,
     })
 }
@@ -185,30 +184,34 @@ fn prepare_intent(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError>
     })
 }
 
-fn select_environment<F>(
+fn select_connections<F>(
     runtime: &RuntimePlan,
     available: F,
-) -> Result<BTreeMap<EnvironmentVariableName, String>, NativeV2CliError>
+) -> Result<RunConnectionValues, NativeV2CliError>
 where
     F: Fn(&str) -> Option<OsString>,
 {
-    declared_environment_names(runtime)
-        .into_iter()
-        .map(|name| {
-            let value = available(name.as_str())
-                .and_then(|value| value.into_string().ok())
-                .ok_or_else(|| NativeV2CliError::Environment(name.clone()))?;
-            Ok((name, value))
-        })
-        .collect()
-}
-
-fn declared_environment_names(runtime: &RuntimePlan) -> BTreeSet<EnvironmentVariableName> {
-    runtime
-        .nodes()
-        .values()
-        .flat_map(|binding| binding.declared_environment().iter().cloned())
-        .collect()
+    let mut selected = BTreeMap::new();
+    for (key, fields) in runtime.connection_requirements() {
+        let mut values = BTreeMap::new();
+        for name in fields {
+            let Some(value) = available(name.as_str()) else {
+                continue;
+            };
+            let value = value
+                .into_string()
+                .map_err(|_| NativeV2CliError::Environment(name.clone()))?;
+            values.insert(name, value);
+        }
+        if !values.is_empty() {
+            selected.insert(
+                key,
+                StaticConnectionValues::new(values)
+                    .map_err(|error| NativeV2CliError::Usage(error.to_string()))?,
+            );
+        }
+    }
+    Ok(selected)
 }
 
 fn materialize_initial_input(
@@ -289,7 +292,7 @@ struct UniformRuntimePlan {
     #[serde(default)]
     session_scope: SessionScope,
     #[serde(default)]
-    env: Option<DeclaredEnvironment>,
+    connections: Option<DeclaredConnections>,
 }
 
 const fn medium_size() -> RunSize {
@@ -299,13 +302,13 @@ const fn medium_size() -> RunSize {
 impl UniformRuntimePlan {
     fn materialize(self, graph: &GraphSpec) -> Result<RuntimePlan, NativeV2CliError> {
         let harness = self.resolve_harness()?;
-        let environment = self
-            .env
+        let connections = self
+            .connections
             .clone()
-            .map_or_else(|| default_uniform_environment(self.provider), Ok)?;
+            .map_or_else(|| default_uniform_connections(self.provider), Ok)?;
         let mut nodes = BTreeMap::new();
         for (name, delivery) in executable_runtime_roles(&graph.root) {
-            nodes.insert(name, self.binding(delivery, &environment)?);
+            nodes.insert(name, self.binding(delivery, &connections)?);
         }
         self.into_runtime_plan(harness, nodes)
     }
@@ -313,7 +316,7 @@ impl UniformRuntimePlan {
     fn binding(
         &self,
         delivery: bool,
-        environment: &DeclaredEnvironment,
+        connections: &DeclaredConnections,
     ) -> Result<NodeRuntimeBinding, NativeV2CliError> {
         if delivery {
             return git_delivery_binding();
@@ -322,7 +325,7 @@ impl UniformRuntimePlan {
             model: self.model.clone(),
             effort: self.effort,
             session_scope: self.session_scope,
-            env: environment.clone(),
+            connections: connections.clone(),
         })
     }
 
@@ -382,25 +385,32 @@ impl UniformRuntimePlan {
     }
 }
 
-fn default_uniform_environment(
+fn default_uniform_connections(
     provider: UniformProvider,
-) -> Result<DeclaredEnvironment, NativeV2CliError> {
-    let name = match provider {
-        UniformProvider::OpenAi => "OPENAI_API_KEY",
-        UniformProvider::OpenRouter => "OPENROUTER_API_KEY",
-        UniformProvider::Anthropic => "ANTHROPIC_API_KEY",
+) -> Result<DeclaredConnections, NativeV2CliError> {
+    let (key, name) = match provider {
+        UniformProvider::OpenAi => ("openai", "OPENAI_API_KEY"),
+        UniformProvider::OpenRouter => ("openrouter", "OPENROUTER_API_KEY"),
+        UniformProvider::Anthropic => ("anthropic", "ANTHROPIC_API_KEY"),
     };
-    let name = EnvironmentVariableName::new(name)
-        .map_err(|error| NativeV2CliError::Usage(error.to_string()))?;
-    DeclaredEnvironment::new([name]).map_err(|error| NativeV2CliError::Usage(error.to_string()))
+    single_connection(key, name)
 }
 
 fn git_delivery_binding() -> Result<NodeRuntimeBinding, NativeV2CliError> {
-    let name = EnvironmentVariableName::new(GITHUB_TOKEN_ENV)
+    let connections = single_connection(
+        crate::native_v2_contract::GITHUB_CONNECTION_KEY,
+        GITHUB_TOKEN_ENV,
+    )?;
+    Ok(NodeRuntimeBinding::GitDelivery { connections })
+}
+
+fn single_connection(key: &str, name: &str) -> Result<DeclaredConnections, NativeV2CliError> {
+    let name = EnvironmentVariableName::new(name)
         .map_err(|error| NativeV2CliError::Usage(error.to_string()))?;
-    let env = DeclaredEnvironment::new([name])
+    let environment = DeclaredEnvironment::new([name])
         .map_err(|error| NativeV2CliError::Usage(error.to_string()))?;
-    Ok(NodeRuntimeBinding::GitDelivery { env })
+    DeclaredConnections::single(key, environment)
+        .map_err(|error| NativeV2CliError::Usage(error.to_string()))
 }
 
 fn insert_template_binding(

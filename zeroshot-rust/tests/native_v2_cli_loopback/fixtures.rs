@@ -15,10 +15,9 @@ pub(crate) fn write_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf, PathBuf
                     "kind":"agent",
                     "model":"gpt-5.6",
                     "effort":"max",
-                    "sessionScope":"execution",
-                    "env":[]
+                    "sessionScope":"execution"
                 },
-                "deliver":{"kind":"git_delivery","env":[]}
+                "deliver":{"kind":"git_delivery"}
             }
         }))
         .assert_value(),
@@ -50,10 +49,10 @@ pub(crate) fn write_delivery_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf
         "provider":"openai",
         "size":"medium",
         "nodes":{
-            "deliver":{"kind":"git_delivery","env":[GITHUB_TOKEN_ENV]},
+            "deliver":{"kind":"git_delivery","connections":{"github":[GITHUB_TOKEN_ENV]}},
             "repair":{
                 "kind":"agent","model":"gpt-5.6","effort":"max",
-                "sessionScope":"execution","env":[]
+                "sessionScope":"execution"
             }
         }
     });

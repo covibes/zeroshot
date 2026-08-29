@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use openengine_cluster_protocol::{
-    EnvironmentVariableName, RunAttachEventNotification, RunAttachParams, RunForceParams, RunId,
+    RunAttachEventNotification, RunAttachParams, RunConnectionValues, RunForceParams, RunId,
     RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult,
     RunTitle, RunWatchParams, RuntimePlan,
 };
@@ -41,7 +41,7 @@ pub(super) enum Call {
         title: RunTitle,
         runtime: RuntimePlan,
         input: Value,
-        environment: BTreeMap<EnvironmentVariableName, String>,
+        connections: RunConnectionValues,
         github_token: Option<String>,
         branch: Option<String>,
         submission_key: String,
@@ -259,7 +259,7 @@ impl NativeV2CliBackend for FakeBackend {
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         let PreparedRunRequest {
             intent,
-            environment,
+            connections,
             github_token,
             run_id: _,
         } = request;
@@ -268,7 +268,7 @@ impl NativeV2CliBackend for FakeBackend {
             title: intent.title,
             runtime: intent.runtime,
             input: intent.initial_input,
-            environment,
+            connections,
             github_token,
             branch: intent.branch.map(|branch| branch.as_str().to_owned()),
             submission_key: intent.submission_key.as_str().to_owned(),

@@ -12,15 +12,19 @@ pub(super) fn runtime() -> RuntimePlan {
                         .assert_value_with("model"),
                     effort: Some(ReasoningEffort::Max),
                     session_scope: SessionScope::Execution,
-                    env: DeclaredEnvironment::new([EnvironmentVariableName::new("NODE_TOKEN")
-                        .assert_value_with("environment name")])
-                    .assert_value_with("declared environment"),
+                    connections: DeclaredConnections::single(
+                        "test",
+                        DeclaredEnvironment::new([EnvironmentVariableName::new("NODE_TOKEN")
+                            .assert_value_with("environment name")])
+                        .assert_value_with("declared environment"),
+                    )
+                    .assert_value_with("declared connection"),
                 },
             ),
             (
                 NodeName::new("deliver").assert_value_with("node"),
                 NodeRuntimeBinding::GitDelivery {
-                    env: DeclaredEnvironment::empty(),
+                    connections: DeclaredConnections::empty(),
                 },
             ),
         ]),
@@ -192,7 +196,7 @@ pub(super) fn complex_runtime() -> RuntimePlan {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value_with("model"),
         effort: Some(ReasoningEffort::Max),
         session_scope,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     };
     RuntimePlan::Codex {
         provider: CodexProvider::OpenAi,
@@ -221,7 +225,7 @@ pub(super) fn complex_runtime() -> RuntimePlan {
             (
                 NodeName::new("deliver").assert_value_with("node"),
                 NodeRuntimeBinding::GitDelivery {
-                    env: DeclaredEnvironment::empty(),
+                    connections: DeclaredConnections::empty(),
                 },
             ),
         ]),

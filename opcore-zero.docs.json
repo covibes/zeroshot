@@ -38,6 +38,10 @@
       "document": "AGENTS.md"
     },
     {
+      "source": "zeroshot-rust/src/native_v2_cloud.rs",
+      "document": "AGENTS.md"
+    },
+    {
       "source": "zeroshot-rust/src/native_v2_cli/diagnostic.rs",
       "document": "AGENTS.md"
     },

@@ -14,7 +14,7 @@ use super::test_support::{
     admitted, binding, request, runner, BurstDriver, FakeDriver, FakeFactory,
     SelectiveBlockingFactory,
 };
-use crate::native_v2_contract::{DeclaredEnvironment, EnvironmentVariableName};
+use crate::native_v2_contract::{DeclaredConnections, DeclaredEnvironment, EnvironmentVariableName};
 
 #[tokio::test]
 async fn parallel_verifiers_overlap_but_writers_are_exclusive() {
@@ -299,12 +299,16 @@ async fn cancelling_completion_wait_preserves_cleanup_acknowledgement() {
 fn resolved_environment_requires_exact_names_and_redacts_values() {
     let name = EnvironmentVariableName::new("TOKEN").assert_value();
     let mut binding = binding(SessionScope::Execution);
-    let env = match &mut binding {
-        NodeRuntimeBinding::Agent { env, .. } => Some(env),
+    let connections = match &mut binding {
+        NodeRuntimeBinding::Agent { connections, .. } => Some(connections),
         NodeRuntimeBinding::GitDelivery { .. } => None,
     };
-    let env = env.assert_value_with("fixture binding must be an agent");
-    *env = DeclaredEnvironment::new([name.clone()]).assert_value();
+    let connections = connections.assert_value_with("fixture binding must be an agent");
+    *connections = DeclaredConnections::single(
+        "test",
+        DeclaredEnvironment::new([name.clone()]).assert_value(),
+    )
+    .assert_value();
     assert!(matches!(
         ResolvedEnvironment::exact(&binding, BTreeMap::new()),
         Err(EnvironmentResolutionError::Missing(_))

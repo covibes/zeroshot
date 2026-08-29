@@ -8,9 +8,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use openengine_cluster_client::{ClientError, ClusterClient};
 use openengine_cluster_protocol::{
-    IdempotencyKey, RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult,
-    RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunStatusResult, RunSubmitResult, RunWatchParams, Sha256Digest,
+    ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
+    ConnectionMutationResult, ConnectionSetRequest, IdempotencyKey, RunAttachEventNotification,
+    RunAttachParams, RunForceParams, RunForceResult, RunId, RunListParams, RunListResult,
+    RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult, RunSubmitResult,
+    RunWatchParams, Sha256Digest,
 };
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
@@ -35,6 +37,10 @@ use crate::v2_run_ledger::RunLedger;
 #[path = "local/state.rs"]
 mod state;
 use state::*;
+
+#[path = "local/connections.rs"]
+mod connections;
+use connections::LocalConnectionStore;
 
 #[path = "local/backend.rs"]
 mod backend;
@@ -156,12 +162,15 @@ impl LocalCliBackend {
 
     async fn start_controller(
         &self,
-        request: PreparedRunRequest,
+        mut request: PreparedRunRequest,
     ) -> Result<openengine_cluster_protocol::RunId, NativeV2CliError> {
         NativeV2Admission
             .validate_intent(&request.intent, DeliveryPolicy::Optional)
             .await
             .map_err(NativeV2CliError::InvalidRun)?;
+        request.connections = LocalConnectionStore::new(self.state_root.clone())
+            .resolve(&request.intent.runtime, &request.connections)?
+            .bootstrap_values();
         let prepared = prepare_local_run(request, &self.current_directory, &self.git_program)
             .map_err(local_error)?;
         let digest = submission_digest(&prepared.submission).map_err(local_error)?;

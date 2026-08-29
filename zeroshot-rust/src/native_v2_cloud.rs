@@ -264,9 +264,16 @@ impl NativeV2CloudController {
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
         let run_id = stored.snapshot.run_id;
         let controller_claim = self.allocator.claim_controller(&run_id).await?;
+        let github_token = match source_github_token(&secrets).await {
+            Ok(token) => token,
+            Err(error) => {
+                self.append_unavailable(&run_id).await?;
+                return Err(error.into());
+            }
+        };
         let capsule = match self
             .allocator
-            .allocate(&run_id, &admitted, secrets.github_token.as_deref())
+            .allocate(&run_id, &admitted, github_token.as_deref())
             .await
         {
             Ok(capsule) => capsule,
@@ -470,5 +477,7 @@ impl NativeV2CloudController {
 }
 
 mod backend;
+mod source;
 use backend::{append_runtime_lost, append_terminal_failure};
 pub(crate) use backend::submission_digest;
+use source::source_github_token;

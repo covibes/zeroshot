@@ -1,7 +1,8 @@
 use super::*;
 use crate::native_v2_contract::{
-    ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, RunSize, RunTitle,
-    GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF, SessionScope, ResolvedSource,
+    ClaudeProvider, CodexProvider, DeclaredConnections, DeclaredEnvironment,
+    EnvironmentVariableName, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
+    ResolvedSource, RunSize, RunTitle, SessionScope,
 };
 use crate::native_v2_delivery::DeliveryMode;
 use crate::native_v2_delivery::contract::{delivery_result_schema, delivery_signal_labels};
@@ -80,7 +81,7 @@ fn binding(model: &str, effort: Option<ReasoningEffort>) -> NodeRuntimeBinding {
         model: crate::worker_catalog::ModelId::new(model).assert_value(),
         effort,
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     }
 }
 
@@ -89,10 +90,14 @@ fn binding_with_environment(names: impl IntoIterator<Item = String>) -> NodeRunt
         model: crate::worker_catalog::ModelId::new("claude-sonnet-5").assert_value(),
         effort: None,
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::new(
-            names
-                .into_iter()
-                .map(|name| EnvironmentVariableName::new(name).assert_value()),
+        connections: DeclaredConnections::single(
+            "test",
+            DeclaredEnvironment::new(
+                names
+                    .into_iter()
+                    .map(|name| EnvironmentVariableName::new(name).assert_value()),
+            )
+            .assert_value(),
         )
         .assert_value(),
     }
@@ -100,7 +105,7 @@ fn binding_with_environment(names: impl IntoIterator<Item = String>) -> NodeRunt
 
 fn delivery_binding() -> NodeRuntimeBinding {
     NodeRuntimeBinding::GitDelivery {
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     }
 }
 

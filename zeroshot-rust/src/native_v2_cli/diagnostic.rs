@@ -153,7 +153,9 @@ fn json_code(source: &serde_json::Error) -> &'static str {
 
 fn environment_code(source: &RunEnvironmentError) -> &'static str {
     match source {
-        RunEnvironmentError::Missing(_) => "runtime.missing_environment",
+        RunEnvironmentError::MissingConnection(_) | RunEnvironmentError::MissingField(_, _) => {
+            "runtime.missing_environment"
+        }
         _ => "runtime.invalid_environment",
     }
 }

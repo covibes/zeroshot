@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use super::*;
 use crate::execution::{SessionScope, process::HostedProcessPool};
 use crate::native_v2_contract::{
-    self, DeclaredEnvironment, NodeInvocation, NodeRuntimeBinding, TokenUsageDelta,
+    self, DeclaredConnections, NodeInvocation, NodeRuntimeBinding, TokenUsageDelta,
 };
 use crate::native_v2_runner::{ResolvedEnvironment, remote_node_handle};
 use crate::worker_catalog::{self, ReasoningEffort};
@@ -23,7 +23,7 @@ fn request(run: &str, execution: u64) -> NodeRunRequest {
         model: worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     };
     let environment = ResolvedEnvironment::exact(&binding, BTreeMap::new()).assert_value();
     NodeRunRequest {

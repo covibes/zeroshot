@@ -403,4 +403,7 @@ mod controller;
 mod environment;
 mod runtime;
 pub use environment::{RunEnvironment, RunEnvironmentError};
+pub(crate) use environment::{
+    ConnectionResolutionUnavailable, DynamicConnectionPlan, RunConnectionResolver,
+};
 use runtime::*;

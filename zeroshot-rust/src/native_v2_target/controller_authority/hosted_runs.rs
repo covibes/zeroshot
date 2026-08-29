@@ -124,7 +124,7 @@ impl TargetHttpControlAuthority {
         Ok((routes, access))
     }
 
-    async fn hosted_json<T: DeserializeOwned>(
+    pub(super) async fn hosted_json<T: DeserializeOwned>(
         &self,
         request: RequestBuilder,
         url: &Url,

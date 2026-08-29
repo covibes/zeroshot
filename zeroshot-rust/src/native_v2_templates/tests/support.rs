@@ -13,7 +13,7 @@ use crate::full_v1_reducer::{
     DurableExecution, DurableExecutionState, ExecutionId, HistoryPosition, NodeInstanceId,
     StructuralOccurrence,
 };
-use crate::native_v2_contract::{CodexProvider, DeclaredEnvironment, ModelId};
+use crate::native_v2_contract::{CodexProvider, DeclaredConnections, ModelId};
 
 use super::super::*;
 
@@ -71,7 +71,7 @@ fn agent_binding() -> NodeRuntimeBinding {
         model: ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     }
 }
 

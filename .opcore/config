@@ -1,5 +1,10 @@
 {
   "validation": {
+    "pathPolicy": {
+      "exclude": [
+        "src/cluster/generated/**"
+      ]
+    },
     "checks": {
       "typescript": {
         "deadCode": {

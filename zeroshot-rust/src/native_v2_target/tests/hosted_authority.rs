@@ -6,14 +6,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-use super::super::controller_authority::credentials::CredentialStorePreparation;
-use super::super::controller_authority::TargetCredentialStore;
-use super::super::*;
+use super::super::{
+    *,
+    controller_authority::{TargetCredentialStore, credentials::CredentialStorePreparation},
+};
+
+#[path = "hosted_authority/connections.rs"]
+mod connections;
+pub(super) use connections::test_authority;
 
 pub(super) struct RotatingCredentialStore {
     state: Mutex<RotatingCredentialState>,
 }
-
 pub(super) struct LoginBlockingCredentialStore {
     value: Mutex<String>,
     prepare_started: Notify,
@@ -114,6 +118,9 @@ fn authority_response(
     token_index: &mut u8,
 ) -> String {
     if let Some(response) = hosted_run_response(request) {
+        return response;
+    }
+    if let Some(response) = connections::response(request) {
         return response;
     }
     if let Some(response) = controller_response(request, address) {
@@ -265,6 +272,17 @@ fn hosted_discovery(origin: &str) -> String {
                 "kind": "zeroshot.hosted-runs/v1",
                 "base_url": origin,
                 "route_templates": hosted_run_routes()
+            },
+            "connections": {
+                "kind": "zeroshot.connections/v1",
+                "baseUrl": origin,
+                "routeTemplates": {
+                    "list": "/native-v2/connections/list",
+                    "set": "/native-v2/connections/set",
+                    "delete": "/native-v2/connections/delete",
+                    "resolve": "/native-v2/connections/resolve"
+                },
+                "dynamicKinds": ["github_app"]
             }
         }
     })

@@ -107,10 +107,10 @@ fn live_runtime(lane: LiveLane, scenario: LiveScenario) -> serde_json::Value {
             "model":lane.model(),
             "effort":"max",
             "sessionScope":scope,
-            "env":[lane.credential_name()]
+            "connections":{"provider":[lane.credential_name()]}
         })
     };
-    let delivery = json!({"kind":"git_delivery","env":[GITHUB_TOKEN_ENV]});
+    let delivery = json!({"kind":"git_delivery","connections":{"github":[GITHUB_TOKEN_ENV]}});
     let nodes = match scenario {
         LiveScenario::PullRequest | LiveScenario::OutputCorrection | LiveScenario::DirectMerge => {
             json!({"worker":agent("execution"), "deliver":delivery})

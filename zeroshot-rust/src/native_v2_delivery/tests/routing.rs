@@ -74,8 +74,12 @@ async fn create_delivery_run(
         RunEnvironment::exact(
             &admitted.runtime,
             BTreeMap::from([(
-                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
-                "test-token".to_owned(),
+                ConnectionKey::new("github").assert_value(),
+                StaticConnectionValues::new(BTreeMap::from([(
+                    EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
+                    "test-token".to_owned(),
+                )]))
+                .assert_value(),
             )]),
         )
         .assert_value_with("resolve delivery run environment"),
@@ -208,16 +212,20 @@ pub(super) async fn assert_ci_failure_routes_an_authored_worker_loop(
 async fn admitted_routing_graph(base_revision: &str) -> crate::native_v2_contract::AdmittedRun {
     let graph = routing_graph();
     let delivery = NodeRuntimeBinding::GitDelivery {
-        env: DeclaredEnvironment::new([
-            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
-        ])
+        connections: DeclaredConnections::single(
+            "github",
+            DeclaredEnvironment::new([
+                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
+            ])
+            .assert_value(),
+        )
         .assert_value(),
     };
     let repair = NodeRuntimeBinding::Agent {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(crate::worker_catalog::ReasoningEffort::Max),
         session_scope: crate::execution::SessionScope::Execution,
-        env: DeclaredEnvironment::empty(),
+        connections: DeclaredConnections::empty(),
     };
     NativeV2Admission
         .admit(RunSubmission {

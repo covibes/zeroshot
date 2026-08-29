@@ -6,6 +6,7 @@
 //! has no retry, credential-store, or Node compatibility path.
 
 mod allocator;
+mod connections;
 mod repository;
 
 #[cfg(test)]
@@ -35,6 +36,7 @@ use crate::v2_run_ledger::sqlite::SqliteRunLedger;
 use crate::native_v2_supervisor::RunEnvironment;
 
 use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
+use connections::build_connection_resolver;
 const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Composes the production target around exact sourceful run requests.
@@ -136,7 +138,8 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
         let TargetRunRequest {
             run_id,
             submission,
-            environment,
+            connections,
+            connection_resolver,
             github_token,
         } = request;
         let digest = submission_digest(&submission)
@@ -150,8 +153,14 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
                 run_id: receipt.run_id,
             });
         }
-        let environment = RunEnvironment::exact(&submission.runtime, environment)
-            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
+        let environment = match connection_resolver {
+            Some(wire) => {
+                let resolution = build_connection_resolver(run_id.clone(), wire)?;
+                RunEnvironment::with_resolver(&submission.runtime, connections, resolution)
+            }
+            None => RunEnvironment::exact(&submission.runtime, connections),
+        }
+        .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
         let receipt = controller
             .submit_with_exact_environment_and_github_token(
                 RunSubmitParams { run_id, submission },

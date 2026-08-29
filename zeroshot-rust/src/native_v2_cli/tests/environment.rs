@@ -13,7 +13,7 @@ fn runtime_with_environment() -> RuntimePlan {
         "provider":"openai",
         "size":"medium",
         "nodes":{
-            "worker":{"kind":"agent","model":"gpt-5.6-sol","env":["DECLARED","SHARED"]}
+            "worker":{"kind":"agent","model":"gpt-5.6-sol","connections":{"test":["DECLARED","SHARED"]}}
         }
     }))
     .assert_value()
@@ -112,10 +112,10 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
             Call::Submit {
                 runtime,
                 input,
-                environment,
+                connections,
                 ..
             },
-        ] => Some((runtime, input, environment)),
+        ] => Some((runtime, input, connections)),
         _ => None,
     }
     .assert_value();
@@ -135,14 +135,14 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
         Some(&json!("git_delivery"))
     );
     assert_eq!(
-        runtime.pointer("/nodes/deliver/env/0"),
+        runtime.pointer("/nodes/deliver/connections/github/0"),
         Some(&json!("GH_TOKEN"))
     );
     assert_eq!(
         submitted
             .2
-            .iter()
-            .next()
+            .get(&ConnectionKey::new("github").assert_value())
+            .and_then(|values| values.as_map().iter().next())
             .map(|(name, value)| (name.as_str(), value.as_str())),
         Some(("GH_TOKEN", "template-secret"))
     );
@@ -163,20 +163,23 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
 
     assert_eq!(requested.into_inner(), ["DECLARED", "SHARED", "GH_TOKEN"]);
     let calls = backend.calls();
-    let (environment, github_token) = match calls.as_slice() {
+    let (connections, github_token) = match calls.as_slice() {
         [
             Call::Submit {
-                environment,
+                connections,
                 github_token,
                 ..
             },
-        ] => Some((environment, github_token)),
+        ] => Some((connections, github_token)),
         _ => None,
     }
     .assert_value();
     assert_eq!(github_token.as_deref(), Some("value-for-GH_TOKEN"));
     assert_eq!(
-        environment
+        connections
+            .get(&ConnectionKey::new("test").assert_value())
+            .assert_value()
+            .as_map()
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>(),
@@ -188,11 +191,18 @@ async fn run_collects_only_the_distinct_declared_environment_before_submission()
 }
 
 #[tokio::test]
-async fn missing_declared_environment_fails_before_backend_contact() {
+async fn missing_inline_environment_is_left_for_connection_resolution() {
     let (_files, command) = environment_command(&["--submission-key", "missing-environment", "-d"]);
     let backend = FakeBackend::default();
     let available = |_: &str| None;
-    assert_declared_environment_rejected(command, &backend, &available).await;
+    execute_with_environment(command, &backend, &available)
+        .await
+        .assert_value();
+    let calls = backend.calls();
+    assert!(matches!(
+        calls.as_slice(),
+        [Call::Submit { connections, .. }] if connections.is_empty()
+    ));
 }
 
 #[cfg(unix)]
@@ -254,7 +264,7 @@ async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
         Some(&json!("gpt-5.6-luna"))
     );
     assert_eq!(
-        runtime.pointer("/nodes/worker/env/0"),
+        runtime.pointer("/nodes/worker/connections/openrouter/0"),
         Some(&json!("OPENROUTER_API_KEY"))
     );
     assert_eq!(runtime.pointer("/size"), Some(&json!("medium")));

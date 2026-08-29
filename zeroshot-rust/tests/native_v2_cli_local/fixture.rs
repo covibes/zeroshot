@@ -8,6 +8,7 @@ use openengine_cluster_testkit::TemporaryDirectory;
 use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
+use tokio::io::AsyncWriteExt as _;
 use tokio::time::{Instant, sleep, timeout};
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(20);
@@ -61,7 +62,7 @@ impl LocalFixture {
         }
     }
 
-    fn command(&self, args: &[&str], mode: &str) -> Command {
+    fn command_with_inline(&self, args: &[&str], mode: &str, inline: bool) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_zeroshot-rust"));
         command
             .args(args)
@@ -73,11 +74,18 @@ impl LocalFixture {
             )
             .env("ZEROSHOT_RUST_STATE_DIR", &self.state)
             .env("ZEROSHOT_RUST_CONFIG_DIR", &self.config_blocker)
-            .env("OPENAI_API_KEY", DECLARED_KEY)
-            .env("FAKE_CODEX_MODE", mode)
             .env("UNDECLARED_SECRET", "must-not-cross")
             .kill_on_drop(true);
+        if inline {
+            command
+                .env("OPENAI_API_KEY", DECLARED_KEY)
+                .env("FAKE_CODEX_MODE", mode);
+        }
         command
+    }
+
+    fn command(&self, args: &[&str], mode: &str) -> Command {
+        self.command_with_inline(args, mode, true)
     }
 
     pub(super) async fn run(&self, title: &str, mode: &str, detach: bool) -> Output {
@@ -129,6 +137,52 @@ impl LocalFixture {
             .await
             .assert_value_with("local CLI deadline")
             .assert_value_with("start local CLI")
+    }
+
+    pub(super) async fn connection_set(&self) -> Value {
+        let mut command = self.command(&["connection", "set", "openai", "--json-stdin"], "finish");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().assert_value_with("spawn connection set");
+        child
+            .stdin
+            .take()
+            .assert_value_with("connection set stdin")
+            .write_all(
+                br#"{"OPENAI_API_KEY":"local-declared-key","FAKE_CODEX_MODE":"finish","EXTRA":"not-injected"}"#,
+            )
+            .await
+            .assert_value_with("write connection JSON");
+        let output = timeout(CLI_TIMEOUT, child.wait_with_output())
+            .await
+            .assert_value_with("connection set deadline")
+            .assert_value_with("wait for connection set");
+        assert_success(&output, "connection set");
+        serde_json::from_slice(&output.stdout).assert_value_with("connection set JSON")
+    }
+
+    pub(super) async fn run_from_stored_connection(&self) -> Output {
+        let arguments = [
+            "run",
+            "--title",
+            "Stored connection run",
+            "--graph",
+            self.graph.to_str().assert_value_with("graph path"),
+            "--input",
+            self.input.to_str().assert_value_with("input path"),
+            "--runtime-config",
+            self.runtime.to_str().assert_value_with("runtime path"),
+        ];
+        timeout(
+            CLI_TIMEOUT,
+            self.command_with_inline(&arguments, "finish", false)
+                .output(),
+        )
+        .await
+        .assert_value_with("stored connection run deadline")
+        .assert_value_with("start stored connection run")
     }
 
     pub(super) async fn json(&self, args: &[&str], mode: &str) -> Value {
@@ -402,7 +456,7 @@ fn local_runtime() -> Value {
                 "model":"gpt-5.6",
                 "effort":"high",
                 "sessionScope":"execution",
-                "env":["OPENAI_API_KEY", "FAKE_CODEX_MODE"]
+                "connections":{"openai":["OPENAI_API_KEY", "FAKE_CODEX_MODE"]}
             }
         }
     })

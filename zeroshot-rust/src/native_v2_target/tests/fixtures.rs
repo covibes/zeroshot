@@ -143,6 +143,36 @@ impl TargetControlAuthority for FakeAuthority {
         .map_err(|error| TargetAuthorityError::new(error.to_string()))
     }
 
+    async fn connection_list(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionListRequest,
+    ) -> Result<ConnectionListResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
+    async fn connection_set(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionSetRequest,
+    ) -> Result<ConnectionMutationResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
+    async fn connection_delete(
+        &self,
+        _target: &TargetRecord,
+        _request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake connection management is unavailable",
+        ))
+    }
+
     async fn hosted_run_list(
         &self,
         _target: &TargetRecord,
@@ -303,7 +333,7 @@ pub(super) fn run_request() -> PreparedRunRequest {
     PreparedRunRequest {
         run_id: RunId::new("018f5e78-7f95-7c22-8d98-3f15af20c991"),
         intent: run_intent(),
-        environment: BTreeMap::new(),
+        connections: BTreeMap::new(),
         github_token: None,
     }
 }
@@ -325,7 +355,8 @@ pub(super) fn exact_run_request() -> TargetRunRequest {
             },
             submission_key: request.intent.submission_key,
         },
-        environment: request.environment,
+        connections: request.connections,
+        connection_resolver: None,
         github_token: request.github_token,
     }
 }

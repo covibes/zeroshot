@@ -14,6 +14,44 @@ use fixture::*;
 const TITLE: &str = "Local no-delivery acceptance";
 
 #[tokio::test(flavor = "multi_thread")]
+async fn local_connection_crud_supplies_declared_fields_only() {
+    let fixture = LocalFixture::new();
+    let mutation = fixture.connection_set().await;
+    assert_eq!(
+        mutation.assert_key("connection").assert_key("key"),
+        "openai"
+    );
+    assert_eq!(
+        mutation.assert_key("connection").assert_key("fields"),
+        &json!(["EXTRA", "FAKE_CODEX_MODE", "OPENAI_API_KEY"])
+    );
+    assert!(!mutation.to_string().contains("local-declared-key"));
+
+    let listed = fixture.json(&["connection", "list"], "finish").await;
+    assert_eq!(
+        listed
+            .assert_key("connections")
+            .as_array()
+            .assert_value_with("connection list")
+            .len(),
+        1
+    );
+
+    let output = fixture.run_from_stored_connection().await;
+    assert_success(&output, "stored connection local run");
+    assert_eq!(
+        fs::read_to_string(fixture.repository.join("environment-proof.txt"))
+            .assert_value_with("environment proof"),
+        "declared-only\n"
+    );
+
+    let deleted = fixture
+        .json(&["connection", "delete", "openai"], "finish")
+        .await;
+    assert_eq!(deleted.assert_key("deleted"), true);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn target_omitted_run_derives_source_and_preserves_workspace_mutation() {
     let fixture = LocalFixture::new();
     let output = fixture.run(TITLE, "finish", false).await;

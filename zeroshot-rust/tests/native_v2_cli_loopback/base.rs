@@ -259,10 +259,11 @@ pub(crate) async fn submit_test_run(
     let TargetRunRequest {
         run_id,
         submission,
-        environment,
+        connections,
+        connection_resolver: _,
         github_token,
     } = request;
-    let exact_environment = RunEnvironment::exact(&submission.runtime, environment)
+    let exact_environment = RunEnvironment::exact(&submission.runtime, connections)
         .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
     let receipt = controller
         .submit_with_exact_environment_and_github_token(

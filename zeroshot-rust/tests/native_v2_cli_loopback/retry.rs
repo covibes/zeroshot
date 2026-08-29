@@ -232,7 +232,7 @@ fn write_retry_files(root: &TempRoot, lane: RetryLane) -> (PathBuf, PathBuf, Pat
             "size":"medium",
             "nodes":{"worker":{
                 "kind":"agent","model":model,"effort":"max",
-                "sessionScope":"execution","env":[lane.credential()]
+                "sessionScope":"execution","connections":{"provider":[lane.credential()]}
             }}
         }))
         .assert_value(),

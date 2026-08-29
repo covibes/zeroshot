@@ -172,7 +172,11 @@ fn template_runtime(lane: LiveLane, template: &str) -> serde_json::Value {
             "model":lane.model(),
             "effort":effort,
             "sessionScope":session_scope,
-            "env": if template == "single-worker" { Vec::<&str>::new() } else { vec![lane.credential_name()] }
+            "connections": if template == "single-worker" {
+                json!({})
+            } else {
+                json!({"provider":[lane.credential_name()]})
+            }
         })
     };
     let nodes = match template {

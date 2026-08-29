@@ -46,11 +46,18 @@ impl ResolvedEnvironment {
         binding: &NodeRuntimeBinding,
         values: BTreeMap<EnvironmentVariableName, String>,
     ) -> Result<Self, EnvironmentResolutionError> {
-        let declared = binding.declared_environment();
-        if let Some(name) = declared.iter().find(|name| !values.contains_key(*name)) {
+        let declared = binding.declared_connections();
+        if let Some(name) = declared
+            .environment_names()
+            .find(|name| !values.contains_key(*name))
+        {
             return Err(EnvironmentResolutionError::Missing(name.clone()));
         }
-        if let Some(name) = values.keys().find(|name| !declared.contains(name)) {
+        if let Some(name) = values.keys().find(|name| {
+            !declared
+                .environment_names()
+                .any(|declared| declared == *name)
+        }) {
             return Err(EnvironmentResolutionError::Undeclared(name.clone()));
         }
         Ok(Self {

@@ -27,6 +27,14 @@
     },
     "submissionKey": "debug-fixture"
   },
-  "environment": { "OPENAI_API_KEY": "environment-secret" },
+  "connections": {
+    "openai": { "OPENAI_API_KEY": "environment-secret" }
+  },
+  "connectionResolver": {
+    "endpoint": "https://cloud.example/native-v2/connections/resolve",
+    "bearerToken": "resolver-secret",
+    "keys": ["github"],
+    "sourceConnection": "github"
+  },
   "githubToken": "github-secret"
 }

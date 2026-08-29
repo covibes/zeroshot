@@ -27,7 +27,8 @@ use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
 use crate::native_v2_contract::{
-    ClaudeProvider, DeclaredEnvironment, NodeRuntimeBinding, RunSubmission, RuntimePlan,
+    ClaudeProvider, DeclaredConnections, DeclaredEnvironment, NodeRuntimeBinding, RunSubmission,
+    RuntimePlan,
 };
 use crate::native_v2_runner::{
     AttachReceiveError, LiveOutputStream, NativeNodeRunner, NodeRunRequest, NodeRunner,
@@ -41,12 +42,21 @@ fn agent_binding(
     scope: SessionScope,
     environment: &[&str],
 ) -> NodeRuntimeBinding {
+    let connections = if environment.is_empty() {
+        DeclaredConnections::empty()
+    } else {
+        DeclaredConnections::single(
+            "provider",
+            DeclaredEnvironment::new(environment.iter().map(|name| environment_name(name)))
+                .assert_value(),
+        )
+        .assert_value()
+    };
     NodeRuntimeBinding::Agent {
         model: worker_catalog::ModelId::new(model).assert_value(),
         effort,
         session_scope: scope,
-        env: DeclaredEnvironment::new(environment.iter().map(|name| environment_name(name)))
-            .assert_value(),
+        connections,
     }
 }
 

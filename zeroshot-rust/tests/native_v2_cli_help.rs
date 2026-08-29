@@ -69,8 +69,8 @@ fn help_explains_runtime_configuration() {
             "runtime configuration",
             r#""harness": "codex""#,
             r#""provider": "openrouter""#,
-            r#""env": ["openrouter_api_key"]"#,
-            "env lists variable names copied from the submitting process",
+            r#""connections": {"openrouter": ["openrouter_api_key"]}"#,
+            "each connection key maps to the exact environment variable names required by that node",
             "never put values in this file",
             "zeroshot-rust template show template",
             "omit the template-owned delivery binding",
@@ -114,7 +114,7 @@ fn help_explains_runtime_configuration() {
             prose_list(CLAUDE_MODELS.iter().map(|model| model.id.to_owned()), "and")
         ),
         format!(
-            "optional fields are effort ({} when supported), sessionscope ({}), and env.",
+            "optional fields are effort ({} when supported), sessionscope ({}), and connections.",
             prose_list(efforts, "or"),
             prose_list(session_scopes, "or")
         ),

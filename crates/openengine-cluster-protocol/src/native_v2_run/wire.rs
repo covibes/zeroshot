@@ -1,10 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{GraphSpec, IdempotencyKey, NodeName, RunId, RunStatusResult};
+use crate::{
+    ConnectionKey, EnvironmentVariableName, GraphSpec, IdempotencyKey, NodeName, RunId,
+    RunStatusResult,
+};
 
 use super::{ClaudeProvider, CodexProvider, NodeRuntimeBinding, RunSize, ResolvedSource};
 
@@ -36,6 +39,23 @@ impl RuntimePlan {
         match self {
             Self::Codex { nodes, .. } | Self::Claude { nodes, .. } => nodes,
         }
+    }
+
+    /// Union of the fields required from each connection key across all executable nodes.
+    #[must_use]
+    pub fn connection_requirements(
+        &self,
+    ) -> BTreeMap<ConnectionKey, BTreeSet<EnvironmentVariableName>> {
+        let mut requirements = BTreeMap::<ConnectionKey, BTreeSet<EnvironmentVariableName>>::new();
+        for binding in self.nodes().values() {
+            for (key, fields) in binding.declared_connections().iter() {
+                requirements
+                    .entry(key.clone())
+                    .or_default()
+                    .extend(fields.iter().cloned());
+            }
+        }
+        requirements
     }
 }
 

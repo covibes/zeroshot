@@ -133,6 +133,9 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
         NativeV2CliCommand::Watch(command) => command.run.target.is_none(),
         NativeV2CliCommand::Logs(command) => command.run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
+        NativeV2CliCommand::ConnectionList(route)
+        | NativeV2CliCommand::ConnectionDelete { route, .. } => route.target.is_none(),
+        NativeV2CliCommand::ConnectionSet(command) => command.route.target.is_none(),
         NativeV2CliCommand::Help(_)
         | NativeV2CliCommand::Version
         | NativeV2CliCommand::TemplateList

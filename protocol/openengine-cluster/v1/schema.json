@@ -557,6 +557,13 @@
         }
       ]
     },
+    "DeclaredConnections": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DeclaredEnvironment"
+      },
+      "maxProperties": 64,
+      "type": "object"
+    },
     "DeclaredEnvironment": {
       "items": {
         "maxLength": 128,
@@ -3181,6 +3188,9 @@
         {
           "additionalProperties": false,
           "properties": {
+            "connections": {
+              "$ref": "#/$defs/DeclaredConnections"
+            },
             "effort": {
               "anyOf": [
                 {
@@ -3190,9 +3200,6 @@
                   "type": "null"
                 }
               ]
-            },
-            "env": {
-              "$ref": "#/$defs/DeclaredEnvironment"
             },
             "kind": {
               "const": "agent",
@@ -3216,8 +3223,8 @@
         {
           "additionalProperties": false,
           "properties": {
-            "env": {
-              "$ref": "#/$defs/DeclaredEnvironment"
+            "connections": {
+              "$ref": "#/$defs/DeclaredConnections"
             },
             "kind": {
               "const": "git_delivery",

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use openengine_cluster_protocol::{
     Cursor, ExecutionRef, RunForceParams, RunId, RunListParams, RunLogsParams, RunStatusParams,
 };
@@ -11,9 +9,6 @@ use zeroshot_engine::native_v2_cli::{
 };
 
 use super::super::controller_authority::TargetCredentialStore;
-use super::super::controller_authority::credentials::test_support::{
-    MemoryCredentialStore, MemoryDeviceCodeNotifier,
-};
 use super::super::*;
 use super::fixtures::*;
 use super::hosted_authority::*;
@@ -22,12 +17,7 @@ use super::hosted_authority::*;
 async fn hosted_lifecycle_stays_cloud_owned_from_queue_through_completion() {
     let root = temp_root();
     let (origin, server) = spawn_target_authority(50).await;
-    let credentials = Arc::new(MemoryCredentialStore::default());
-    let authority = TargetHttpControlAuthority::with_dependencies(
-        credentials.clone(),
-        Arc::new(MemoryDeviceCodeNotifier::default()),
-        root.path("refresh-locks"),
-    );
+    let (credentials, authority) = test_authority(&root);
     let target = hosted_target("prod", origin);
     credentials
         .set(&target.id, "refresh-0")

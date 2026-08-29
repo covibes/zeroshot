@@ -28,6 +28,11 @@ section { margin-block: 2.5rem; }
 <li><a href="#zeroshot-rust-target-setup"><code>zeroshot-rust target setup</code></a></li>
 <li><a href="#zeroshot-rust-target-serve"><code>zeroshot-rust target serve</code></a></li>
 <li><a href="#zeroshot-rust-target-help"><code>zeroshot-rust target help</code></a></li>
+<li><a href="#zeroshot-rust-connection"><code>zeroshot-rust connection</code></a></li>
+<li><a href="#zeroshot-rust-connection-list"><code>zeroshot-rust connection list</code></a></li>
+<li><a href="#zeroshot-rust-connection-set"><code>zeroshot-rust connection set</code></a></li>
+<li><a href="#zeroshot-rust-connection-delete"><code>zeroshot-rust connection delete</code></a></li>
+<li><a href="#zeroshot-rust-connection-help"><code>zeroshot-rust connection help</code></a></li>
 <li><a href="#zeroshot-rust-template"><code>zeroshot-rust template</code></a></li>
 <li><a href="#zeroshot-rust-template-list"><code>zeroshot-rust template list</code></a></li>
 <li><a href="#zeroshot-rust-template-show"><code>zeroshot-rust template show</code></a></li>
@@ -51,6 +56,7 @@ Usage: zeroshot-rust [COMMAND]
 
 Commands:
   target      Manage named targets or serve a direct target
+  connection  Manage static credentials by connection key
   template    Inspect built-in graph templates
   run         Submit a graph run locally or to a named target
   list        List runs as JSON
@@ -170,6 +176,95 @@ Commands:
   setup  Configure the local profile for a named target
   serve  Serve a native-v2 target, unauthenticated unless --bootstrap-key-file is set
   help   Print this message or the help of the given subcommand(s)</code></pre></section>
+<section id="zeroshot-rust-connection"><h3><code>zeroshot-rust connection</code></h3>
+<pre><code>Manage static credentials by connection key
+
+Usage: zeroshot-rust connection &lt;COMMAND&gt;
+
+Commands:
+  list    List connection metadata without secret values
+  set     Create or replace one static connection
+  delete  Delete one connection
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-connection-list"><h4><code>zeroshot-rust connection list</code></h4>
+<pre><code>List connection metadata without secret values
+
+Usage: zeroshot-rust connection list [OPTIONS]
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local connections
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped connections
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-connection-set"><h4><code>zeroshot-rust connection set</code></h4>
+<pre><code>Create or replace one static connection
+
+Usage: zeroshot-rust connection set [OPTIONS] &lt;--field &lt;ENV&gt;|--json-stdin&gt; &lt;KEY&gt;
+
+Arguments:
+  &lt;KEY&gt;
+          Unique connection key within the selected scope
+
+Options:
+      --field &lt;ENV&gt;
+          Prompt without echo for this environment field. Repeat for multiple fields
+
+      --json-stdin
+          Read one JSON object of environment field names to secret values from standard input
+
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local connections
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped connections
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-connection-delete"><h4><code>zeroshot-rust connection delete</code></h4>
+<pre><code>Delete one connection
+
+Usage: zeroshot-rust connection delete [OPTIONS] &lt;KEY&gt;
+
+Arguments:
+  &lt;KEY&gt;
+          Unique connection key within the selected scope
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local connections
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped connections
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-connection-help"><h4><code>zeroshot-rust connection help</code></h4>
+<pre><code>Print this message or the help of the given subcommand(s)
+
+Usage: zeroshot-rust connection help [COMMAND]
+
+Commands:
+  list    List connection metadata without secret values
+  set     Create or replace one static connection
+  delete  Delete one connection
+  help    Print this message or the help of the given subcommand(s)</code></pre></section>
 <section id="zeroshot-rust-template"><h3><code>zeroshot-rust template</code></h3>
 <pre><code>Inspect built-in graph templates
 
@@ -299,7 +394,7 @@ RUNTIME CONFIGURATION
           &quot;worker&quot;: {
             &quot;kind&quot;: &quot;agent&quot;,
             &quot;model&quot;: &quot;gpt-5.6-sol&quot;,
-            &quot;env&quot;: [&quot;OPENROUTER_API_KEY&quot;]
+            &quot;connections&quot;: {&quot;openrouter&quot;: [&quot;OPENROUTER_API_KEY&quot;]}
           }
         }
       }
@@ -314,15 +409,15 @@ RUNTIME CONFIGURATION
 
     Every executable graph node needs a same-named binding. Agent bindings require kind and model.
     Optional fields are effort (low, medium, high, xhigh, or max when supported), sessionScope
-    (execution or node_instance), and env. env lists variable names copied from the submitting
-    process; never put values in this file.
+    (execution or node_instance), and connections. Each connection key maps to the exact
+    environment variable names required by that node; never put values in this file.
 
     Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
     template-owned delivery binding.
 
     --uniform-runtime-config accepts the same harness, provider, size, model, effort, sessionScope,
-    and env fields without nodes. Rust expands that agent binding across every executable graph
-    node and supplies graph-visible Git delivery bindings itself.</code></pre></section>
+    and connections fields without nodes. Rust expands that agent binding across every executable
+    graph node and supplies graph-visible Git delivery bindings itself.</code></pre></section>
 <section id="zeroshot-rust-list"><h3><code>zeroshot-rust list</code></h3>
 <pre><code>List runs as JSON
 
@@ -436,6 +531,7 @@ Usage: zeroshot-rust help [COMMAND]
 
 Commands:
   target      Manage named targets or serve a direct target
+  connection  Manage static credentials by connection key
   template    Inspect built-in graph templates
   run         Submit a graph run locally or to a named target
   list        List runs as JSON

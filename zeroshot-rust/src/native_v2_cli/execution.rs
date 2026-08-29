@@ -1,4 +1,5 @@
-use std::{io::Write, time::Duration};
+use std::io::Write;
+use std::time::Duration;
 
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
@@ -14,6 +15,8 @@ use super::{
 };
 #[path = "execution/attach.rs"]
 mod attach;
+#[path = "execution/connections.rs"]
+mod connections;
 #[path = "execution/context.rs"]
 mod context;
 #[path = "execution/status.rs"]
@@ -56,11 +59,14 @@ where
     if let Some(outcome) = try_execute_native_v2_static(&command, output)? {
         return Ok(outcome);
     }
+    if command.is_connection_operation() {
+        return connections::execute_connection(command, context.backend, output).await;
+    }
+    if command.is_target_operation() {
+        return execute_target(command, context.backend).await;
+    }
     match command {
         NativeV2CliCommand::Run(run) => execute_run(run, context, signal, output).await,
-        command @ (NativeV2CliCommand::TargetAdd(_)
-        | NativeV2CliCommand::TargetLogin { .. }
-        | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, context.backend).await,
         NativeV2CliCommand::TargetServe(_) => Err(NativeV2CliError::ProcessCommand),
         command => execute_run_operation(command, context.backend, signal, output).await,
     }

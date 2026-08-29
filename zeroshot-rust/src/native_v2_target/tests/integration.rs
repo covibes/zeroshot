@@ -299,7 +299,7 @@ fn assert_submit_and_session_requests(requests: &[CapturedHttpRequest], run_id: 
     );
     assert!(
         request
-            .pointer("/environment")
+            .pointer("/connections")
             .and_then(serde_json::Value::as_object)
             .is_some_and(serde_json::Map::is_empty)
     );
