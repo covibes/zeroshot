@@ -265,6 +265,18 @@ function defineDirectJsonExtractionTests() {
       assert.deepStrictEqual(result, { foo: 'bar' });
     });
 
+    it('should extract JSON embedded in conversational filler containing additional braces', function () {
+      const text = 'Note: {var_placeholder} was replaced. Result: {"foo":"bar"} and {extra_unrelated}.';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { foo: 'bar' });
+    });
+
+    it('should extract JSON containing string with nested braces', function () {
+      const text = 'Result: {"template":"Hello {name}, welcome {home}"} complete.';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { template: 'Hello {name}, welcome {home}' });
+    });
+
     it('should return null for arrays', function () {
       const text = '[1, 2, 3]';
       const result = extractDirectJson(text);

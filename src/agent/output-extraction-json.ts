@@ -179,24 +179,55 @@ function extractDirectJson(text: unknown): JsonRecord | null {
 
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    if (!isObjectRecord(parsed) || isCliMetadata(parsed)) return null;
-    return parsed;
+    if (isObjectRecord(parsed) && !isCliMetadata(parsed)) return parsed;
   } catch {
-    const firstBrace = trimmed.indexOf('{');
-    const lastBrace = trimmed.lastIndexOf('}');
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      try {
-        const substring = trimmed.slice(firstBrace, lastBrace + 1);
-        const parsedSubstring: unknown = JSON.parse(substring);
-        if (isObjectRecord(parsedSubstring) && !isCliMetadata(parsedSubstring)) {
-          return parsedSubstring;
+    // Proceed to scanning embedded objects
+  }
+
+  // Scan for balanced JSON object candidates in surrounding text
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] !== '{') continue;
+
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let j = i; j < trimmed.length; j++) {
+      const ch = trimmed[j];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (ch === '{') {
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            try {
+              const candidate = trimmed.slice(i, j + 1);
+              const parsed: unknown = JSON.parse(candidate);
+              if (isObjectRecord(parsed) && !isCliMetadata(parsed)) {
+                return parsed;
+              }
+            } catch {
+              // Not a valid JSON object, continue search
+            }
+          }
         }
-      } catch {
-        // Fallthrough to null
       }
     }
-    return null;
   }
+
+  return null;
 }
 
 function hasFatalStandaloneOutput(output: unknown): boolean {
