@@ -259,6 +259,12 @@ function defineDirectJsonExtractionTests() {
       assert.deepStrictEqual(result, { foo: 'bar' });
     });
 
+    it('should extract JSON embedded in conversational filler', function () {
+      const text = 'Here is the JSON you requested:\n{"foo":"bar"}\nHope this helps!';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { foo: 'bar' });
+    });
+
     it('should return null for arrays', function () {
       const text = '[1, 2, 3]';
       const result = extractDirectJson(text);

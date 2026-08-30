@@ -182,6 +182,19 @@ function extractDirectJson(text: unknown): JsonRecord | null {
     if (!isObjectRecord(parsed) || isCliMetadata(parsed)) return null;
     return parsed;
   } catch {
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        const substring = trimmed.slice(firstBrace, lastBrace + 1);
+        const parsedSubstring: unknown = JSON.parse(substring);
+        if (isObjectRecord(parsedSubstring) && !isCliMetadata(parsedSubstring)) {
+          return parsedSubstring;
+        }
+      } catch {
+        // Fallthrough to null
+      }
+    }
     return null;
   }
 }
