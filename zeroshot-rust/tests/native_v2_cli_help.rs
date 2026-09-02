@@ -1,10 +1,7 @@
 use std::process::{Command, Output};
 
 use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};
-use zeroshot_engine::native_v2_admission::{CLAUDE_MODELS, CODEX_MODELS};
-use zeroshot_engine::native_v2_contract::{
-    ClaudeProvider, CodexProvider, ReasoningEffort, RunSize, SessionScope,
-};
+use zeroshot_engine::native_v2_contract::{ReasoningEffort, RunSize, SessionScope};
 use zeroshot_engine::native_v2_cli::{ERROR_FORMAT_ENV, JSON_ERROR_FORMAT};
 
 macro_rules! exhaustive_values {
@@ -77,14 +74,6 @@ fn help_explains_runtime_configuration() {
         ],
     );
 
-    let codex_providers = serialized_names(&exhaustive_values!(CodexProvider => [
-        CodexProvider::OpenAi,
-        CodexProvider::OpenRouter,
-    ]));
-    let claude_providers = serialized_names(&exhaustive_values!(ClaudeProvider => [
-        ClaudeProvider::Anthropic,
-        ClaudeProvider::OpenRouter,
-    ]));
     let sizes = serialized_names(&exhaustive_values!(RunSize => [
         RunSize::Small,
         RunSize::Medium,
@@ -102,17 +91,14 @@ fn help_explains_runtime_configuration() {
         SessionScope::NodeInstance,
     ]));
     let contract_prose = [
-        format!(
-            "harness/provider pairs: codex: {} claude: {} sizes are {}.",
-            prose_list(codex_providers, "or"),
-            prose_list(claude_providers, "or"),
-            prose_list(sizes, "and")
-        ),
-        format!(
-            "codex models are {}. claude models are {}.",
-            prose_list(CODEX_MODELS.iter().map(|model| model.id.to_owned()), "and"),
-            prose_list(CLAUDE_MODELS.iter().map(|model| model.id.to_owned()), "and")
-        ),
+        "known-incompatible harness/provider pairs are codex/anthropic and claude/openai."
+            .to_owned(),
+        concat!(
+            "model ids are passed unchanged to the selected harness and provider; ",
+            "zeroshot does not maintain or validate provider model catalogs."
+        )
+        .to_owned(),
+        format!("sizes are {}.", prose_list(sizes, "and")),
         format!(
             "optional fields are effort ({} when supported), sessionscope ({}), and connections.",
             prose_list(efforts, "or"),

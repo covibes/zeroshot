@@ -16,9 +16,7 @@ use crate::native_v2_runner::{
     NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
 };
 
-use super::{
-    ClaudeAdapter, ClaudeTurn, ClaudeTurnAdvance, observe_session, prompt, validate_model_effort,
-};
+use super::{ClaudeAdapter, ClaudeTurn, ClaudeTurnAdvance, observe_session, prompt};
 
 pub(super) struct ClaudeSession {
     pub(super) core: ProviderSessionCore,
@@ -43,10 +41,9 @@ impl SessionFactory for ClaudeAdapter {
         invocation: &NodeInvocation,
         _environment: &ResolvedEnvironment,
     ) -> Result<Arc<dyn NodeSession>, NodeRunnerError> {
-        let NodeRuntimeBinding::Agent { model, effort, .. } = &invocation.binding else {
+        let NodeRuntimeBinding::Agent { .. } = &invocation.binding else {
             return Err(NodeRunnerError::SessionOpen);
         };
-        validate_model_effort(model.as_str(), *effort).map_err(|_| NodeRunnerError::SessionOpen)?;
         Ok(Arc::new(ClaudeSession::new()))
     }
 }

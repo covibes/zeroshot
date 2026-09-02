@@ -190,6 +190,10 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested
 and effective state distinct and fail closed unless local help/version evidence proves the control.
+Native-v2 uniform runtime selection requires caller-authored `harness`, `provider`, and `model`
+values. Treat model IDs as opaque provider-owned strings and pass them to the selected harness
+unchanged; do not infer a harness from a provider or model, maintain model catalogs, or validate
+model availability. Admission may reject only harness/provider pairs known to be incompatible.
 Structured-output recovery eligibility is also registry-derived: every engine whose `jsonSchema`
 capability is `true` or `experimental` must implement its provider-owned, fail-closed recovery
 adapter. Recovery always runs as a fresh nested turn with provider sessions, MCP, approval bypass,

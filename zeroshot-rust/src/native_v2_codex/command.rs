@@ -108,13 +108,6 @@ pub(super) fn add_resume_command(argv: &mut Vec<String>, resume: Option<&str>) {
     }
 }
 
-pub(super) fn provider_model(provider: CodexProvider, model: &str) -> String {
-    match provider {
-        CodexProvider::OpenAi => model.to_owned(),
-        CodexProvider::OpenRouter => format!("openai/{model}"),
-    }
-}
-
 pub(super) fn add_node_args(argv: &mut Vec<String>, model: &str, effort: Option<ReasoningEffort>) {
     argv.extend(["--json".to_owned(), "--model".to_owned(), model.to_owned()]);
     if let Some(effort) = effort {

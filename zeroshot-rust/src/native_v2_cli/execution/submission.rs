@@ -17,9 +17,7 @@ use super::super::{
     PreparedRunRequest, RunCommand, RunGraph, RunRuntime, TargetRunIntent, TemplateDelivery,
 };
 use super::{CliExecutionContext, write_json};
-use crate::native_v2_admission::{
-    CLAUDE_MODELS, CODEX_MODELS, DeliveryPolicy, NativeV2Admission, executable_runtime_roles,
-};
+use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission, executable_runtime_roles};
 use crate::native_v2_delivery::GITHUB_TOKEN_ENV;
 
 /// Executes commands that need no target registry, credentials, or controller state.
@@ -278,11 +276,15 @@ enum UniformProvider {
     Anthropic,
 }
 
+const KNOWN_INCOMPATIBLE_HARNESS_PROVIDER_PAIRS: &[(UniformHarness, UniformProvider)] = &[
+    (UniformHarness::Codex, UniformProvider::Anthropic),
+    (UniformHarness::Claude, UniformProvider::OpenAi),
+];
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct UniformRuntimePlan {
-    #[serde(default)]
-    harness: Option<UniformHarness>,
+    harness: UniformHarness,
     provider: UniformProvider,
     #[serde(default = "medium_size")]
     size: RunSize,
@@ -301,7 +303,7 @@ const fn medium_size() -> RunSize {
 
 impl UniformRuntimePlan {
     fn materialize(self, graph: &GraphSpec) -> Result<RuntimePlan, NativeV2CliError> {
-        let harness = self.resolve_harness()?;
+        let harness = self.harness;
         let connections = self
             .connections
             .clone()
@@ -334,6 +336,12 @@ impl UniformRuntimePlan {
         harness: UniformHarness,
         nodes: BTreeMap<NodeName, NodeRuntimeBinding>,
     ) -> Result<RuntimePlan, NativeV2CliError> {
+        if KNOWN_INCOMPATIBLE_HARNESS_PROVIDER_PAIRS.contains(&(harness, self.provider)) {
+            return Err(NativeV2CliError::Usage(format!(
+                "provider {:?} is incompatible with harness {:?}",
+                self.provider, harness
+            )));
+        }
         match (harness, self.provider) {
             (UniformHarness::Codex, UniformProvider::OpenAi) => Ok(RuntimePlan::Codex {
                 provider: CodexProvider::OpenAi,
@@ -355,32 +363,9 @@ impl UniformRuntimePlan {
                 size: self.size,
                 nodes,
             }),
-            _ => Err(NativeV2CliError::Usage(format!(
-                "provider {:?} is incompatible with harness {:?}",
-                self.provider, harness
-            ))),
-        }
-    }
-
-    fn resolve_harness(&self) -> Result<UniformHarness, NativeV2CliError> {
-        if let Some(harness) = self.harness {
-            return Ok(harness);
-        }
-        match self.provider {
-            UniformProvider::OpenAi => Ok(UniformHarness::Codex),
-            UniformProvider::Anthropic => Ok(UniformHarness::Claude),
-            UniformProvider::OpenRouter => {
-                let model = self.model.as_str();
-                let codex = CODEX_MODELS.iter().any(|candidate| candidate.id == model);
-                let claude = CLAUDE_MODELS.iter().any(|candidate| candidate.id == model);
-                match (codex, claude) {
-                    (true, false) => Ok(UniformHarness::Codex),
-                    (false, true) => Ok(UniformHarness::Claude),
-                    _ => Err(NativeV2CliError::Usage(format!(
-                        "uniform OpenRouter runtime requires harness for unrecognized model {model}"
-                    ))),
-                }
-            }
+            _ => Err(NativeV2CliError::Usage(
+                "unsupported harness/provider pair".to_owned(),
+            )),
         }
     }
 }

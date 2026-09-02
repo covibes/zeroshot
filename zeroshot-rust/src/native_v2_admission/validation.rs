@@ -5,10 +5,9 @@ use openengine_cluster_protocol::{
     WorkerContract, WorkerRef, MAX_DECLARED_ENVIRONMENT_NAMES, RUNTIME_WORKER_ERRORS,
 };
 
-use super::{CODEX_MODELS, CLAUDE_MODELS, DeliveryPolicy, NativeV2AdmissionError};
+use super::{DeliveryPolicy, NativeV2AdmissionError};
 use crate::native_v2_contract::{
-    AdmittedRun, NodeRuntimeBinding, RuntimePlan, GIT_DELIVERY_MERGE_WORKER_REF,
-    GIT_DELIVERY_PR_WORKER_REF,
+    AdmittedRun, NodeRuntimeBinding, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
 };
 use crate::native_v2_delivery::{validate_delivery_contract, DeliveryMode};
 use crate::native_v2_runner::NodeResponseContract;
@@ -299,39 +298,4 @@ fn validate_declared_environment(
         });
     }
     Ok(())
-}
-
-pub(super) fn normalize_runtime(
-    mut runtime: RuntimePlan,
-) -> Result<RuntimePlan, NativeV2AdmissionError> {
-    let (catalog, nodes) = match &mut runtime {
-        RuntimePlan::Codex { nodes, .. } => (CODEX_MODELS, nodes),
-        RuntimePlan::Claude { nodes, .. } => (CLAUDE_MODELS, nodes),
-    };
-    for (node, binding) in nodes {
-        let NodeRuntimeBinding::Agent { model, effort, .. } = binding else {
-            continue;
-        };
-        let Some(supported) = catalog
-            .iter()
-            .find(|supported| supported.id == model.as_str())
-        else {
-            return Err(NativeV2AdmissionError::UnsupportedModel {
-                node: node.clone(),
-                model: model.as_str().to_owned(),
-            });
-        };
-        match *effort {
-            Some(value) if !supported.efforts.contains(&value) => {
-                return Err(NativeV2AdmissionError::UnsupportedEffort {
-                    node: node.clone(),
-                    model: model.as_str().to_owned(),
-                    effort: value,
-                });
-            }
-            None => *effort = supported.default_effort,
-            Some(_) => {}
-        }
-    }
-    Ok(runtime)
 }

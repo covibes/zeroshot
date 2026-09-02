@@ -10,8 +10,13 @@ async fn corrected_output(
         CodexProvider::OpenRouter => ("OPENROUTER_API_KEY", "fake-openrouter-key"),
     };
     let adapter = scripted_adapter(directory, provider);
+    let model = match provider {
+        CodexProvider::OpenAi => "gpt-5.6-sol",
+        CodexProvider::OpenRouter => "openai/gpt-5.6-sol",
+    };
     let admitted = admitted(
-        binding(
+        binding_with_model(
+            model,
             SessionScope::Execution,
             &["CAPTURE_PATH", "CORRECT_OUTPUT", credential_name],
         ),
