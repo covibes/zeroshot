@@ -416,19 +416,17 @@ RUNTIME CONFIGURATION
         "nodes": {
           "worker": {
             "kind": "agent",
-            "model": "gpt-5.6-sol",
+            "model": "provider-model-id",
             "connections": {"openrouter": ["OPENROUTER_API_KEY"]}
           }
         }
       }
 
-    Harness/provider pairs:
-      codex: openai or openrouter
-      claude: anthropic or openrouter
+    Known-incompatible harness/provider pairs are codex/anthropic and claude/openai. Model IDs are
+    passed unchanged to the selected harness and provider; Zeroshot does not maintain or validate
+    provider model catalogs.
 
-    Sizes are small, medium, and large. Codex models are gpt-5.6, gpt-5.6-sol,
-    gpt-5.6-terra, and gpt-5.6-luna. Claude models are claude-haiku-4-5, claude-sonnet-5,
-    claude-opus-5, and claude-fable-5.
+    Sizes are small, medium, and large.
 
     Every executable graph node needs a same-named binding. Agent bindings require kind and model.
     Optional fields are effort (low, medium, high, xhigh, or max when supported), sessionScope
@@ -438,9 +436,9 @@ RUNTIME CONFIGURATION
     Use `zeroshot-rust template show TEMPLATE` to inspect node names. With --pr or --ship, omit the
     template-owned delivery binding.
 
-    --uniform-runtime-config accepts the same harness, provider, size, model, effort, sessionScope,
-    and connections fields without nodes. Rust expands that agent binding across every executable
-    graph node and supplies graph-visible Git delivery bindings itself.
+    --uniform-runtime-config requires harness, provider, and model. It accepts optional size,
+    effort, sessionScope, and connections fields without nodes. Rust expands that agent binding
+    across every executable graph node and supplies graph-visible Git delivery bindings itself.
 ```
 
 ### `zeroshot-rust list`

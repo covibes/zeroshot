@@ -23,51 +23,7 @@ use thiserror::Error;
 use crate::native_v2_contract::{
     AdmittedRun, NodeRuntimeBinding, RunSubmission, RunSubmissionIntent, RuntimePlan,
 };
-use crate::worker_catalog::ReasoningEffort;
 use openengine_cluster_protocol::MAX_DECLARED_ENVIRONMENT_NAMES;
-
-const ALL_EFFORTS: &[ReasoningEffort] = &[
-    ReasoningEffort::Low,
-    ReasoningEffort::Medium,
-    ReasoningEffort::High,
-    ReasoningEffort::Xhigh,
-    ReasoningEffort::Max,
-];
-const NO_EFFORTS: &[ReasoningEffort] = &[];
-
-/// One entry in native-v2's intentionally bounded model catalog.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SupportedModel {
-    pub id: &'static str,
-    pub efforts: &'static [ReasoningEffort],
-    pub default_effort: Option<ReasoningEffort>,
-}
-
-pub const CODEX_MODELS: &[SupportedModel] = &[
-    effort_model("gpt-5.6"),
-    effort_model("gpt-5.6-sol"),
-    effort_model("gpt-5.6-terra"),
-    effort_model("gpt-5.6-luna"),
-];
-
-pub const CLAUDE_MODELS: &[SupportedModel] = &[
-    SupportedModel {
-        id: "claude-haiku-4-5",
-        efforts: NO_EFFORTS,
-        default_effort: None,
-    },
-    effort_model("claude-sonnet-5"),
-    effort_model("claude-opus-5"),
-    effort_model("claude-fable-5"),
-];
-
-const fn effort_model(id: &'static str) -> SupportedModel {
-    SupportedModel {
-        id,
-        efforts: ALL_EFFORTS,
-        default_effort: Some(ReasoningEffort::Max),
-    }
-}
 
 /// Host policy for graph-visible Git delivery.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -115,14 +71,6 @@ pub enum NativeV2AdmissionError {
     DeclaredEnvironmentTooLarge { found: usize },
     #[error("Git delivery node {node} declares an invalid contract for worker {worker}")]
     InvalidDeliveryContract { node: NodeName, worker: WorkerRef },
-    #[error("model {model} is not supported by the selected harness at node {node}")]
-    UnsupportedModel { node: NodeName, model: String },
-    #[error("model {model} does not accept effort {effort:?} at node {node}")]
-    UnsupportedEffort {
-        node: NodeName,
-        model: String,
-        effort: ReasoningEffort,
-    },
     #[error(
         "worker {worker} is reused with inconsistent executable declarations ({first}, {second})"
     )]
@@ -225,7 +173,6 @@ fn prepare_submission(
     validate_graph_input(&graph, &initial_input)?;
     let declarations = executable_declarations(&graph.root);
     validate_executable_bindings(&declarations, runtime.nodes(), delivery_policy)?;
-    let runtime = normalize_runtime(runtime)?;
     validate_concurrency(&graph.root, runtime.nodes())?;
 
     Ok(PreparedSubmission {
@@ -257,8 +204,8 @@ mod validation;
 use concurrency::validate_concurrency;
 pub(crate) use validation::{sole_delivery_node, writer_nodes};
 use validation::{
-    ExecutableDeclaration, executable_declarations, normalize_runtime,
-    validate_executable_bindings, validate_graph_input,
+    ExecutableDeclaration, executable_declarations, validate_executable_bindings,
+    validate_graph_input,
 };
 pub(crate) fn executable_runtime_roles(root: &GraphNode) -> Vec<(NodeName, bool)> {
     validation::executable_runtime_roles(root)

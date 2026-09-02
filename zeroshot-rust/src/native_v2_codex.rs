@@ -36,7 +36,7 @@ use crate::native_v2_runner::{
 use command::{
     add_local_execution_config, add_local_execution_policy, add_node_args, add_provider_args,
     add_resume_command, add_session_target, configure_provider_auth, process_environment,
-    provider_model, role_settings,
+    role_settings,
 };
 use output::{CodexOutput, CodexOutputDecoder};
 use schema_file::CodexSchemaFile;
@@ -136,8 +136,7 @@ impl NativeV2CodexAdapter {
         add_resume_command(&mut argv, input.resume);
         add_provider_args(&mut argv, self.config.provider);
         self.add_execution_config(&mut argv, invocation.role);
-        let model = provider_model(self.config.provider, model.as_str());
-        add_node_args(&mut argv, &model, effort.copied());
+        add_node_args(&mut argv, model.as_str(), effort.copied());
         argv.extend(["--output-schema".to_owned(), path_text(input.schema_path)?]);
         add_session_target(&mut argv, input.resume);
 
