@@ -148,6 +148,65 @@ async fn rejected_parallel_reviews_dispatch_repair_with_both_diagnostics() {
 }
 
 #[tokio::test]
+async fn accepted_second_review_round_ignores_stale_sibling_verdicts() {
+    let (verified, initial_input) = verified_software_template(TemplateDelivery::None).await;
+    let review_input = json!({"task":"repair checkout","deliveryFeedback":""});
+    let mut history = vec![
+        settled_worker(),
+        settled_review(2, "acceptance", ACCEPTED_LABEL, "requirements met"),
+        settled_review(3, "code", REJECTED_LABEL, "unsafe error handling"),
+        settled_agent(SettledExecutionSpec {
+            execution: 4,
+            node_instance: 4,
+            node: "review_repair",
+            settled_at: 4,
+            input: json!({
+                "task":"repair checkout",
+                "acceptanceFeedback":"requirements met",
+                "codeFeedback":"unsafe error handling",
+                "deliveryFeedback":""
+            }),
+        }),
+    ];
+    assert_dispatched_together(
+        &reduce(&verified, &initial_input, &history),
+        &["acceptance", "code"],
+    );
+
+    history.extend([
+        settled_review_execution(
+            SettledExecutionSpec {
+                execution: 5,
+                node_instance: 2,
+                node: "acceptance",
+                settled_at: 6,
+                input: review_input.clone(),
+            },
+            ACCEPTED_LABEL,
+            "repaired change meets requirements",
+        ),
+        settled_review_execution(
+            SettledExecutionSpec {
+                execution: 6,
+                node_instance: 3,
+                node: "code",
+                settled_at: 5,
+                input: review_input,
+            },
+            ACCEPTED_LABEL,
+            "repaired implementation is sound",
+        ),
+    ]);
+
+    assert_eq!(
+        reduce(&verified, &initial_input, &history).terminal,
+        Some(TerminalProjection::Succeeded {
+            output: serde_json::Value::Null,
+        })
+    );
+}
+
+#[tokio::test]
 async fn accepted_reviews_complete_or_dispatch_pull_request_delivery() {
     for delivery in [TemplateDelivery::None, TemplateDelivery::PullRequest] {
         let (verified, initial_input) = verified_software_template(delivery).await;

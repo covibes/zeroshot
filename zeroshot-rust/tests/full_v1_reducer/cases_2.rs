@@ -140,6 +140,85 @@ async fn map_is_input_ordered_total_and_assigns_stable_nested_indices() {
 }
 
 #[tokio::test]
+async fn repeated_map_items_do_not_restore_stale_sibling_controls() {
+    let state = required_array_record(&[("items", "null")]);
+    let mapped = json!({
+        "kind":"map", "name":"reviews", "state":state.clone(),
+        "over":{"source":"state","path":["items"]}, "maxItems":2,
+        "promotedStatePaths":[], "body":verifier("check",1)
+    });
+    let route = json!({
+        "kind":"choice", "name":"review_result", "state":state.clone(),
+        "branches":[{
+            "when":{
+                "kind":"k_of_map", "count":2,
+                "value":{"name":"check","source":"signal","field":"verdict"},
+                "labels":["accepted"]
+            },
+            "node":succeed("done")
+        }],
+        "otherwise":step("repair",1), "promotedStatePaths":[]
+    });
+    let review_loop = json!({
+        "kind":"loop", "name":"review_loop", "state":state.clone(),
+        "body":{
+            "kind":"seq", "name":"review_iteration", "state":state.clone(),
+            "children":[mapped,route], "promotedStatePaths":[]
+        },
+        "maxIterations":3, "promotedStatePaths":[]
+    });
+    let mut root = sequence(
+        "root",
+        vec![
+            review_loop,
+            json!({"kind":"fail","name":"exhausted","reason":"exhausted"}),
+        ],
+    );
+    *root.get_mut("state").assert_value() = state;
+    let graph = verified(root, json!({"check":1})).await;
+    let history = [
+        settled(
+            SettledSpec::new(1, 1, "check")
+                .map_indices(vec![0])
+                .position(2),
+            verdict("rejected"),
+        ),
+        settled(
+            SettledSpec::new(2, 2, "check")
+                .map_indices(vec![1])
+                .position(3),
+            verdict("accepted"),
+        ),
+        settled(SettledSpec::new(3, 3, "repair").position(4), success(0)),
+        settled(
+            SettledSpec::new(4, 1, "check")
+                .map_indices(vec![0])
+                .position(8),
+            verdict("accepted"),
+        ),
+        settled(
+            SettledSpec::new(5, 2, "check")
+                .map_indices(vec![1])
+                .position(7),
+            verdict("accepted"),
+        ),
+    ];
+
+    assert!(matches!(
+        FullV1Reducer::native_v2(&graph)
+            .reduce(ReductionInput {
+                initial_input: &json!({"items":[null,null]}),
+                executions: &history,
+                next_node_instance: 4,
+                next_execution: 6,
+            })
+            .assert_value()
+            .terminal,
+        Some(TerminalProjection::Succeeded { .. })
+    ));
+}
+
+#[tokio::test]
 async fn authored_frontier_and_bytes_ignore_history_container_order() {
     let graph = verified_parallel_sequence(ParallelSequenceSpec {
         root_name: "root",

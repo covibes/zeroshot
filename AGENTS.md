@@ -205,6 +205,8 @@ verify byte-for-byte drift with `npm run protocol:check`. These generator-format
 are excluded from Prettier; never format them independently.
 Full-v1 loops may omit `until`; such loops repeat to their bound unless an inner terminal ends the
 graph first.
+Full-v1 fan-out joins must merge controls and channels only from the completed child subgraph and
+its structural map scope; never merge a child's inherited sibling snapshot back into the parent.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.

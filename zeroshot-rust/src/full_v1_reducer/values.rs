@@ -335,6 +335,30 @@ pub(super) fn merge_runtime_facts(source: &Context, target: &mut Context) {
     target.channels.extend(source.channels.clone());
 }
 
+pub(super) fn merge_scoped_runtime_facts(
+    source: &Context,
+    target: &mut Context,
+    names: &BTreeSet<NodeName>,
+    map_indices: &[u64],
+) {
+    target.controls.extend(
+        source
+            .controls
+            .iter()
+            .filter(|(key, _)| {
+                names.contains(&key.node) && key.map_indices.starts_with(map_indices)
+            })
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    target.channels.extend(
+        source
+            .channels
+            .iter()
+            .filter(|((name, indices), _)| names.contains(name) && indices.starts_with(map_indices))
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+}
+
 pub(super) fn descendant_names(node: &GraphNode) -> BTreeSet<NodeName> {
     let mut depths = BTreeMap::new();
     collect_map_depths(node, 0, &mut depths);
