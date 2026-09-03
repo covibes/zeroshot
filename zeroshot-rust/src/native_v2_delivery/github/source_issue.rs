@@ -57,32 +57,29 @@ async fn comment_on_source_issue(
     let issue_wire: IssueWire =
         serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
     let last_comment_page = issue_wire.comments.saturating_sub(1) / 100 + 1;
-    let value = authority
-        .api(
-            &[
-                format!(
-                    "repos/{}/issues/{}/comments",
-                    review.repository, issue.number
-                ),
-                "--method".to_owned(),
-                "GET".to_owned(),
-                "-f".to_owned(),
-                "per_page=100".to_owned(),
-                "-f".to_owned(),
-                format!("page={last_comment_page}"),
-            ],
-            credential,
-        )
-        .await?;
-    let comments: Vec<IssueCommentWire> =
-        serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
-    if comments.iter().any(|comment| {
-        comment
-            .body
-            .as_deref()
-            .is_some_and(|body| body.contains(&marker))
-    }) {
-        return Ok(());
+    for page in 1..=last_comment_page {
+        let value = authority
+            .api(
+                &[
+                    format!(
+                        "repos/{}/issues/{}/comments",
+                        review.repository, issue.number
+                    ),
+                    "--method".to_owned(),
+                    "GET".to_owned(),
+                    "-f".to_owned(),
+                    "per_page=100".to_owned(),
+                    "-f".to_owned(),
+                    format!("page={page}"),
+                ],
+                credential,
+            )
+            .await?;
+        let comments: Vec<IssueCommentWire> =
+            serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
+        if comments_have_marker(&comments, &marker) {
+            return Ok(());
+        }
     }
     authority
         .api(
@@ -136,6 +133,15 @@ fn delivery_comment_marker(head_branch: &str) -> String {
     format!("<!-- zeroshot-delivery:{head_branch} -->")
 }
 
+fn comments_have_marker(comments: &[IssueCommentWire], marker: &str) -> bool {
+    comments.iter().any(|comment| {
+        comment
+            .body
+            .as_deref()
+            .is_some_and(|body| body.contains(marker))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use openengine_cluster_testkit::assertions::AssertValue;
@@ -168,5 +174,19 @@ mod tests {
             Some("Human context\n\ncloses #208"),
             "Closes #208"
         ));
+    }
+
+    #[test]
+    fn delivery_marker_is_found_on_an_earlier_comment_page() {
+        let marker = delivery_comment_marker("zeroshot/v2-run");
+        let earlier_page = vec![IssueCommentWire {
+            body: Some(format!("Run opened.\n\n{marker}")),
+        }];
+        let final_page = vec![IssueCommentWire {
+            body: Some("A later human comment".to_owned()),
+        }];
+
+        assert!(comments_have_marker(&earlier_page, &marker));
+        assert!(!comments_have_marker(&final_page, &marker));
     }
 }
