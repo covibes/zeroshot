@@ -94,6 +94,27 @@ pub enum NativeV2AdmissionError {
 pub struct NativeV2Admission;
 
 impl NativeV2Admission {
+    /// Validates one reusable graph/runtime profile without requiring run-specific input.
+    pub async fn validate_profile(
+        &self,
+        graph: &GraphSpec,
+        runtime: &RuntimePlan,
+        delivery_policy: DeliveryPolicy,
+    ) -> Result<(), NativeV2AdmissionError> {
+        if graph.profile != GraphProfile::Full {
+            return Err(NativeV2AdmissionError::UnsupportedGraphProfile);
+        }
+        let declarations = executable_declarations(&graph.root);
+        validate_executable_bindings(&declarations, runtime.nodes(), delivery_policy)?;
+        validate_concurrency(&graph.root, runtime.nodes())?;
+        let registry = GraphBoundWorkerRegistry::from_declarations(graph, &declarations, runtime)?;
+        ProductionGraphVerifier::new(registry)
+            .verify(graph)
+            .await
+            .map(|_| ())
+            .map_err(Into::into)
+    }
+
     /// Admits with the local policy, where graph-visible delivery is optional.
     pub async fn admit(
         &self,

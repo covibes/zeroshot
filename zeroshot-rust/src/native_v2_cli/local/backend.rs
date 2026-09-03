@@ -51,6 +51,51 @@ impl NativeV2CliBackend for LocalCliBackend {
         LocalConnectionStore::new(self.state_root.clone()).delete(request)
     }
 
+    async fn profile_list(
+        &self,
+        target: Option<&str>,
+        request: RunProfileListRequest,
+    ) -> Result<RunProfileListResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalRunProfileStore::production()?.list(request)
+    }
+
+    async fn profile_show(
+        &self,
+        target: Option<&str>,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfile, NativeV2CliError> {
+        require_local(target)?;
+        LocalRunProfileStore::production()?.show(selector)
+    }
+
+    async fn profile_set(
+        &self,
+        target: Option<&str>,
+        request: RunProfileSetRequest,
+    ) -> Result<RunProfileMutationResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalRunProfileStore::production()?.set(request)
+    }
+
+    async fn profile_delete(
+        &self,
+        target: Option<&str>,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfileDeleteResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalRunProfileStore::production()?.delete(selector)
+    }
+
+    async fn profile_default(
+        &self,
+        target: Option<&str>,
+        request: RunProfileDefaultRequest,
+    ) -> Result<RunProfileDefaultResult, NativeV2CliError> {
+        require_local(target)?;
+        LocalRunProfileStore::production()?.set_default(request)
+    }
+
     async fn run_submit(
         &self,
         target: Option<&str>,

@@ -17,12 +17,20 @@ use zeroshot_engine::native_v2_cli::{
 };
 use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
-    ConnectionMutationResult, ConnectionSetRequest, RunForceParams, RunListParams,
-    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmission, RunSubmitResult,
-    RunWatchParams, TargetOecpSessionRequest, TargetRunRequest,
+    ConnectionMutationResult, ConnectionSetRequest,
+};
+use openengine_cluster_protocol::{
+    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
+    RunSubmission, RunSubmitResult, RunWatchParams,
+};
+use openengine_cluster_protocol::{
+    RunProfile, RunProfileDefaultRequest, RunProfileDefaultResult, RunProfileDeleteResult,
+    RunProfileListRequest, RunProfileListResult, RunProfileMutationResult, RunProfileRunRequest,
+    RunProfileSelector, RunProfileSetRequest, TargetOecpSessionRequest, TargetRunRequest,
 };
 
 mod access;
+mod authority;
 mod contract;
 mod controller_authority;
 mod oecp;
@@ -37,79 +45,13 @@ pub use source::{GitHubTargetSourceResolver, TargetSourceResolver};
 pub use controller_authority::TargetHttpControlAuthority;
 pub use serve::{TargetServeError, serve_direct_target};
 pub use access::{TargetAccess, TargetOecpAccess};
+pub use authority::TargetControlAuthority;
 
 #[cfg(test)]
 use contract::normalize_origin;
 #[cfg(test)]
 #[path = "native_v2_target/tests.rs"]
 mod tests;
-
-/// The external contract which hosting must implement before the native-v2 CLI can reach cloud.
-///
-/// `oecp_session` returns one same-origin endpoint and hosted bearer, if OAuth is enabled.
-#[async_trait]
-pub trait TargetControlAuthority: Send + Sync {
-    async fn discover(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
-    async fn login(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
-    async fn submit(
-        &self,
-        target: &TargetRecord,
-        request: &TargetRunRequest,
-    ) -> Result<RunSubmitResult, TargetAuthorityError>;
-    async fn oecp_session(
-        &self,
-        target: &TargetRecord,
-        request: &TargetOecpSessionRequest,
-    ) -> Result<TargetOecpAccess, TargetAuthorityError>;
-
-    async fn connection_list(
-        &self,
-        target: &TargetRecord,
-        request: ConnectionListRequest,
-    ) -> Result<ConnectionListResult, TargetAuthorityError>;
-
-    async fn connection_set(
-        &self,
-        target: &TargetRecord,
-        request: ConnectionSetRequest,
-    ) -> Result<ConnectionMutationResult, TargetAuthorityError>;
-
-    async fn connection_delete(
-        &self,
-        target: &TargetRecord,
-        request: ConnectionDeleteRequest,
-    ) -> Result<ConnectionDeleteResult, TargetAuthorityError>;
-
-    async fn hosted_run_list(
-        &self,
-        target: &TargetRecord,
-        params: RunListParams,
-    ) -> Result<CliRunListResult, TargetAuthorityError>;
-
-    async fn hosted_run_status(
-        &self,
-        target: &TargetRecord,
-        params: RunStatusParams,
-    ) -> Result<CliRunStatusResult, TargetAuthorityError>;
-
-    async fn hosted_run_watch(
-        &self,
-        target: &TargetRecord,
-        params: RunWatchParams,
-    ) -> Result<BoxedSubscription<CliRunWatchEventNotification>, TargetAuthorityError>;
-
-    async fn hosted_run_logs(
-        &self,
-        target: &TargetRecord,
-        params: RunLogsParams,
-    ) -> Result<BoxedSubscription<RunLogEventNotification>, TargetAuthorityError>;
-
-    async fn hosted_run_force(
-        &self,
-        target: &TargetRecord,
-        params: RunForceParams,
-    ) -> Result<CliRunForceResult, TargetAuthorityError>;
-}
 
 #[derive(Debug, Error)]
 #[error("{message}")]
@@ -282,6 +224,66 @@ where
             .map_err(cli_target_error)
     }
 
+    async fn profile_list(
+        &self,
+        name: &str,
+        request: RunProfileListRequest,
+    ) -> Result<RunProfileListResult, NativeV2CliError> {
+        let target = self.target(name)?;
+        self.authority
+            .profile_list(&target, request)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn profile_show(
+        &self,
+        name: &str,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfile, NativeV2CliError> {
+        let target = self.target(name)?;
+        self.authority
+            .profile_show(&target, selector)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn profile_set(
+        &self,
+        name: &str,
+        request: RunProfileSetRequest,
+    ) -> Result<RunProfileMutationResult, NativeV2CliError> {
+        let target = self.target(name)?;
+        self.authority
+            .profile_set(&target, request)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn profile_delete(
+        &self,
+        name: &str,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfileDeleteResult, NativeV2CliError> {
+        let target = self.target(name)?;
+        self.authority
+            .profile_delete(&target, selector)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn profile_default(
+        &self,
+        name: &str,
+        request: RunProfileDefaultRequest,
+    ) -> Result<RunProfileDefaultResult, NativeV2CliError> {
+        let target = self.target(name)?;
+        self.authority
+            .profile_default(&target, request)
+            .await
+            .map_err(cli_target_error)
+    }
+
     async fn submit(
         &self,
         name: &str,
@@ -306,22 +308,43 @@ where
             )
             .await
             .map_err(cli_target_error)?;
-        let request = TargetRunRequest {
-            run_id: request.run_id,
-            submission: RunSubmission {
-                title: request.intent.title,
-                graph: request.intent.graph,
-                initial_input: request.intent.initial_input,
-                runtime: request.intent.runtime,
-                source,
-                submission_key: request.intent.submission_key,
-            },
-            connections: request.connections,
-            connection_resolver: None,
-            github_token: request.github_token,
-        };
+        if let Some(profile) = request.profile {
+            return self
+                .authority
+                .profile_run(
+                    &target,
+                    &RunProfileRunRequest {
+                        run_id: request.run_id,
+                        profile,
+                        title: request.intent.title,
+                        initial_input: request.intent.initial_input,
+                        source,
+                        submission_key: request.intent.submission_key,
+                        connections: request.connections,
+                        github_token: request.github_token,
+                    },
+                )
+                .await
+                .map_err(cli_target_error);
+        }
         self.authority
-            .submit(&target, &request)
+            .submit(
+                &target,
+                &TargetRunRequest {
+                    run_id: request.run_id,
+                    submission: RunSubmission {
+                        title: request.intent.title,
+                        graph: request.intent.graph,
+                        initial_input: request.intent.initial_input,
+                        runtime: request.intent.runtime,
+                        source,
+                        submission_key: request.intent.submission_key,
+                    },
+                    connections: request.connections,
+                    connection_resolver: None,
+                    github_token: request.github_token,
+                },
+            )
             .await
             .map_err(cli_target_error)
     }

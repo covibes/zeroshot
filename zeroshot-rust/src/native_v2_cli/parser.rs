@@ -37,6 +37,12 @@ enum CliCommand {
         command: ConnectionCommand,
     },
 
+    /// Manage reusable graph/runtime profiles.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+
     /// Inspect built-in graph templates.
     Template {
         #[command(subcommand)]
@@ -276,11 +282,6 @@ struct TemplateShowArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(group = ArgGroup::new("graph_source").args(["graph", "template"]).required(true).multiple(false))]
-#[command(group = ArgGroup::new("runtime_source")
-    .args(["runtime_config", "uniform_runtime_config"])
-    .required(true)
-    .multiple(false))]
 #[command(after_long_help = r#"RUNTIME CONFIGURATION
     The file is secret-free JSON. For example:
 
@@ -338,6 +339,12 @@ struct RunArgs {
     /// Expand one secret-free agent runtime across every executable graph node.
     #[arg(long, value_name = "FILE")]
     uniform_runtime_config: Option<PathBuf>,
+
+    /// Use a profile: NAME, local:NAME, user:NAME, or org:NAME.
+    ///
+    /// When no profile or inline graph/runtime is supplied, scoped defaults are checked.
+    #[arg(long, value_name = "[SCOPE:]NAME")]
+    profile: Option<String>,
 
     /// Run on this named target; if omitted, run locally. Named targets receive GH_TOKEN when set.
     ///
@@ -425,4 +432,7 @@ struct AttachArgs {
 
 #[path = "parser/convert.rs"]
 mod convert;
+#[path = "parser/profiles.rs"]
+mod profiles;
+use profiles::{ProfileCommand, ProfileNameArgs, ProfileScopeArg};
 pub use convert::parse_native_v2_args;

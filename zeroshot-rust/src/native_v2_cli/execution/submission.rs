@@ -14,11 +14,17 @@ use serde::Deserialize;
 
 use super::super::{
     BuiltinGraphTemplate, CliOutcome, NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError,
-    PreparedRunRequest, RunCommand, RunGraph, RunRuntime, TargetRunIntent, TemplateDelivery,
+    PreparedRunRequest, RunCommand, RunGraph, RunRuntime, RunSelection, TargetRunIntent,
+    TemplateDelivery,
 };
 use super::{CliExecutionContext, write_json};
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission, executable_runtime_roles};
 use crate::native_v2_delivery::GITHUB_TOKEN_ENV;
+
+#[path = "submission/profiles.rs"]
+mod profiles;
+pub(super) use profiles::materialize_profile;
+use profiles::{ResolvedRunProfile, resolve_run_profile};
 
 /// Executes commands that need no target registry, credentials, or controller state.
 pub async fn try_execute_native_v2_preflight(
@@ -43,7 +49,20 @@ where
     if !run.validate_only {
         return Ok(None);
     }
-    prepare_validated_submission_with_environment(run, environment).await?;
+    let RunSelection::Inline { graph, runtime } = &run.selection else {
+        return Ok(None);
+    };
+    let (graph, runtime) = materialize_profile(graph, runtime).await?;
+    prepare_validated_submission_with_environment(
+        run,
+        ResolvedRunProfile {
+            graph,
+            runtime,
+            remote_selector: None,
+        },
+        environment,
+    )
+    .await?;
     write_json(output, &serde_json::json!({ "valid": true }))?;
     Ok(Some(CliOutcome::Completed))
 }
@@ -88,14 +107,15 @@ fn execute_template_show(
     Ok(CliOutcome::Completed)
 }
 
-pub(super) fn prepare_submission_with_environment<F>(
+fn prepare_submission_with_environment<F>(
     run: &RunCommand,
+    resolved: ResolvedRunProfile,
     available: F,
 ) -> Result<PreparedRunRequest, NativeV2CliError>
 where
     F: Fn(&str) -> Option<OsString>,
 {
-    let intent = prepare_intent(run)?;
+    let intent = prepare_intent(run, resolved.graph, resolved.runtime)?;
     let connections = select_connections(&intent.runtime, &available)?;
     let github_token = run
         .target
@@ -114,17 +134,19 @@ where
         intent,
         connections,
         github_token,
+        profile: resolved.remote_selector,
     })
 }
 
-pub(super) async fn prepare_validated_submission_with_environment<F>(
+async fn prepare_validated_submission_with_environment<F>(
     run: &RunCommand,
+    resolved: ResolvedRunProfile,
     available: F,
 ) -> Result<PreparedRunRequest, NativeV2CliError>
 where
     F: Fn(&str) -> Option<OsString>,
 {
-    let params = prepare_submission_with_environment(run, available)?;
+    let params = prepare_submission_with_environment(run, resolved, available)?;
     NativeV2Admission
         .validate_intent(&params.intent, DeliveryPolicy::Optional)
         .await
@@ -139,7 +161,9 @@ pub(super) async fn submit_run<B>(
 where
     B: NativeV2CliBackend,
 {
-    let params = prepare_validated_submission_with_environment(run, context.environment).await?;
+    let resolved = resolve_run_profile(run, context.backend).await?;
+    let params =
+        prepare_validated_submission_with_environment(run, resolved, context.environment).await?;
     if run.validate_only {
         return Ok(None);
     }
@@ -158,12 +182,17 @@ fn validate_github_token(value: String) -> Result<String, NativeV2CliError> {
     }
 }
 
-fn prepare_intent(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
-    let graph = materialize_graph(&run.graph)?;
+fn prepare_intent(
+    run: &RunCommand,
+    graph: GraphSpec,
+    runtime: RuntimePlan,
+) -> Result<TargetRunIntent, NativeV2CliError> {
     validate_graph_profile(&graph)?;
     let initial_input = read_json::<serde_json::Value>("input", &run.input)?;
-    let initial_input = materialize_initial_input(&run.graph, initial_input)?;
-    let runtime = materialize_runtime(&run.graph, &graph, &run.runtime)?;
+    let initial_input = match &run.selection {
+        RunSelection::Inline { graph, .. } => materialize_initial_input(graph, initial_input)?,
+        RunSelection::Profile(_) => initial_input,
+    };
     graph
         .initial_input
         .validate_value(&initial_input)

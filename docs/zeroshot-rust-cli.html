@@ -33,6 +33,13 @@ section { margin-block: 2.5rem; }
 <li><a href="#zeroshot-rust-connection-set"><code>zeroshot-rust connection set</code></a></li>
 <li><a href="#zeroshot-rust-connection-delete"><code>zeroshot-rust connection delete</code></a></li>
 <li><a href="#zeroshot-rust-connection-help"><code>zeroshot-rust connection help</code></a></li>
+<li><a href="#zeroshot-rust-profile"><code>zeroshot-rust profile</code></a></li>
+<li><a href="#zeroshot-rust-profile-list"><code>zeroshot-rust profile list</code></a></li>
+<li><a href="#zeroshot-rust-profile-set"><code>zeroshot-rust profile set</code></a></li>
+<li><a href="#zeroshot-rust-profile-show"><code>zeroshot-rust profile show</code></a></li>
+<li><a href="#zeroshot-rust-profile-remove"><code>zeroshot-rust profile remove</code></a></li>
+<li><a href="#zeroshot-rust-profile-default"><code>zeroshot-rust profile default</code></a></li>
+<li><a href="#zeroshot-rust-profile-help"><code>zeroshot-rust profile help</code></a></li>
 <li><a href="#zeroshot-rust-template"><code>zeroshot-rust template</code></a></li>
 <li><a href="#zeroshot-rust-template-list"><code>zeroshot-rust template list</code></a></li>
 <li><a href="#zeroshot-rust-template-show"><code>zeroshot-rust template show</code></a></li>
@@ -57,6 +64,7 @@ Usage: zeroshot-rust [COMMAND]
 Commands:
   target      Manage named targets or serve a direct target
   connection  Manage static credentials by connection key
+  profile     Manage reusable graph/runtime profiles
   template    Inspect built-in graph templates
   run         Submit a graph run locally or to a named target
   list        List runs as JSON
@@ -265,6 +273,163 @@ Commands:
   set     Create or replace one static connection
   delete  Delete one connection
   help    Print this message or the help of the given subcommand(s)</code></pre></section>
+<section id="zeroshot-rust-profile"><h3><code>zeroshot-rust profile</code></h3>
+<pre><code>Manage reusable graph/runtime profiles
+
+Usage: zeroshot-rust profile &lt;COMMAND&gt;
+
+Commands:
+  list     List profile metadata
+  set      Create or replace a fully materialized profile
+  show     Show one profile with its graph and runtime
+  remove   Remove one profile
+  default  Set the scope&#39;s default profile, or clear it when NAME is omitted
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-profile-list"><h4><code>zeroshot-rust profile list</code></h4>
+<pre><code>List profile metadata
+
+Usage: zeroshot-rust profile list [OPTIONS]
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local profiles
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped hosted profiles
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-profile-set"><h4><code>zeroshot-rust profile set</code></h4>
+<pre><code>Create or replace a fully materialized profile
+
+Usage: zeroshot-rust profile set [OPTIONS] &lt;--graph &lt;FILE&gt;|--template &lt;TEMPLATE&gt;&gt; &lt;--runtime-config &lt;FILE&gt;|--uniform-runtime-config &lt;FILE&gt;&gt; &lt;NAME&gt;
+
+Arguments:
+  &lt;NAME&gt;
+
+
+Options:
+      --graph &lt;FILE&gt;
+
+
+      --template &lt;TEMPLATE&gt;
+          Possible values:
+          - single-worker:   A single general-purpose worker
+          - software-change: A review, validation, and optional delivery workflow for code changes
+
+      --runtime-config &lt;FILE&gt;
+
+
+      --uniform-runtime-config &lt;FILE&gt;
+
+
+      --default
+
+
+      --delivery &lt;MODE&gt;
+          Materialize this Rust-owned delivery mode
+
+      --pr
+          Materialize pull-request delivery for the software-change template
+
+      --ship
+          Materialize merge delivery for the software-change template.
+
+          Named-target runs forward GH_TOKEN for the generated GitHub merge operation.
+
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local profiles
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped hosted profiles
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help (see a summary with &#39;-h&#39;)</code></pre></section>
+<section id="zeroshot-rust-profile-show"><h4><code>zeroshot-rust profile show</code></h4>
+<pre><code>Show one profile with its graph and runtime
+
+Usage: zeroshot-rust profile show [OPTIONS] &lt;NAME&gt;
+
+Arguments:
+  &lt;NAME&gt;
+          Profile name
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local profiles
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped hosted profiles
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-profile-remove"><h4><code>zeroshot-rust profile remove</code></h4>
+<pre><code>Remove one profile
+
+Usage: zeroshot-rust profile remove [OPTIONS] &lt;NAME&gt;
+
+Arguments:
+  &lt;NAME&gt;
+          Profile name
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local profiles
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped hosted profiles
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-profile-default"><h4><code>zeroshot-rust profile default</code></h4>
+<pre><code>Set the scope&#39;s default profile, or clear it when NAME is omitted
+
+Usage: zeroshot-rust profile default [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]
+          Profile name. Omit to clear the selected scope&#39;s default
+
+Options:
+      --target &lt;NAME&gt;
+          Use this named hosted target. If omitted, use local profiles
+
+      --scope &lt;SCOPE&gt;
+          Select user- or organization-scoped hosted profiles
+
+          [default: user]
+          [possible values: user, org]
+
+  -h, --help
+          Print help</code></pre></section>
+<section id="zeroshot-rust-profile-help"><h4><code>zeroshot-rust profile help</code></h4>
+<pre><code>Print this message or the help of the given subcommand(s)
+
+Usage: zeroshot-rust profile help [COMMAND]
+
+Commands:
+  list     List profile metadata
+  set      Create or replace a fully materialized profile
+  show     Show one profile with its graph and runtime
+  remove   Remove one profile
+  default  Set the scope&#39;s default profile, or clear it when NAME is omitted
+  help     Print this message or the help of the given subcommand(s)</code></pre></section>
 <section id="zeroshot-rust-template"><h3><code>zeroshot-rust template</code></h3>
 <pre><code>Inspect built-in graph templates
 
@@ -327,7 +492,7 @@ Commands:
 
 When --target is omitted, the run uses the current local repository. A foreground run follows NDJSON events until completion. --detach returns after submission; Ctrl-C also detaches from observation without stopping the run. Named-target runs send GH_TOKEN, when set, for source checkout and Git delivery; providers receive it only when the runtime declares GH_TOKEN.
 
-Usage: zeroshot-rust run [OPTIONS] --title &lt;TITLE&gt; --input &lt;FILE&gt; &lt;--graph &lt;FILE&gt;|--template &lt;TEMPLATE&gt;&gt; &lt;--runtime-config &lt;FILE&gt;|--uniform-runtime-config &lt;FILE&gt;&gt;
+Usage: zeroshot-rust run [OPTIONS] --title &lt;TITLE&gt; --input &lt;FILE&gt;
 
 Options:
       --title &lt;TITLE&gt;
@@ -351,6 +516,11 @@ Options:
 
       --uniform-runtime-config &lt;FILE&gt;
           Expand one secret-free agent runtime across every executable graph node
+
+      --profile &lt;[SCOPE:]NAME&gt;
+          Use a profile: NAME, local:NAME, user:NAME, or org:NAME.
+
+          When no profile or inline graph/runtime is supplied, scoped defaults are checked.
 
       --target &lt;NAME&gt;
           Run on this named target; if omitted, run locally. Named targets receive GH_TOKEN when set.
@@ -530,6 +700,7 @@ Usage: zeroshot-rust help [COMMAND]
 Commands:
   target      Manage named targets or serve a direct target
   connection  Manage static credentials by connection key
+  profile     Manage reusable graph/runtime profiles
   template    Inspect built-in graph templates
   run         Submit a graph run locally or to a named target
   list        List runs as JSON

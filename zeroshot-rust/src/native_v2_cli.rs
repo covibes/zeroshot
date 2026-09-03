@@ -14,8 +14,10 @@ use openengine_cluster_protocol::{
     ConnectionListResult, ConnectionMutationResult, ConnectionScope, ConnectionSetRequest, Cursor,
     EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunId,
-    RunConnectionValues, RunStatusParams, RunTitle, RunWatchParams, SourceBranchId,
-    SubscriptionCloseReason,
+    RunConnectionValues, RunProfile, RunProfileDefaultRequest, RunProfileDefaultResult,
+    RunProfileDeleteResult, RunProfileListRequest, RunProfileListResult, RunProfileMutationResult,
+    RunProfileName, RunProfileSelector, RunProfileSetRequest, RunStatusParams, RunTitle,
+    RunWatchParams, SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
@@ -51,6 +53,16 @@ pub use diagnostic::{ERROR_FORMAT_ENV, JSON_ERROR_FORMAT, NativeV2CliDiagnostic}
 #[path = "native_v2_cli/parser.rs"]
 mod parser;
 
+mod profiles;
+use profiles::LocalRunProfileStore;
+
+mod profile_contract;
+pub use profile_contract::*;
+
+mod support;
+use support::{absolute_user_path, nonempty_environment};
+pub use support::VERSION;
+
 pub use execution::{
     execute_native_v2_cli, try_execute_native_v2_preflight, try_execute_native_v2_static,
 };
@@ -59,8 +71,6 @@ pub use parser::{Cli, parse_native_v2_args};
 #[cfg(test)]
 #[path = "native_v2_cli/tests.rs"]
 mod tests;
-
-pub const VERSION: &str = concat!("zeroshot-rust ", env!("CARGO_PKG_VERSION"), "\n");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetAdd {
@@ -107,9 +117,8 @@ pub struct ConnectionSetCommand {
 pub struct RunCommand {
     pub target: Option<String>,
     pub title: RunTitle,
-    pub graph: RunGraph,
+    pub selection: RunSelection,
     pub input: PathBuf,
-    pub runtime: RunRuntime,
     pub branch: Option<SourceBranchId>,
     pub detach: bool,
     pub validate_only: bool,
@@ -132,6 +141,8 @@ pub struct PreparedRunRequest {
     pub intent: TargetRunIntent,
     pub connections: RunConnectionValues,
     pub github_token: Option<String>,
+    /// Remote selector retained so the hosted target can resolve the profile atomically.
+    pub profile: Option<RunProfileSelector>,
 }
 
 impl fmt::Debug for PreparedRunRequest {
@@ -146,6 +157,7 @@ impl fmt::Debug for PreparedRunRequest {
                 "github_token",
                 &self.github_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("profile", &self.profile)
             .finish()
     }
 }
@@ -194,6 +206,20 @@ pub enum NativeV2CliCommand {
         route: ConnectionRoute,
         key: ConnectionKey,
     },
+    ProfileList(ProfileRoute),
+    ProfileSet(ProfileSetCommand),
+    ProfileShow {
+        route: ProfileRoute,
+        name: RunProfileName,
+    },
+    ProfileRemove {
+        route: ProfileRoute,
+        name: RunProfileName,
+    },
+    ProfileDefault {
+        route: ProfileRoute,
+        name: Option<RunProfileName>,
+    },
     TemplateList,
     TemplateShow {
         template: BuiltinGraphTemplate,
@@ -226,6 +252,17 @@ impl NativeV2CliCommand {
         matches!(
             self,
             Self::ConnectionList(_) | Self::ConnectionSet(_) | Self::ConnectionDelete { .. }
+        )
+    }
+
+    fn is_profile_operation(&self) -> bool {
+        matches!(
+            self,
+            Self::ProfileList(_)
+                | Self::ProfileSet(_)
+                | Self::ProfileShow { .. }
+                | Self::ProfileRemove { .. }
+                | Self::ProfileDefault { .. }
         )
     }
 
@@ -372,6 +409,56 @@ pub trait NativeV2CliBackend: Send + Sync {
     ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
         Err(NativeV2CliError::Target(
             "target does not advertise connection management".to_owned(),
+        ))
+    }
+
+    async fn profile_list(
+        &self,
+        _target: Option<&str>,
+        _request: RunProfileListRequest,
+    ) -> Result<RunProfileListResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise profile management".to_owned(),
+        ))
+    }
+
+    async fn profile_show(
+        &self,
+        _target: Option<&str>,
+        _selector: RunProfileSelector,
+    ) -> Result<RunProfile, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise profile management".to_owned(),
+        ))
+    }
+
+    async fn profile_set(
+        &self,
+        _target: Option<&str>,
+        _request: RunProfileSetRequest,
+    ) -> Result<RunProfileMutationResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise profile management".to_owned(),
+        ))
+    }
+
+    async fn profile_delete(
+        &self,
+        _target: Option<&str>,
+        _selector: RunProfileSelector,
+    ) -> Result<RunProfileDeleteResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise profile management".to_owned(),
+        ))
+    }
+
+    async fn profile_default(
+        &self,
+        _target: Option<&str>,
+        _request: RunProfileDefaultRequest,
+    ) -> Result<RunProfileDefaultResult, NativeV2CliError> {
+        Err(NativeV2CliError::Target(
+            "target does not advertise profile management".to_owned(),
         ))
     }
 

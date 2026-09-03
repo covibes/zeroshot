@@ -79,6 +79,7 @@ pub fn prepare_local_run(
         intent,
         connections,
         github_token,
+        profile: _,
     } = request;
     let environment = RunEnvironment::exact(&intent.runtime, connections)?;
     let (workspace, source) = local_resolved_source(current_directory, git_program)?;

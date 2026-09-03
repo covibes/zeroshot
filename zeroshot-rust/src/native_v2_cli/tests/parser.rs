@@ -102,10 +102,12 @@ fn parser_is_the_agreed_lean_hosted_surface() {
     let run = run_command(run);
     assert_eq!(run.target.as_deref(), Some("prod"));
     assert_eq!(run.title.as_str(), "Repair checkout");
-    assert_eq!(run.graph, RunGraph::File(PathBuf::from("graph.json")));
     assert_eq!(
-        run.runtime,
-        RunRuntime::Exact(PathBuf::from("runtime.json"))
+        run.selection,
+        crate::native_v2_cli::RunSelection::Inline {
+            graph: RunGraph::File(PathBuf::from("graph.json")),
+            runtime: RunRuntime::Exact(PathBuf::from("runtime.json")),
+        }
     );
     assert!(!run.validate_only);
     assert_eq!(
@@ -166,10 +168,13 @@ fn parser_exposes_the_two_builtin_templates_and_closed_delivery_choice() {
     .assert_value();
     let run = run_command(run);
     assert_eq!(
-        run.graph,
-        RunGraph::Template {
-            template: BuiltinGraphTemplate::SoftwareChange,
-            delivery: TemplateDelivery::PullRequest,
+        run.selection,
+        crate::native_v2_cli::RunSelection::Inline {
+            graph: RunGraph::Template {
+                template: BuiltinGraphTemplate::SoftwareChange,
+                delivery: TemplateDelivery::PullRequest,
+            },
+            runtime: RunRuntime::Exact(PathBuf::from("runtime.json")),
         }
     );
 }

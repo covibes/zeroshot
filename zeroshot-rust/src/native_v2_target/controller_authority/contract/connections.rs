@@ -5,7 +5,7 @@ use openengine_cluster_protocol::{
 };
 use reqwest::Url;
 
-use super::{authority_error, same_origin_url, valid_literal_route_segment};
+use super::{authority_error, capability_base_url, compile_literal_route};
 use crate::native_v2_target::TargetAuthorityError;
 
 #[derive(Clone)]
@@ -23,15 +23,15 @@ pub(super) fn build_connections_descriptor(
         return Ok(None);
     };
     validate_capability(wire)?;
-    let base_url = connection_base_url(origin, wire)?;
+    let base_url = capability_base_url(origin, &wire.base_url)?;
     // The CLI does not call the target's run-scoped resolver, but discovery must prove that the
     // advertised callback route is a bounded same-origin literal before accepting the dynamic
     // connection capability.
-    compile_route(&base_url, &wire.route_templates.resolve)?;
+    compile_literal_route(&base_url, &wire.route_templates.resolve, "connection")?;
     Ok(Some(ConnectionsDescriptor {
-        list: compile_route(&base_url, &wire.route_templates.list)?,
-        set: compile_route(&base_url, &wire.route_templates.set)?,
-        delete: compile_route(&base_url, &wire.route_templates.delete)?,
+        list: compile_literal_route(&base_url, &wire.route_templates.list, "connection")?,
+        set: compile_literal_route(&base_url, &wire.route_templates.set, "connection")?,
+        delete: compile_literal_route(&base_url, &wire.route_templates.delete, "connection")?,
     }))
 }
 
@@ -45,49 +45,6 @@ fn validate_capability(wire: &TargetConnectionsDiscovery) -> Result<(), TargetAu
         return Err(authority_error("connection discovery is incompatible"));
     }
     Ok(())
-}
-
-fn connection_base_url(
-    origin: &Url,
-    wire: &TargetConnectionsDiscovery,
-) -> Result<Url, TargetAuthorityError> {
-    if origin
-        .as_str()
-        .strip_suffix('/')
-        .is_some_and(|root| root == wire.base_url)
-    {
-        Ok(origin.clone())
-    } else {
-        same_origin_url(origin, &wire.base_url)
-    }
-}
-
-fn compile_route(base_url: &Url, route: &str) -> Result<Url, TargetAuthorityError> {
-    if route.len() > 2_048
-        || !route.starts_with('/')
-        || route.starts_with("//")
-        || route.contains(['?', '#', '\\'])
-        || route
-            .bytes()
-            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-    {
-        return Err(authority_error("connection route template is invalid"));
-    }
-    let segments = route.split('/').skip(1).collect::<Vec<_>>();
-    if !segments
-        .iter()
-        .all(|segment| valid_literal_route_segment(segment))
-    {
-        return Err(authority_error("connection route template is invalid"));
-    }
-    let mut url = base_url.clone();
-    let mut path = url
-        .path_segments_mut()
-        .map_err(|_| authority_error("connection base URL is invalid"))?;
-    path.pop_if_empty();
-    path.extend(segments);
-    drop(path);
-    Ok(url)
 }
 
 #[cfg(test)]

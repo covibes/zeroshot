@@ -7,11 +7,14 @@ use zeroshot_engine::native_v2_target_authority::{
 
 mod connections;
 mod hosted_runs;
+mod profiles;
 
 use hosted_runs::build_hosted_runs_descriptor;
 pub(super) use hosted_runs::HostedRunsDescriptor;
 use connections::build_connections_descriptor;
 pub(super) use connections::ConnectionsDescriptor;
+use profiles::build_profiles_descriptor;
+pub(super) use profiles::RunProfilesDescriptor;
 
 use super::DEVICE_GRANT;
 use crate::native_v2_target::TargetAuthorityError;
@@ -36,6 +39,7 @@ pub(super) struct HostedAuthDescriptor {
     pub(super) session_endpoint: Url,
     pub(super) hosted_runs: HostedRunsDescriptor,
     pub(super) connections: Option<ConnectionsDescriptor>,
+    pub(super) run_profiles: Option<RunProfilesDescriptor>,
 }
 
 pub(super) struct ControllerDescriptor {
@@ -131,6 +135,18 @@ pub(super) fn same_origin_url(origin: &Url, value: &str) -> Result<Url, TargetAu
     Ok(url)
 }
 
+pub(super) fn capability_base_url(origin: &Url, value: &str) -> Result<Url, TargetAuthorityError> {
+    if origin
+        .as_str()
+        .strip_suffix('/')
+        .is_some_and(|root| root == value)
+    {
+        Ok(origin.clone())
+    } else {
+        same_origin_url(origin, value)
+    }
+}
+
 pub(super) fn same_origin_path(origin: &Url, path: &str) -> Result<Url, TargetAuthorityError> {
     if !path.starts_with('/')
         || path.starts_with("//")
@@ -152,6 +168,38 @@ pub(super) fn valid_literal_route_segment(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+}
+
+pub(super) fn compile_literal_route(
+    base_url: &Url,
+    route: &str,
+    kind: &'static str,
+) -> Result<Url, TargetAuthorityError> {
+    if route.len() > 2_048
+        || !route.starts_with('/')
+        || route.starts_with("//")
+        || route.contains(['?', '#', '\\'])
+        || route
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+    {
+        return Err(authority_error(format!("{kind} route template is invalid")));
+    }
+    let segments = route.split('/').skip(1).collect::<Vec<_>>();
+    if !segments
+        .iter()
+        .all(|segment| valid_literal_route_segment(segment))
+    {
+        return Err(authority_error(format!("{kind} route template is invalid")));
+    }
+    let mut url = base_url.clone();
+    let mut path = url
+        .path_segments_mut()
+        .map_err(|_| authority_error(format!("{kind} base URL is invalid")))?;
+    path.pop_if_empty();
+    path.extend(segments);
+    drop(path);
+    Ok(url)
 }
 
 pub(super) fn require_response_route(
@@ -227,6 +275,7 @@ pub(super) fn build_auth_descriptor(
         .ok_or_else(|| authority_error("hosted target discovery is incompatible"))?;
     let hosted_runs = build_hosted_runs_descriptor(origin, &wire.extensions)?;
     let connections = build_connections_descriptor(origin, &wire.extensions)?;
+    let run_profiles = build_profiles_descriptor(origin, &wire.extensions)?;
     let (metadata_url, device_authorization_endpoint, token_endpoint, revocation_endpoint) =
         oauth_routes(origin, oauth)?;
     Ok(HostedAuthDescriptor {
@@ -239,6 +288,7 @@ pub(super) fn build_auth_descriptor(
         session_endpoint: same_origin_path(origin, &session.route_template)?,
         hosted_runs,
         connections,
+        run_profiles,
     })
 }
 

@@ -127,23 +127,42 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
     match command {
         NativeV2CliCommand::Run(run) => run.target.is_none(),
         NativeV2CliCommand::List { target } => target.is_none(),
+        command if run_operation_is_local(command) => true,
+        command if connection_operation_is_local(command) => true,
+        command if profile_operation_is_local(command) => true,
+        _ => false,
+    }
+}
+
+fn run_operation_is_local(command: &NativeV2CliCommand) -> bool {
+    match command {
         NativeV2CliCommand::Status(run) | NativeV2CliCommand::ForceStop(run) => {
             run.target.is_none()
         }
         NativeV2CliCommand::Watch(command) => command.run.target.is_none(),
         NativeV2CliCommand::Logs(command) => command.run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
+        _ => false,
+    }
+}
+
+fn connection_operation_is_local(command: &NativeV2CliCommand) -> bool {
+    match command {
         NativeV2CliCommand::ConnectionList(route)
         | NativeV2CliCommand::ConnectionDelete { route, .. } => route.target.is_none(),
         NativeV2CliCommand::ConnectionSet(command) => command.route.target.is_none(),
-        NativeV2CliCommand::Help(_)
-        | NativeV2CliCommand::Version
-        | NativeV2CliCommand::TemplateList
-        | NativeV2CliCommand::TemplateShow { .. }
-        | NativeV2CliCommand::TargetAdd(_)
-        | NativeV2CliCommand::TargetLogin { .. }
-        | NativeV2CliCommand::TargetSetup(_)
-        | NativeV2CliCommand::TargetServe(_) => false,
+        _ => false,
+    }
+}
+
+fn profile_operation_is_local(command: &NativeV2CliCommand) -> bool {
+    match command {
+        NativeV2CliCommand::ProfileList(route)
+        | NativeV2CliCommand::ProfileShow { route, .. }
+        | NativeV2CliCommand::ProfileRemove { route, .. }
+        | NativeV2CliCommand::ProfileDefault { route, .. } => route.target.is_none(),
+        NativeV2CliCommand::ProfileSet(command) => command.route.target.is_none(),
+        _ => false,
     }
 }
 

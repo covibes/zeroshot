@@ -11,8 +11,10 @@ use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
     ConnectionMutationResult, ConnectionSetRequest, IdempotencyKey, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunForceResult, RunId, RunListParams, RunListResult,
-    RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult, RunSubmitResult,
-    RunWatchParams, Sha256Digest,
+    RunLogEventNotification, RunLogsParams, RunProfile, RunProfileDefaultRequest,
+    RunProfileDefaultResult, RunProfileDeleteResult, RunProfileListRequest, RunProfileListResult,
+    RunProfileMutationResult, RunProfileSelector, RunProfileSetRequest, RunStatusParams,
+    RunStatusResult, RunSubmitResult, RunWatchParams, Sha256Digest,
 };
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
@@ -21,7 +23,8 @@ use tokio::time::{Instant, sleep};
 use super::oecp::{ChannelSubscription, spawn_attach, spawn_logs, spawn_watch};
 use super::{
     CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
-    NativeV2CliBackend, NativeV2CliError, PreparedRunRequest, TargetAdd, TargetSetup,
+    LocalRunProfileStore, NativeV2CliBackend, NativeV2CliError, PreparedRunRequest, TargetAdd,
+    TargetSetup,
 };
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_cloud::submission_digest;

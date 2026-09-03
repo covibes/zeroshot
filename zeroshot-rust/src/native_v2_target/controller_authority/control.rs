@@ -1,8 +1,18 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
-    ConnectionMutationResult, ConnectionSetRequest, RunForceParams, RunListParams,
-    RunLogEventNotification, RunLogsParams, RunStatusParams, RunSubmitResult, RunWatchParams,
+    ConnectionMutationResult, ConnectionSetRequest,
+};
+use openengine_cluster_protocol::{
+    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
+    RunSubmitResult, RunWatchParams,
+};
+use openengine_cluster_protocol::{RunProfile, RunProfileMutationResult, RunProfileRunRequest};
+use openengine_cluster_protocol::{
+    RunProfileDefaultRequest, RunProfileDefaultResult, RunProfileDeleteResult,
+};
+use openengine_cluster_protocol::{
+    RunProfileListRequest, RunProfileListResult, RunProfileSelector, RunProfileSetRequest,
 };
 use reqwest::header::ACCEPT;
 use zeroshot_engine::native_v2_cli::oecp::BoxedSubscription;
@@ -125,6 +135,54 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
         request: ConnectionDeleteRequest,
     ) -> Result<ConnectionDeleteResult, TargetAuthorityError> {
         TargetHttpControlAuthority::connection_delete(self, target, request).await
+    }
+
+    async fn profile_list(
+        &self,
+        target: &TargetRecord,
+        request: RunProfileListRequest,
+    ) -> Result<RunProfileListResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_list(self, target, request).await
+    }
+
+    async fn profile_show(
+        &self,
+        target: &TargetRecord,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfile, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_show(self, target, selector).await
+    }
+
+    async fn profile_set(
+        &self,
+        target: &TargetRecord,
+        request: RunProfileSetRequest,
+    ) -> Result<RunProfileMutationResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_set(self, target, request).await
+    }
+
+    async fn profile_delete(
+        &self,
+        target: &TargetRecord,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfileDeleteResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_delete(self, target, selector).await
+    }
+
+    async fn profile_default(
+        &self,
+        target: &TargetRecord,
+        request: RunProfileDefaultRequest,
+    ) -> Result<RunProfileDefaultResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_default(self, target, request).await
+    }
+
+    async fn profile_run(
+        &self,
+        target: &TargetRecord,
+        request: &RunProfileRunRequest,
+    ) -> Result<RunSubmitResult, TargetAuthorityError> {
+        TargetHttpControlAuthority::profile_run(self, target, request).await
     }
 
     async fn hosted_run_list(

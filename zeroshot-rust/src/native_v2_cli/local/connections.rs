@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::BufReader;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,7 @@ use openengine_cluster_protocol::{
 };
 
 use super::{NativeV2CliError, local_io, local_message, prepare_private_directory};
+use crate::native_v2_cli::support::{CommitPaths, cleanup_temporary, write_and_commit};
 use crate::native_v2_supervisor::RunEnvironment;
 
 const CONNECTIONS_FILE: &str = "connections.json";
@@ -137,6 +138,9 @@ impl LocalConnectionStore {
 
     fn write(&self, connections: &StoredConnections) -> Result<(), NativeV2CliError> {
         let temporary = temporary_path(&self.root);
+        let mut encoded = serde_json::to_vec(connections)
+            .map_err(|_| local_message("local connection store could not be encoded"))?;
+        encoded.push(b'\n');
         let mut options = OpenOptions::new();
         options
             .write(true)
@@ -145,21 +149,18 @@ impl LocalConnectionStore {
             .custom_flags(libc::O_NOFOLLOW);
         let result = (|| {
             let file = options.open(&temporary).map_err(local_io)?;
-            let mut writer = BufWriter::new(file);
-            serde_json::to_writer(&mut writer, connections)
-                .map_err(|_| local_message("local connection store could not be encoded"))?;
-            writer.write_all(b"\n").map_err(local_io)?;
-            writer.flush().map_err(local_io)?;
-            writer.get_ref().sync_all().map_err(local_io)?;
-            std::fs::rename(&temporary, self.root.join(CONNECTIONS_FILE)).map_err(local_io)?;
-            File::open(&self.root)
-                .and_then(|directory| directory.sync_all())
-                .map_err(local_io)
+            let destination = self.root.join(CONNECTIONS_FILE);
+            write_and_commit(
+                file,
+                &encoded,
+                CommitPaths {
+                    temporary: &temporary,
+                    destination: &destination,
+                    parent: &self.root,
+                },
+            )
         })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        result
+        cleanup_temporary(result, &temporary)
     }
 }
 

@@ -3,6 +3,7 @@ mod contract;
 mod control;
 pub(super) mod credentials;
 mod hosted_runs;
+mod profiles;
 
 use std::path::PathBuf;
 use std::sync::Arc;
