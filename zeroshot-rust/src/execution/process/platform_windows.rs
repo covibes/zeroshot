@@ -104,11 +104,23 @@ pub(super) fn configure_process_group(command: &mut Command) {
     command.creation_flags(CREATE_SUSPENDED);
 }
 
-pub(super) fn kill_process_tree(job: usize, child: &mut tokio::process::Child) {
+pub(super) fn kill_process_tree(job: usize, child: &mut tokio::process::Child) -> Vec<String> {
     let terminated = unsafe { TerminateJobObject(job as HANDLE, 1) };
-    if terminated == 0 {
-        let _ = child.start_kill();
+    if terminated != 0 {
+        return Vec::new();
     }
+    let termination_error = io::Error::last_os_error();
+    let mut errors = vec![super::io_error_detail(
+        "Windows job termination failed",
+        &termination_error,
+    )];
+    if let Err(error) = child.start_kill() {
+        errors.push(super::io_error_detail(
+            "root process termination fallback failed",
+            &error,
+        ));
+    }
+    errors
 }
 
 fn resume_suspended_process(process_id: u32) -> Result<(), io::Error> {

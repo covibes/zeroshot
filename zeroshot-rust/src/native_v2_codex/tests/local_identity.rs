@@ -34,6 +34,9 @@ fn local_codex_user_reuses_native_homes_without_an_openai_api_key() {
     let isolated = NativeV2CodexAdapter::new(adapter.config.clone());
     assert_eq!(
         isolated.provider_environment(&environment, &runtime_home),
-        Err(NodeRunnerError::Driver)
+        Err(NodeRunnerError::DriverDetail(
+            "Codex provider credentials are missing or conflict with reserved credentials"
+                .to_owned()
+        ))
     );
 }

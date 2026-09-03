@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::native_v2_capsule::provider_json_lines::{ProviderJsonLine, ProviderJsonLines};
 use crate::native_v2_contract::{TokenUsageDelta, parse_token_usage_delta};
 use crate::native_v2_runner::{LiveOutputStream, NodeRunnerError};
 
@@ -19,76 +20,191 @@ impl CodexEmission {
 
 pub(super) struct CodexOutput {
     pub(super) thread_id: Option<String>,
-    pub(super) messages: Vec<String>,
-    completed: bool,
+    thread_failure: Option<String>,
+    final_message: Option<String>,
+    terminal: Option<CodexTerminal>,
     failure: Option<String>,
     token_usage: Option<TokenUsageDelta>,
+    malformed_records: usize,
+    oversized_records: usize,
 }
 
 pub(super) struct CodexOutputDecoder {
-    pending: Vec<u8>,
+    lines: ProviderJsonLines,
     output: CodexOutput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexTerminal {
+    Completed,
+    Failed,
+}
+
+enum TerminalUsage {
+    Empty,
+    Valid(TokenUsageDelta),
+    Malformed,
+}
+
+enum AcceptedLine {
+    Emission(CodexEmission),
+    Ignored,
+    Malformed,
+    ThreadFailure(String),
 }
 
 impl CodexOutputDecoder {
     pub(super) fn new() -> Self {
         Self {
-            pending: Vec::new(),
+            lines: ProviderJsonLines::new(),
             output: CodexOutput::empty(),
         }
     }
 
-    pub(super) fn push(&mut self, bytes: &[u8]) -> Result<Vec<CodexEmission>, NodeRunnerError> {
-        self.pending.extend_from_slice(bytes);
+    pub(super) fn push(&mut self, bytes: &[u8]) -> Vec<CodexEmission> {
+        if self.output.is_settled() {
+            self.lines.discard();
+            return Vec::new();
+        }
         let mut emitted = Vec::new();
-        while let Some(line) = take_complete_line(&mut self.pending) {
-            if let Some(message) = self.output.accept_bytes(&line)? {
-                emitted.push(message);
+        for line in self.lines.push(bytes) {
+            if self.output.is_settled() {
+                break;
+            }
+            if let Some(emission) = self.accept_line(line) {
+                emitted.push(emission);
             }
         }
-        Ok(emitted)
-    }
-
-    pub(super) fn finish(mut self) -> Result<CodexOutput, NodeRunnerError> {
-        if !self.pending.is_empty() {
-            self.output.accept_bytes(&self.pending)?;
+        if self.output.is_settled() {
+            self.lines.discard();
         }
-        self.output.validate()?;
-        Ok(self.output)
+        emitted
     }
-}
 
-fn take_complete_line(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
-    let newline = pending.iter().position(|byte| *byte == b'\n')?;
-    let remainder = pending.split_off(newline + 1);
-    let mut line = std::mem::replace(pending, remainder);
-    line.pop();
-    Some(line)
+    pub(super) fn finish(mut self) -> CodexOutput {
+        if self.output.is_settled() {
+            self.lines.discard();
+        } else if let Some(line) = self.lines.finish() {
+            self.accept_line(line);
+        }
+        self.output.finalize();
+        self.output
+    }
+
+    fn accept_line(&mut self, line: ProviderJsonLine) -> Option<CodexEmission> {
+        match line {
+            ProviderJsonLine::Oversized => {
+                self.output.oversized_records = self.output.oversized_records.saturating_add(1);
+                None
+            }
+            ProviderJsonLine::Record(line) => match self.output.accept_bytes(&line) {
+                AcceptedLine::Emission(emission) => Some(emission),
+                AcceptedLine::Ignored => None,
+                AcceptedLine::Malformed => {
+                    self.output.malformed_records = self.output.malformed_records.saturating_add(1);
+                    None
+                }
+                AcceptedLine::ThreadFailure(detail) => {
+                    if self.output.thread_failure.is_none() {
+                        self.output.thread_failure = Some(detail);
+                    }
+                    None
+                }
+            },
+        }
+    }
 }
 
 impl CodexOutput {
     #[cfg(test)]
-    pub(super) fn parse(bytes: &[u8]) -> Result<Self, NodeRunnerError> {
+    pub(super) fn parse(bytes: &[u8]) -> Self {
         let mut decoder = CodexOutputDecoder::new();
-        decoder.push(bytes)?;
+        decoder.push(bytes);
         decoder.finish()
     }
 
     fn empty() -> Self {
         Self {
             thread_id: None,
-            messages: Vec::new(),
-            completed: false,
+            thread_failure: None,
+            final_message: None,
+            terminal: None,
             failure: None,
             token_usage: None,
+            malformed_records: 0,
+            oversized_records: 0,
         }
     }
 
-    fn validate(&self) -> Result<(), NodeRunnerError> {
-        if self.completed == self.failure.is_some() || self.completed && self.messages.is_empty() {
-            return Err(NodeRunnerError::Driver);
+    pub(super) fn provider_failure(detail: String) -> Self {
+        let mut output = Self::empty();
+        output.merge_failure_detail(detail);
+        output
+    }
+
+    fn is_settled(&self) -> bool {
+        self.terminal.is_some()
+    }
+
+    fn finalize(&mut self) {
+        self.finalize_terminal();
+        self.prepend_thread_failure();
+    }
+
+    fn finalize_terminal(&mut self) {
+        match self.terminal {
+            Some(CodexTerminal::Completed) if self.final_message.is_none() => {
+                self.failure = Some(
+                    self.incomplete_detail("Codex turn completed without a final agent message"),
+                );
+            }
+            Some(CodexTerminal::Completed) => self.failure = None,
+            Some(CodexTerminal::Failed) => {
+                if self.failure.is_none() {
+                    self.failure =
+                        Some(self.incomplete_detail("Codex turn failed without provider detail"));
+                }
+            }
+            None => {
+                if self.failure.is_none() {
+                    self.failure = Some(
+                        self.incomplete_detail("Codex output ended without a terminal turn event"),
+                    );
+                }
+            }
         }
-        Ok(())
+    }
+
+    fn prepend_thread_failure(&mut self) {
+        if let Some(thread_failure) = self.thread_failure.take() {
+            self.failure = Some(match self.failure.take() {
+                Some(failure) if failure == thread_failure => thread_failure,
+                Some(failure) => format!("{thread_failure}; {failure}"),
+                None => thread_failure,
+            });
+        }
+    }
+
+    fn incomplete_detail(&self, message: &str) -> String {
+        match (self.malformed_records, self.oversized_records) {
+            (0, 0) => message.to_owned(),
+            (malformed, oversized) => format!(
+                "{message}; ignored {malformed} malformed and {oversized} oversized output records"
+            ),
+        }
+    }
+
+    pub(super) fn merge_failure_detail(&mut self, detail: String) {
+        let detail = detail.trim();
+        if detail.is_empty() {
+            return;
+        }
+        self.failure = Some(match self.failure.take() {
+            Some(existing) if existing == detail => existing,
+            Some(existing) => format!("{existing}; {detail}"),
+            None => detail.to_owned(),
+        });
+        self.terminal = Some(CodexTerminal::Failed);
     }
 
     pub(super) fn failure_message(&self) -> Option<&str> {
@@ -100,24 +216,24 @@ impl CodexOutput {
     }
 
     pub(super) fn final_message(&self) -> Result<&str, NodeRunnerError> {
-        self.messages
-            .last()
-            .map(String::as_str)
-            .ok_or(NodeRunnerError::Driver)
+        self.final_message.as_deref().ok_or(NodeRunnerError::Driver)
     }
 
-    fn accept_bytes(&mut self, line: &[u8]) -> Result<Option<CodexEmission>, NodeRunnerError> {
-        let line = std::str::from_utf8(line).map_err(|_| NodeRunnerError::Driver)?;
+    fn accept_bytes(&mut self, line: &[u8]) -> AcceptedLine {
+        let Ok(line) = std::str::from_utf8(line) else {
+            return AcceptedLine::Malformed;
+        };
         if line.trim().is_empty() {
-            return Ok(None);
+            return AcceptedLine::Ignored;
         }
-        let event: Value = serde_json::from_str(line).map_err(|_| NodeRunnerError::Driver)?;
-        let event_type = event
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or(NodeRunnerError::Driver)?;
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            return AcceptedLine::Malformed;
+        };
+        let Some(event_type) = event.get("type").and_then(Value::as_str) else {
+            return AcceptedLine::Malformed;
+        };
         if event_type == "thread.started" {
-            return self.accept_thread(&event).map(|()| None);
+            return self.accept_thread(&event);
         }
         if matches!(
             event_type,
@@ -128,96 +244,128 @@ impl CodexOutput {
         self.accept_turn_event(&event, event_type)
     }
 
-    fn accept_turn_event(
-        &mut self,
-        event: &Value,
-        event_type: &str,
-    ) -> Result<Option<CodexEmission>, NodeRunnerError> {
+    fn accept_turn_event(&mut self, event: &Value, event_type: &str) -> AcceptedLine {
+        if self.is_settled() {
+            return AcceptedLine::Ignored;
+        }
         let message = match event_type {
             "turn.started" => "Codex turn started",
             "turn.completed" => {
-                self.completed = true;
-                self.token_usage =
-                    parse_token_usage_delta(event.get("usage"), Some("cached_input_tokens"), None);
+                self.terminal = Some(CodexTerminal::Completed);
+                self.failure = None;
+                self.record_terminal_usage(event);
                 "Codex turn completed"
             }
-            "turn.failed" | "error" => {
-                self.token_usage =
-                    parse_token_usage_delta(event.get("usage"), Some("cached_input_tokens"), None);
-                self.record_failure(event, event_type);
+            "turn.failed" => {
+                self.terminal = Some(CodexTerminal::Failed);
+                self.record_terminal_usage(event);
+                if let Some(detail) = failure_detail(event, event_type) {
+                    self.failure = Some(detail);
+                }
                 "Codex turn failed"
             }
-            _ => return Ok(None),
+            "error" => {
+                if event.get("usage").is_some() {
+                    self.token_usage = token_usage(event.get("usage"));
+                }
+                self.failure = failure_detail(event, event_type)
+                    .or_else(|| Some("Codex stream error without provider detail".to_owned()));
+                "Codex stream error"
+            }
+            _ => return AcceptedLine::Ignored,
         };
-        Ok(Some(CodexEmission::Progress(message.to_owned())))
+        AcceptedLine::Emission(CodexEmission::Progress(message.to_owned()))
     }
 
-    fn record_failure(&mut self, event: &Value, event_type: &str) {
-        if self.failure.is_some() {
-            return;
+    fn record_terminal_usage(&mut self, event: &Value) {
+        match terminal_usage(event) {
+            TerminalUsage::Empty => {}
+            TerminalUsage::Valid(usage) => self.token_usage = Some(usage),
+            TerminalUsage::Malformed => self.token_usage = None,
         }
-        let detail = if event_type == "turn.failed" {
+    }
+
+    fn accept_thread(&mut self, event: &Value) -> AcceptedLine {
+        let Some(thread_id) = event
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return AcceptedLine::Malformed;
+        };
+        match self.thread_id.as_deref() {
+            Some(current) if current != thread_id => AcceptedLine::ThreadFailure(
+                "Codex output contained conflicting thread IDs".to_owned(),
+            ),
+            Some(_) => AcceptedLine::Ignored,
+            None => {
+                self.thread_id = Some(thread_id.to_owned());
+                AcceptedLine::Ignored
+            }
+        }
+    }
+
+    fn accept_item(&mut self, event: &Value, event_type: &str) -> AcceptedLine {
+        let Some(item) = event.get("item") else {
+            return AcceptedLine::Malformed;
+        };
+        let Some(item_type) = item.get("type").and_then(Value::as_str) else {
+            return AcceptedLine::Malformed;
+        };
+        let Some(phase) = event_type.strip_prefix("item.") else {
+            return AcceptedLine::Malformed;
+        };
+        match item_type {
+            "agent_message" if event_type == "item.completed" => {
+                let Some(message) = item.get("text").and_then(Value::as_str) else {
+                    return AcceptedLine::Malformed;
+                };
+                self.final_message = Some(message.to_owned());
+                AcceptedLine::Emission(CodexEmission::AgentMessage(message.to_owned()))
+            }
+            "agent_message" => AcceptedLine::Ignored,
+            _ => AcceptedLine::Emission(CodexEmission::Progress(semantic_item(
+                item, item_type, phase,
+            ))),
+        }
+    }
+}
+
+fn token_usage(value: Option<&Value>) -> Option<TokenUsageDelta> {
+    parse_token_usage_delta(
+        value,
+        Some("cached_input_tokens"),
+        Some("cache_write_input_tokens"),
+    )
+}
+
+fn terminal_usage(event: &Value) -> TerminalUsage {
+    match event.get("usage") {
+        None | Some(Value::Null) => TerminalUsage::Empty,
+        Some(Value::Object(usage)) if usage.is_empty() => TerminalUsage::Empty,
+        value => token_usage(value).map_or(TerminalUsage::Malformed, TerminalUsage::Valid),
+    }
+}
+
+fn failure_detail(event: &Value, event_type: &str) -> Option<String> {
+    let detail = if event_type == "turn.failed" {
+        event.get("error").and_then(|error| {
+            error
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| error.as_str())
+        })
+    } else {
+        event.get("message").and_then(Value::as_str).or_else(|| {
             event
                 .get("error")
                 .and_then(|error| error.get("message"))
                 .and_then(Value::as_str)
-        } else {
-            event.get("message").and_then(Value::as_str)
-        };
-        self.failure = Some(
-            detail
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or("Codex turn failed without provider detail")
-                .to_owned(),
-        );
-    }
-
-    fn accept_thread(&mut self, event: &Value) -> Result<(), NodeRunnerError> {
-        let thread_id = event
-            .get("thread_id")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or(NodeRunnerError::Driver)?;
-        match self.thread_id.as_deref() {
-            Some(current) if current != thread_id => Err(NodeRunnerError::Driver),
-            Some(_) => Ok(()),
-            None => {
-                self.thread_id = Some(thread_id.to_owned());
-                Ok(())
-            }
-        }
-    }
-
-    fn accept_item(
-        &mut self,
-        event: &Value,
-        event_type: &str,
-    ) -> Result<Option<CodexEmission>, NodeRunnerError> {
-        let Some(item) = event.get("item") else {
-            return Err(NodeRunnerError::Driver);
-        };
-        let item_type = item
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or(NodeRunnerError::Driver)?;
-        let phase = event_type
-            .strip_prefix("item.")
-            .ok_or(NodeRunnerError::Driver)?;
-        match item_type {
-            "agent_message" if event_type == "item.completed" => {
-                let message = item
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .ok_or(NodeRunnerError::Driver)?;
-                self.messages.push(message.to_owned());
-                Ok(Some(CodexEmission::AgentMessage(message.to_owned())))
-            }
-            "agent_message" => Ok(None),
-            _ => Ok(Some(CodexEmission::Progress(semantic_item(
-                item, item_type, phase,
-            )))),
-        }
-    }
+        })
+    };
+    detail
+        .filter(|message| !message.trim().is_empty())
+        .map(str::to_owned)
 }
 
 fn semantic_item(item: &Value, item_type: &str, phase: &str) -> String {
@@ -348,116 +496,5 @@ fn semantic_todo_list(item: &Value, phase: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use openengine_cluster_testkit::assertions::AssertValue;
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn normalizes_worker_and_verifier_messages() {
-        let worker = CodexOutput::parse(
-            br#"{"type":"thread.started","thread_id":"thread-1"}
-{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}
-{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,"output_tokens":2}}
-"#,
-        )
-        .assert_value();
-        assert_eq!(worker.final_message().assert_value(), r#"{"answer":42}"#);
-        let usage = worker.token_usage().assert_value();
-        assert_eq!(usage.input_tokens.get(), 1);
-        assert_eq!(usage.output_tokens.get(), 2);
-        assert_eq!(usage.cache_read_input_tokens.assert_value().get(), 1);
-        assert!(usage.cache_creation_input_tokens.is_none());
-
-        let verifier_events = concat!(
-            "{\"type\":\"thread.started\",\"thread_id\":\"thread-2\"}\n",
-            "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",",
-            "\"text\":\"{\\\"output\\\":{\\\"ok\\\":true},",
-            "\\\"signals\\\":{\\\"decision\\\":\\\"pass\\\"},",
-            "\\\"diagnostic\\\":null}\"}}\n",
-            "{\"type\":\"turn.completed\"}\n",
-        );
-        let verifier = CodexOutput::parse(verifier_events.as_bytes()).assert_value();
-        assert_eq!(
-            serde_json::from_str::<Value>(verifier.final_message().assert_value()).assert_value(),
-            json!({
-                "output": { "ok": true },
-                "signals": { "decision": "pass" },
-                "diagnostic": null
-            })
-        );
-    }
-
-    #[test]
-    fn malformed_terminal_usage_is_unavailable_without_rejecting_the_turn() {
-        let output = CodexOutput::parse(
-            br#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}
-{"type":"turn.completed","usage":{"input_tokens":"many","output_tokens":2}}
-"#,
-        )
-        .assert_value();
-        assert!(output.token_usage().is_none());
-    }
-
-    #[test]
-    fn rejects_missing_terminal_or_final_message() {
-        assert_eq!(
-            CodexOutput::parse(br#"{"type":"thread.started","thread_id":"thread-1"}"#).err(),
-            Some(NodeRunnerError::Driver)
-        );
-        assert_eq!(
-            CodexOutput::parse(br#"{"type":"turn.completed"}"#).err(),
-            Some(NodeRunnerError::Driver)
-        );
-    }
-
-    #[test]
-    fn retains_terminal_failure_detail_for_the_retry_policy() {
-        let failed = CodexOutput::parse(
-            br#"{"type":"thread.started","thread_id":"thread-1"}
-{"type":"turn.failed","error":{"message":"service unavailable"}}
-"#,
-        )
-        .assert_value();
-
-        assert_eq!(failed.thread_id.as_deref(), Some("thread-1"));
-        assert_eq!(failed.failure_message(), Some("service unavailable"));
-    }
-
-    #[test]
-    fn projects_provider_items_to_semantic_attach_messages() {
-        let mut decoder = CodexOutputDecoder::new();
-        let emissions = decoder
-            .push(
-                concat!(
-                    "{\"type\":\"item.updated\",\"item\":{\"type\":\"reasoning\",\"text\":\"checking tests\"}}\n",
-                    "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",",
-                    "\"command\":\"cargo test\",\"aggregated_output\":\"ok\",",
-                    "\"exit_code\":0,\"status\":\"completed\"}}\n",
-                    "{\"type\":\"item.completed\",\"item\":{\"type\":\"file_change\",",
-                    "\"changes\":[{\"path\":\"src/lib.rs\",\"kind\":\"update\"}],",
-                    "\"status\":\"completed\"}}\n",
-                    "{\"type\":\"item.completed\",\"item\":{\"type\":\"mcp_tool_call\",",
-                    "\"server\":\"github\",\"tool\":\"get_pr\",",
-                    "\"result\":{\"number\":7},\"status\":\"completed\"}}\n",
-                )
-                .as_bytes(),
-            )
-            .assert_value();
-        let messages = emissions
-            .iter()
-            .map(|emission| emission.log().1)
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            messages,
-            [
-                "Codex reasoning updated: checking tests",
-                "Codex command completed: cargo test [completed] exit=0\nok",
-                "Codex file change completed: update src/lib.rs",
-                "Codex tool completed: github.get_pr result={\"number\":7}",
-            ]
-        );
-    }
-}
+#[path = "output/tests.rs"]
+mod tests;

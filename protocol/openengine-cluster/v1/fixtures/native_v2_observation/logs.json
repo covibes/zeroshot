@@ -8,7 +8,8 @@
       "target": "agent"
     },
     "runId": "run-1",
-    "subscriptionId": "logs-1"
+    "subscriptionId": "logs-1",
+    "timestamp": 1725000000123
   },
   "params": {
     "execution": "opaque-verifier-b",

@@ -61,12 +61,20 @@ pub(super) async fn cursor_fixture() -> (
                 started(&right),
                 RunEvent::SafeLog {
                     execution: Some(left.execution),
+                    timestamp: openengine_cluster_protocol::UnixTimestampMillis::new(
+                        1_725_000_000_123,
+                    )
+                    .assert_value(),
                     stream: SafeLogStream::Output,
                     line: SafeLogLine::new("first").assert_value(),
                 },
                 completed(&left, Value::Null),
                 RunEvent::SafeLog {
                     execution: Some(left.execution),
+                    timestamp: openengine_cluster_protocol::UnixTimestampMillis::new(
+                        1_725_000_000_456,
+                    )
+                    .assert_value(),
                     stream: SafeLogStream::Output,
                     line: SafeLogLine::new("second").assert_value(),
                 },

@@ -42,6 +42,38 @@ the literal `Continue` in the same session (or rerun the original prompt only wh
 created). Agent output gets at most two correction turns before `malformed`. Direct GitHub merge
 rejection is reobserved once for CI registration races, then terminates as a policy refusal.
 
+Native-v2 Claude and Codex JSONL readers never cap cumulative stdout bytes or event counts. They
+share only a 64 MiB unfinished-record allocation guard, tolerate whitespace and a complete final
+record without a newline, and stop interpreting bytes after the first valid terminal event while
+continuing to drain the provider process. Unknown future event types are ignored before their
+provider-owned fields are validated. Provider stdin is streamed concurrently with bounded stdout
+draining so large prompts and early provider output cannot deadlock each other. Incomplete stdin
+delivery is always fatal, but parsed session identity, usage, retry, and diagnostic evidence from
+the launched attempt must survive either I/O completion order. Pre-terminal identity faults remain
+sticky failures but do not stop the first real provider terminal event from supplying usage.
+
+Durable provider events cross bounded async queues end to end; producers apply backpressure, token
+usage survives cancellation, and supervisors preserve event order while batching ledger appends.
+Public capsule streams accept only bounded event receivers, endpoint cancellation is coalesced
+state, and post-cancellation usage is compacted into one checked total plus an incomplete marker.
+Both the cancellation-safe terminal-usage lane and its aggregate fail explicitly on overflow; a
+saturated lane synthesizes one trailing incomplete marker after all retained metadata drains.
+Safe-log timestamps are captured at the original producer boundary, persist as positive
+JavaScript-safe Unix epoch milliseconds, and remain unchanged across capsule and public replay.
+Run-scoped remote close interrupts saturated local bridges without promoting healthy connections
+to global loss, and drains terminal usage metadata before completion. Its timeout is distinct from
+ordinary control RPCs and must cover the shared contained-process cleanup budget plus transport
+margin.
+Endpoint and proxy execution activity is reserved atomically before any underlying start await;
+persistent run-close tombstones prevent late starts, close waits pending reservations, and no
+handle or stream for that run can surface after close returns.
+
+Contained provider sessions bound natural post-exit I/O draining by the original command deadline
+and a ten-minute ceiling while still observing cancellation and release. Bounded stderr tails carry
+explicit truncation evidence so credential redaction can cover secrets split by the tail boundary.
+Observable post-launch failures preserve safe operation, I/O kind, raw OS code, sanitized message,
+termination signal, and core-dump evidence; only unobservable drop cleanup is best-effort.
+
 Read-only safe commands: `zeroshot list`, `zeroshot status`, `zeroshot logs`
 
 Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zeroshot purge`

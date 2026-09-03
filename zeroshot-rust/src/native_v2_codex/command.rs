@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::execution::WorkspaceAccessMode;
 use crate::native_v2_capsule::provider_process::effort_token;
-use crate::native_v2_contract::CodexProvider;
+use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{NodeRole, NodeRunnerError, ResolvedEnvironment};
-use crate::worker_catalog::ReasoningEffort;
+use crate::worker_catalog::{ModelId, ReasoningEffort};
 
 const CODEX_HOME: &str = "CODEX_HOME";
 const CODEX_API_KEY: &str = "CODEX_API_KEY";
@@ -138,4 +139,20 @@ pub(super) fn role_settings(
         NodeRole::Verifier => Ok(("read-only", WorkspaceAccessMode::ReadOnly)),
         NodeRole::GitDelivery => Err(NodeRunnerError::Driver),
     }
+}
+
+pub(super) fn path_text(path: &Path) -> Result<String, NodeRunnerError> {
+    path.to_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or(NodeRunnerError::Driver)
+}
+
+pub(super) fn agent_selection(
+    binding: &NodeRuntimeBinding,
+) -> Result<(&ModelId, Option<&ReasoningEffort>), NodeRunnerError> {
+    let NodeRuntimeBinding::Agent { model, effort, .. } = binding else {
+        return Err(NodeRunnerError::Driver);
+    };
+    Ok((model, effort.as_ref()))
 }

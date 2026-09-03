@@ -302,8 +302,7 @@ set -eu
 attempt=1
 if [ -e attempt.state ]; then attempt=$(( $(/usr/bin/cat attempt.state) + 1 )); fi
 /usr/bin/printf '%s' "$attempt" > attempt.state
-prompt=
-for argument in "$@"; do prompt=$argument; done
+prompt=$(/usr/bin/cat)
 /usr/bin/printf '%s' "$prompt" > "attempt-$attempt.prompt"
 if [ "$attempt" = 1 ]; then
   /usr/bin/printf '%s\n' '{"type":"system","subtype":"init","session_id":"retry-session"}'

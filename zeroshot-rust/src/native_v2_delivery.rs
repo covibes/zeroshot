@@ -443,8 +443,10 @@ fn ensure_active(control: &DriverControl) -> Result<(), NodeRunnerError> {
         .ok_or(NodeRunnerError::Cancelled)
 }
 
-fn emit(control: &DriverControl, message: &str) -> Result<(), NodeRunnerError> {
-    control.emit(LiveOutput::new(LiveOutputStream::System, message)?)
+async fn emit(control: &DriverControl, message: &str) -> Result<(), NodeRunnerError> {
+    control
+        .emit(LiveOutput::new(LiveOutputStream::System, message)?)
+        .await
 }
 
 fn valid_repository(value: &str) -> bool {

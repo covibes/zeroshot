@@ -669,285 +669,288 @@ export const CLUSTER_PROTOCOL_SCHEMA: unknown = JSON.parse(
   "sor\":{\"type\":\"string\"},\"execution\":{\"maxLength\":128,\"minLength\":1,\"patte" +
   "rn\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":[\"string\",\"null\"]},\"re" +
   "cord\":{\"$ref\":\"#/$defs/LogRecord\"},\"runId\":{\"type\":\"string\"},\"subscripti" +
-  "onId\":{\"type\":\"string\"}},\"required\":[\"subscriptionId\",\"runId\",\"cursor\",\"" +
-  "record\"],\"type\":\"object\"},\"RunLogsParams\":{\"additionalProperties\":false," +
-  "\"description\":\"Establishes durable run log replay followed by live deliv" +
-  "ery.\\n\\nAn optional execution filter selects one active or settled execu" +
-  "tion using the exact opaque\\nreference advertised by status. `fromCursor" +
-  "` is exclusive, with the same reconnect semantics\\nas [`RunWatchParams`]" +
-  ". Omitting both fields after `runId` replays the run's complete retained" +
-  "\\nsafe log history.\",\"properties\":{\"execution\":{\"maxLength\":128,\"minLeng" +
-  "th\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":[\"string\"," +
-  "\"null\"]},\"fromCursor\":{\"type\":[\"string\",\"null\"]},\"runId\":{\"type\":\"string" +
-  "\"}},\"required\":[\"runId\"],\"type\":\"object\"},\"RunLogsResult\":{\"additionalPr" +
-  "operties\":false,\"properties\":{\"atCursor\":{\"type\":\"string\"},\"runId\":{\"typ" +
-  "e\":\"string\"},\"subscriptionId\":{\"type\":\"string\"}},\"required\":[\"subscripti" +
-  "onId\",\"runId\",\"atCursor\"],\"type\":\"object\"},\"RunMetadata\":{\"additionalPro" +
-  "perties\":false,\"description\":\"Additive metadata emitted only with a term" +
-  "inal run projection.\",\"properties\":{\"tokenUsage\":{\"anyOf\":[{\"$ref\":\"#/$d" +
-  "efs/TokenUsage\"},{\"type\":\"null\"}]}},\"type\":\"object\"},\"RunSize\":{\"enum\":[" +
-  "\"small\",\"medium\",\"large\"],\"type\":\"string\"},\"RunStatus\":{\"description\":\"P" +
-  "ublic run state. The closed phase variants make impossible combinations " +
-  "unrepresentable:\\nadmitted runs have no execution, stopping means force " +
-  "was requested, and finished runs have\\nexactly one terminal result and n" +
-  "o active execution. Running/stopping report every active\\nexecution rath" +
-  "er than a single \\\"current worker\\\" slot.\",\"oneOf\":[{\"additionalProperti" +
-  "es\":false,\"properties\":{\"phase\":{\"const\":\"admitted\",\"type\":\"string\"}},\"r" +
-  "equired\":[\"phase\"],\"type\":\"object\"},{\"additionalProperties\":false,\"prope" +
-  "rties\":{\"activeExecutions\":{\"items\":{\"$ref\":\"#/$defs/ActiveExecution\"},\"" +
-  "type\":\"array\"},\"phase\":{\"const\":\"running\",\"type\":\"string\"}},\"required\":[" +
-  "\"phase\",\"activeExecutions\"],\"type\":\"object\"},{\"additionalProperties\":fal" +
-  "se,\"properties\":{\"activeExecutions\":{\"items\":{\"$ref\":\"#/$defs/ActiveExec" +
-  "ution\"},\"type\":\"array\"},\"phase\":{\"const\":\"stopping\",\"type\":\"string\"}},\"r" +
-  "equired\":[\"phase\",\"activeExecutions\"],\"type\":\"object\"},{\"additionalPrope" +
-  "rties\":false,\"properties\":{\"metadata\":{\"$ref\":\"#/$defs/RunMetadata\",\"def" +
-  "ault\":{}},\"phase\":{\"const\":\"finished\",\"type\":\"string\"},\"terminalResult\":" +
-  "{\"$ref\":\"#/$defs/TerminalResult\"}},\"required\":[\"phase\",\"terminalResult\"]" +
-  ",\"type\":\"object\"}]},\"RunStatusParams\":{\"additionalProperties\":false,\"pro" +
-  "perties\":{\"runId\":{\"type\":\"string\"}},\"required\":[\"runId\"],\"type\":\"object" +
-  "\"},\"RunStatusResult\":{\"additionalProperties\":false,\"properties\":{\"atCurs" +
-  "or\":{\"type\":\"string\"},\"runId\":{\"type\":\"string\"},\"size\":{\"$ref\":\"#/$defs/" +
-  "RunSize\"},\"source\":{\"$ref\":\"#/$defs/ResolvedSource\"},\"status\":{\"$ref\":\"#" +
-  "/$defs/RunStatus\"},\"title\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^" +
-  "\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"}},\"required\":[\"runId\"" +
-  ",\"title\",\"source\",\"size\",\"atCursor\",\"status\"],\"type\":\"object\"},\"RunSubmi" +
-  "ssion\":{\"additionalProperties\":false,\"description\":\"Immutable, secret-fr" +
-  "ee native-v2 submission admitted by the selected target.\",\"properties\":{" +
-  "\"graph\":{\"$ref\":\"#/$defs/GraphSpec\"},\"initialInput\":true,\"runtime\":{\"$re" +
-  "f\":\"#/$defs/RuntimePlan\"},\"source\":{\"$ref\":\"#/$defs/ResolvedSource\"},\"su" +
-  "bmissionKey\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001" +
-  "f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"},\"title\":{\"maxLength\":256,\"minLengt" +
-  "h\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"}}," +
-  "\"required\":[\"title\",\"graph\",\"initialInput\",\"runtime\",\"source\",\"submissio" +
-  "nKey\"],\"type\":\"object\"},\"RunSubmitParams\":{\"additionalProperties\":false," +
-  "\"description\":\"Trusted controller bootstrap admission. The host assigns " +
-  "the only public run identity before\\ncontroller start; the immutable sub" +
-  "mission remains identity-neutral.\",\"properties\":{\"runId\":{\"type\":\"string" +
-  "\"},\"submission\":{\"$ref\":\"#/$defs/RunSubmission\"}},\"required\":[\"runId\",\"s" +
-  "ubmission\"],\"type\":\"object\"},\"RunSubmitResult\":{\"additionalProperties\":f" +
-  "alse,\"description\":\"A successful submission returns the one public ident" +
-  "ity used by every later run method.\",\"properties\":{\"runId\":{\"type\":\"stri" +
-  "ng\"}},\"required\":[\"runId\"],\"type\":\"object\"},\"RunWatchEventNotification\":" +
-  "{\"additionalProperties\":false,\"description\":\"One durable public status p" +
-  "rojection. `cursor` is stable run history, not a connection-local\\nseque" +
-  "nce; clients resume strictly after it.\",\"properties\":{\"cursor\":{\"type\":\"" +
-  "string\"},\"runId\":{\"type\":\"string\"},\"size\":{\"$ref\":\"#/$defs/RunSize\"},\"so" +
-  "urce\":{\"$ref\":\"#/$defs/ResolvedSource\"},\"status\":{\"$ref\":\"#/$defs/RunSta" +
-  "tus\"},\"subscriptionId\":{\"type\":\"string\"},\"title\":{\"maxLength\":256,\"minLe" +
+  "onId\":{\"type\":\"string\"},\"timestamp\":{\"description\":\"Producer-captured Un" +
+  "ix epoch milliseconds, preserved unchanged by durable replay.\",\"maximum\"" +
+  ":9007199254740991,\"minimum\":1,\"type\":\"integer\"}},\"required\":[\"subscripti" +
+  "onId\",\"runId\",\"cursor\",\"timestamp\",\"record\"],\"type\":\"object\"},\"RunLogsPa" +
+  "rams\":{\"additionalProperties\":false,\"description\":\"Establishes durable r" +
+  "un log replay followed by live delivery.\\n\\nAn optional execution filter" +
+  " selects one active or settled execution using the exact opaque\\nreferen" +
+  "ce advertised by status. `fromCursor` is exclusive, with the same reconn" +
+  "ect semantics\\nas [`RunWatchParams`]. Omitting both fields after `runId`" +
+  " replays the run's complete retained\\nsafe log history.\",\"properties\":{\"" +
+  "execution\":{\"maxLength\":128,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\" +
+  "\\u007f-\\\\u009f]+$\",\"type\":[\"string\",\"null\"]},\"fromCursor\":{\"type\":[\"stri" +
+  "ng\",\"null\"]},\"runId\":{\"type\":\"string\"}},\"required\":[\"runId\"],\"type\":\"obj" +
+  "ect\"},\"RunLogsResult\":{\"additionalProperties\":false,\"properties\":{\"atCur" +
+  "sor\":{\"type\":\"string\"},\"runId\":{\"type\":\"string\"},\"subscriptionId\":{\"type" +
+  "\":\"string\"}},\"required\":[\"subscriptionId\",\"runId\",\"atCursor\"],\"type\":\"ob" +
+  "ject\"},\"RunMetadata\":{\"additionalProperties\":false,\"description\":\"Additi" +
+  "ve metadata emitted only with a terminal run projection.\",\"properties\":{" +
+  "\"tokenUsage\":{\"anyOf\":[{\"$ref\":\"#/$defs/TokenUsage\"},{\"type\":\"null\"}]}}," +
+  "\"type\":\"object\"},\"RunSize\":{\"enum\":[\"small\",\"medium\",\"large\"],\"type\":\"st" +
+  "ring\"},\"RunStatus\":{\"description\":\"Public run state. The closed phase va" +
+  "riants make impossible combinations unrepresentable:\\nadmitted runs have" +
+  " no execution, stopping means force was requested, and finished runs hav" +
+  "e\\nexactly one terminal result and no active execution. Running/stopping" +
+  " report every active\\nexecution rather than a single \\\"current worker\\\" " +
+  "slot.\",\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"phase\":{\"co" +
+  "nst\":\"admitted\",\"type\":\"string\"}},\"required\":[\"phase\"],\"type\":\"object\"}," +
+  "{\"additionalProperties\":false,\"properties\":{\"activeExecutions\":{\"items\":" +
+  "{\"$ref\":\"#/$defs/ActiveExecution\"},\"type\":\"array\"},\"phase\":{\"const\":\"run" +
+  "ning\",\"type\":\"string\"}},\"required\":[\"phase\",\"activeExecutions\"],\"type\":\"" +
+  "object\"},{\"additionalProperties\":false,\"properties\":{\"activeExecutions\":" +
+  "{\"items\":{\"$ref\":\"#/$defs/ActiveExecution\"},\"type\":\"array\"},\"phase\":{\"co" +
+  "nst\":\"stopping\",\"type\":\"string\"}},\"required\":[\"phase\",\"activeExecutions\"" +
+  "],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"metadata" +
+  "\":{\"$ref\":\"#/$defs/RunMetadata\",\"default\":{}},\"phase\":{\"const\":\"finished" +
+  "\",\"type\":\"string\"},\"terminalResult\":{\"$ref\":\"#/$defs/TerminalResult\"}},\"" +
+  "required\":[\"phase\",\"terminalResult\"],\"type\":\"object\"}]},\"RunStatusParams" +
+  "\":{\"additionalProperties\":false,\"properties\":{\"runId\":{\"type\":\"string\"}}" +
+  ",\"required\":[\"runId\"],\"type\":\"object\"},\"RunStatusResult\":{\"additionalPro" +
+  "perties\":false,\"properties\":{\"atCursor\":{\"type\":\"string\"},\"runId\":{\"type" +
+  "\":\"string\"},\"size\":{\"$ref\":\"#/$defs/RunSize\"},\"source\":{\"$ref\":\"#/$defs/" +
+  "ResolvedSource\"},\"status\":{\"$ref\":\"#/$defs/RunStatus\"},\"title\":{\"maxLeng" +
+  "th\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"" +
+  "type\":\"string\"}},\"required\":[\"runId\",\"title\",\"source\",\"size\",\"atCursor\"," +
+  "\"status\"],\"type\":\"object\"},\"RunSubmission\":{\"additionalProperties\":false" +
+  ",\"description\":\"Immutable, secret-free native-v2 submission admitted by " +
+  "the selected target.\",\"properties\":{\"graph\":{\"$ref\":\"#/$defs/GraphSpec\"}" +
+  ",\"initialInput\":true,\"runtime\":{\"$ref\":\"#/$defs/RuntimePlan\"},\"source\":{" +
+  "\"$ref\":\"#/$defs/ResolvedSource\"},\"submissionKey\":{\"maxLength\":256,\"minLe" +
   "ngth\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"" +
-  "}},\"required\":[\"subscriptionId\",\"runId\",\"title\",\"source\",\"size\",\"cursor\"" +
-  ",\"status\"],\"type\":\"object\"},\"RunWatchParams\":{\"additionalProperties\":fal" +
-  "se,\"description\":\"Establishes a durable run watch.\\n\\n`fromCursor` is ex" +
-  "clusive. Reconnecting with the last delivered cursor therefore returns e" +
-  "ach\\nlater watch record once, with no replayed boundary record and no sk" +
-  "ipped later record.\",\"properties\":{\"fromCursor\":{\"type\":[\"string\",\"null\"" +
-  "]},\"runId\":{\"type\":\"string\"}},\"required\":[\"runId\"],\"type\":\"object\"},\"Run" +
-  "WatchResult\":{\"additionalProperties\":false,\"properties\":{\"atCursor\":{\"ty" +
-  "pe\":\"string\"},\"runId\":{\"type\":\"string\"},\"subscriptionId\":{\"type\":\"string" +
-  "\"}},\"required\":[\"subscriptionId\",\"runId\",\"atCursor\"],\"type\":\"object\"},\"R" +
-  "untimePlan\":{\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"harne" +
-  "ss\":{\"const\":\"codex\",\"type\":\"string\"},\"nodes\":{\"additionalProperties\":fa" +
-  "lse,\"patternProperties\":{\"^[A-Za-z_][A-Za-z0-9_.-]*$\":{\"$ref\":\"#/$defs/N" +
-  "odeRuntimeBinding\"}},\"type\":\"object\"},\"provider\":{\"$ref\":\"#/$defs/CodexP" +
-  "rovider\"},\"size\":{\"$ref\":\"#/$defs/RunSize\"}},\"required\":[\"harness\",\"prov" +
-  "ider\",\"size\",\"nodes\"],\"type\":\"object\"},{\"additionalProperties\":false,\"pr" +
-  "operties\":{\"harness\":{\"const\":\"claude\",\"type\":\"string\"},\"nodes\":{\"additi" +
-  "onalProperties\":false,\"patternProperties\":{\"^[A-Za-z_][A-Za-z0-9_.-]*$\":" +
-  "{\"$ref\":\"#/$defs/NodeRuntimeBinding\"}},\"type\":\"object\"},\"provider\":{\"$re" +
-  "f\":\"#/$defs/ClaudeProvider\"},\"size\":{\"$ref\":\"#/$defs/RunSize\"}},\"require" +
-  "d\":[\"harness\",\"provider\",\"size\",\"nodes\"],\"type\":\"object\"}]},\"ServerCapab" +
-  "ilities\":{\"additionalProperties\":false,\"properties\":{\"agentAttach\":{\"def" +
-  "ault\":false,\"type\":\"boolean\"},\"graphProfiles\":{\"default\":[],\"items\":{\"$r" +
-  "ef\":\"#/$defs/GraphProfile\"},\"maxItems\":2,\"not\":{\"minItems\":2,\"prefixItem" +
-  "s\":[{\"const\":\"openengine.graph.single-worker/v1\"},{\"const\":\"openengine.g" +
-  "raph.full/v1\"}]},\"type\":\"array\",\"uniqueItems\":true},\"logs\":{\"default\":fa" +
-  "lse,\"type\":\"boolean\"}},\"type\":\"object\"},\"SessionScope\":{\"enum\":[\"executi" +
-  "on\",\"node_instance\"],\"type\":\"string\"},\"StopMode\":{\"enum\":[\"drain\",\"force" +
-  "\"],\"type\":\"string\"},\"StopParams\":{\"additionalProperties\":false,\"properti" +
-  "es\":{\"idempotencyKey\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u00" +
-  "00-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"},\"ifGeneration\":{\"maximum\"" +
-  ":9007199254740991,\"minimum\":0,\"type\":\"integer\"},\"mode\":{\"$ref\":\"#/$defs/" +
-  "StopMode\"}},\"required\":[\"mode\",\"ifGeneration\",\"idempotencyKey\"],\"type\":\"" +
-  "object\"},\"StopResult\":{\"additionalProperties\":false,\"properties\":{\"accep" +
-  "tedMode\":{\"$ref\":\"#/$defs/StopMode\"},\"atCursor\":{\"type\":\"string\"},\"dedup" +
-  "ed\":{\"type\":\"boolean\"},\"effectiveMode\":{\"$ref\":\"#/$defs/StopMode\"},\"gene" +
-  "ration\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"integer\"},\"opera" +
-  "tional\":{\"$ref\":\"#/$defs/OperationalStatus\"},\"phase\":{\"$ref\":\"#/$defs/Ph" +
-  "ase\"},\"runId\":{\"type\":\"string\"}},\"required\":[\"generation\",\"runId\",\"phase" +
-  "\",\"acceptedMode\",\"effectiveMode\",\"operational\",\"atCursor\",\"deduped\"],\"ty" +
-  "pe\":\"object\"},\"StructuralBounds\":{\"additionalProperties\":false,\"properti" +
-  "es\":{\"attemptsPerNode\":{\"additionalProperties\":{\"maximum\":90071992547409" +
-  "91,\"minimum\":1,\"type\":\"integer\"},\"propertyNames\":{\"maxLength\":128,\"minLe" +
-  "ngth\":1,\"pattern\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"type\":\"" +
-  "object\"},\"maxNodeExecutions\":{\"maximum\":9007199254740991,\"minimum\":1,\"ty" +
-  "pe\":\"integer\"},\"peakConcurrency\":{\"maximum\":9007199254740991,\"minimum\":1" +
-  ",\"type\":\"integer\"},\"termination\":{\"$ref\":\"#/$defs/TerminationWitness\"}}," +
-  "\"required\":[\"termination\",\"maxNodeExecutions\",\"peakConcurrency\",\"attempt" +
-  "sPerNode\"],\"type\":\"object\"},\"SubscriptionCancelParams\":{\"additionalPrope" +
-  "rties\":false,\"description\":\"Wire body of the generic `subscription/cance" +
-  "l` client notification.\",\"properties\":{\"subscriptionId\":{\"type\":\"string\"" +
-  "}},\"required\":[\"subscriptionId\"],\"type\":\"object\"},\"SubscriptionCloseReas" +
-  "on\":{\"enum\":[\"done\",\"SLOW_CONSUMER\"],\"type\":\"string\"},\"SubscriptionClose" +
-  "dNotification\":{\"additionalProperties\":false,\"description\":\"Wire body of" +
-  " the terminal `subscription/closed` server notification.\",\"properties\":{" +
-  "\"lastDeliveredCursor\":{\"type\":[\"string\",\"null\"]},\"reason\":{\"$ref\":\"#/$de" +
-  "fs/SubscriptionCloseReason\"},\"subscriptionId\":{\"type\":\"string\"}},\"requir" +
-  "ed\":[\"subscriptionId\",\"reason\"],\"type\":\"object\"},\"TerminalResult\":{\"desc" +
-  "ription\":\"Authoritative terminal value for backends that can durably rec" +
-  "onstruct a completed graph.\\n\\nThis is additive to [`GetResult`]: backen" +
-  "ds that do not yet expose terminal values leave the\\noptional field abse" +
-  "nt, including when their status is already `finished`.\",\"oneOf\":[{\"addit" +
-  "ionalProperties\":false,\"properties\":{\"output\":true,\"status\":{\"const\":\"su" +
-  "cceeded\",\"type\":\"string\"}},\"required\":[\"status\",\"output\"],\"type\":\"object" +
-  "\"},{\"additionalProperties\":false,\"properties\":{\"reason\":{\"maxLength\":128" +
-  ",\"minLength\":1,\"pattern\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"" +
-  "status\":{\"const\":\"failed\",\"type\":\"string\"}},\"required\":[\"status\",\"reason" +
-  "\"],\"type\":\"object\"}]},\"TerminationWitness\":{\"oneOf\":[{\"additionalPropert" +
-  "ies\":false,\"properties\":{\"kind\":{\"const\":\"acyclic\",\"type\":\"string\"},\"ord" +
-  "er\":{\"$ref\":\"#/$defs/NonEmptyVec_of_NodeName\"}},\"required\":[\"kind\",\"orde" +
-  "r\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":" +
-  "{\"const\":\"bounded\",\"type\":\"string\"},\"maxIterations\":{\"maximum\":900719925" +
-  "4740991,\"minimum\":1,\"type\":\"integer\"},\"ranking\":{\"$ref\":\"#/$defs/NonEmpt" +
-  "yVec_of_FieldPath\"}},\"required\":[\"kind\",\"ranking\",\"maxIterations\"],\"type" +
-  "\":\"object\"}]},\"TokenUsage\":{\"additionalProperties\":false,\"description\":\"" +
-  "Run-wide sum of provider-reported usage for every launched agent invocat" +
-  "ion.\\n\\n`complete` is false when at least one invocation did not report " +
-  "usable counters. Cache\\ncounters are omitted when the provider does not " +
-  "expose them consistently.\",\"properties\":{\"cacheCreationInputTokens\":{\"ma" +
-  "ximum\":9007199254740991,\"minimum\":0,\"type\":[\"integer\",\"null\"]},\"cacheRea" +
-  "dInputTokens\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\":[\"integer\"," +
-  "\"null\"]},\"complete\":{\"type\":\"boolean\"},\"inputTokens\":{\"maximum\":90071992" +
-  "54740991,\"minimum\":0,\"type\":\"integer\"},\"outputTokens\":{\"maximum\":9007199" +
-  "254740991,\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"inputTokens\",\"outp" +
-  "utTokens\",\"complete\"],\"type\":\"object\"},\"UpdateParams\":{\"additionalProper" +
-  "ties\":false,\"anyOf\":[{\"required\":[\"labels\"]},{\"required\":[\"logLevel\"]},{" +
-  "\"required\":[\"suspended\"]}],\"properties\":{\"idempotencyKey\":{\"maxLength\":2" +
+  "},\"title\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\" +
+  "u007f-\\\\u009f]+$\",\"type\":\"string\"}},\"required\":[\"title\",\"graph\",\"initial" +
+  "Input\",\"runtime\",\"source\",\"submissionKey\"],\"type\":\"object\"},\"RunSubmitPa" +
+  "rams\":{\"additionalProperties\":false,\"description\":\"Trusted controller bo" +
+  "otstrap admission. The host assigns the only public run identity before\\" +
+  "ncontroller start; the immutable submission remains identity-neutral.\",\"" +
+  "properties\":{\"runId\":{\"type\":\"string\"},\"submission\":{\"$ref\":\"#/$defs/Run" +
+  "Submission\"}},\"required\":[\"runId\",\"submission\"],\"type\":\"object\"},\"RunSub" +
+  "mitResult\":{\"additionalProperties\":false,\"description\":\"A successful sub" +
+  "mission returns the one public identity used by every later run method.\"" +
+  ",\"properties\":{\"runId\":{\"type\":\"string\"}},\"required\":[\"runId\"],\"type\":\"o" +
+  "bject\"},\"RunWatchEventNotification\":{\"additionalProperties\":false,\"descr" +
+  "iption\":\"One durable public status projection. `cursor` is stable run hi" +
+  "story, not a connection-local\\nsequence; clients resume strictly after i" +
+  "t.\",\"properties\":{\"cursor\":{\"type\":\"string\"},\"runId\":{\"type\":\"string\"},\"" +
+  "size\":{\"$ref\":\"#/$defs/RunSize\"},\"source\":{\"$ref\":\"#/$defs/ResolvedSourc" +
+  "e\"},\"status\":{\"$ref\":\"#/$defs/RunStatus\"},\"subscriptionId\":{\"type\":\"stri" +
+  "ng\"},\"title\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001" +
+  "f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"}},\"required\":[\"subscriptionId\",\"run" +
+  "Id\",\"title\",\"source\",\"size\",\"cursor\",\"status\"],\"type\":\"object\"},\"RunWatc" +
+  "hParams\":{\"additionalProperties\":false,\"description\":\"Establishes a dura" +
+  "ble run watch.\\n\\n`fromCursor` is exclusive. Reconnecting with the last " +
+  "delivered cursor therefore returns each\\nlater watch record once, with n" +
+  "o replayed boundary record and no skipped later record.\",\"properties\":{\"" +
+  "fromCursor\":{\"type\":[\"string\",\"null\"]},\"runId\":{\"type\":\"string\"}},\"requi" +
+  "red\":[\"runId\"],\"type\":\"object\"},\"RunWatchResult\":{\"additionalProperties\"" +
+  ":false,\"properties\":{\"atCursor\":{\"type\":\"string\"},\"runId\":{\"type\":\"strin" +
+  "g\"},\"subscriptionId\":{\"type\":\"string\"}},\"required\":[\"subscriptionId\",\"ru" +
+  "nId\",\"atCursor\"],\"type\":\"object\"},\"RuntimePlan\":{\"oneOf\":[{\"additionalPr" +
+  "operties\":false,\"properties\":{\"harness\":{\"const\":\"codex\",\"type\":\"string\"" +
+  "},\"nodes\":{\"additionalProperties\":false,\"patternProperties\":{\"^[A-Za-z_]" +
+  "[A-Za-z0-9_.-]*$\":{\"$ref\":\"#/$defs/NodeRuntimeBinding\"}},\"type\":\"object\"" +
+  "},\"provider\":{\"$ref\":\"#/$defs/CodexProvider\"},\"size\":{\"$ref\":\"#/$defs/Ru" +
+  "nSize\"}},\"required\":[\"harness\",\"provider\",\"size\",\"nodes\"],\"type\":\"object" +
+  "\"},{\"additionalProperties\":false,\"properties\":{\"harness\":{\"const\":\"claud" +
+  "e\",\"type\":\"string\"},\"nodes\":{\"additionalProperties\":false,\"patternProper" +
+  "ties\":{\"^[A-Za-z_][A-Za-z0-9_.-]*$\":{\"$ref\":\"#/$defs/NodeRuntimeBinding\"" +
+  "}},\"type\":\"object\"},\"provider\":{\"$ref\":\"#/$defs/ClaudeProvider\"},\"size\":" +
+  "{\"$ref\":\"#/$defs/RunSize\"}},\"required\":[\"harness\",\"provider\",\"size\",\"nod" +
+  "es\"],\"type\":\"object\"}]},\"ServerCapabilities\":{\"additionalProperties\":fal" +
+  "se,\"properties\":{\"agentAttach\":{\"default\":false,\"type\":\"boolean\"},\"graph" +
+  "Profiles\":{\"default\":[],\"items\":{\"$ref\":\"#/$defs/GraphProfile\"},\"maxItem" +
+  "s\":2,\"not\":{\"minItems\":2,\"prefixItems\":[{\"const\":\"openengine.graph.singl" +
+  "e-worker/v1\"},{\"const\":\"openengine.graph.full/v1\"}]},\"type\":\"array\",\"uni" +
+  "queItems\":true},\"logs\":{\"default\":false,\"type\":\"boolean\"}},\"type\":\"objec" +
+  "t\"},\"SessionScope\":{\"enum\":[\"execution\",\"node_instance\"],\"type\":\"string\"" +
+  "},\"StopMode\":{\"enum\":[\"drain\",\"force\"],\"type\":\"string\"},\"StopParams\":{\"a" +
+  "dditionalProperties\":false,\"properties\":{\"idempotencyKey\":{\"maxLength\":2" +
   "56,\"minLength\":1,\"pattern\":\"^[^\\\\u0000-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\"" +
   ":\"string\"},\"ifGeneration\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\"" +
-  ":\"integer\"},\"labels\":{\"$ref\":\"#/$defs/Labels\"},\"logLevel\":{\"$ref\":\"#/$de" +
-  "fs/LogLevel\"},\"suspended\":{\"type\":\"boolean\"}},\"required\":[\"ifGeneration\"" +
-  ",\"idempotencyKey\"],\"type\":\"object\"},\"UpdateResult\":{\"additionalPropertie" +
-  "s\":false,\"properties\":{\"atCursor\":{\"type\":\"string\"},\"deduped\":{\"type\":\"b" +
-  "oolean\"},\"generation\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"in" +
-  "teger\"},\"operational\":{\"$ref\":\"#/$defs/OperationalStatus\"},\"phase\":{\"$re" +
-  "f\":\"#/$defs/Phase\"},\"runId\":{\"type\":\"string\"}},\"required\":[\"generation\"," +
-  "\"runId\",\"phase\",\"operational\",\"atCursor\",\"deduped\"],\"type\":\"object\"},\"Wa" +
-  "tchEvent\":{\"description\":\"The closed public event algebra. `Phase` folds" +
-  " the observable cluster status (admission\\ncommit, update, suspend/resum" +
-  "e, stop-request); `NodeBegin`/`NodeEnd` are a testkit-only\\nsynthetic ho" +
-  "ok decoupled from the real dispatch/lease turn mechanism, since no nativ" +
-  "e graph\\nexecutor exists yet; `Bookmark` advances the cursor without cha" +
-  "nging folded public state;\\n`Fault` carries a durable, backend-neutral p" +
-  "rojected `BackendFault`: it correlates to the\\nenclosing `EventNotificat" +
-  "ion.run_id` plus its own optional opaque `executionRef`, and its\\norderi" +
-  "ng/emission never itself authorizes a retry or changes terminal semantic" +
-  "s -- it folds to\\nno public status change, exactly like `Bookmark`; `Fin" +
-  "ished` is always the last event for a\\nrun.\",\"oneOf\":[{\"additionalProper" +
-  "ties\":false,\"properties\":{\"admission\":{\"anyOf\":[{\"$ref\":\"#/$defs/Admissi" +
-  "onTransition\"},{\"type\":\"null\"}]},\"status\":{\"$ref\":\"#/$defs/ClusterStatus" +
-  "\"},\"type\":{\"const\":\"phase\",\"type\":\"string\"}},\"required\":[\"type\",\"status\"" +
-  "],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"input\":t" +
-  "rue,\"node\":{\"$ref\":\"#/$defs/NodeAddress\"},\"type\":{\"const\":\"node_begin\",\"" +
-  "type\":\"string\"}},\"required\":[\"type\",\"node\",\"input\"],\"type\":\"object\"},{\"a" +
-  "dditionalProperties\":false,\"properties\":{\"node\":{\"$ref\":\"#/$defs/NodeAdd" +
-  "ress\"},\"outcome\":{\"$ref\":\"#/$defs/WorkerOutcome\"},\"type\":{\"const\":\"node_" +
-  "end\",\"type\":\"string\"}},\"required\":[\"type\",\"node\",\"outcome\"],\"type\":\"obje" +
-  "ct\"},{\"additionalProperties\":false,\"properties\":{\"type\":{\"const\":\"bookma" +
-  "rk\",\"type\":\"string\"}},\"required\":[\"type\"],\"type\":\"object\"},{\"additionalP" +
-  "roperties\":false,\"properties\":{\"fault\":{\"$ref\":\"#/$defs/BackendFault\"},\"" +
-  "type\":{\"const\":\"fault\",\"type\":\"string\"}},\"required\":[\"type\",\"fault\"],\"ty" +
-  "pe\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"final_status\"" +
-  ":{\"$ref\":\"#/$defs/ClusterStatus\"},\"stop_mode\":{\"anyOf\":[{\"$ref\":\"#/$defs" +
-  "/StopMode\"},{\"type\":\"null\"}]},\"type\":{\"const\":\"finished\",\"type\":\"string\"" +
-  "}},\"required\":[\"type\",\"final_status\"],\"type\":\"object\"}]},\"WatchParams\":{" +
-  "\"additionalProperties\":false,\"properties\":{\"fromCursor\":{\"default\":null," +
-  "\"type\":[\"string\",\"null\"]},\"runId\":{\"default\":null,\"type\":[\"string\",\"null" +
-  "\"]}},\"type\":\"object\"},\"WatchResult\":{\"properties\":{\"atCursor\":{\"type\":[\"" +
-  "string\",\"null\"]},\"runId\":{\"type\":[\"string\",\"null\"]},\"subscriptionId\":{\"t" +
-  "ype\":\"string\"}},\"required\":[\"subscriptionId\"],\"type\":\"object\"},\"WorkerEr" +
-  "rorCode\":{\"enum\":[\"timeout\",\"crash\",\"malformed\",\"refusal\"],\"type\":\"strin" +
-  "g\"},\"WorkerFailureReason\":{\"enum\":[\"declared_failure\",\"policy_denied\",\"i" +
-  "nteractive_input_required\",\"authentication_required\",\"malformed_result\"]" +
-  ",\"type\":\"string\"},\"WorkerOutcome\":{\"allOf\":[{\"$ref\":\"#/$defs/WorkerOutco" +
-  "meWire\"},{\"if\":{\"properties\":{\"status\":{\"const\":\"error\"}},\"required\":[\"s" +
-  "tatus\"]},\"then\":{\"oneOf\":[{\"properties\":{\"reason\":{\"const\":\"declared_fai" +
-  "lure\"}},\"required\":[\"reason\"]},{\"properties\":{\"code\":{\"const\":\"refusal\"}" +
-  ",\"reason\":{\"enum\":[\"policy_denied\",\"interactive_input_required\",\"authent" +
-  "ication_required\"]}},\"required\":[\"code\",\"reason\"]},{\"properties\":{\"code\"" +
-  ":{\"const\":\"malformed\"},\"reason\":{\"const\":\"malformed_result\"}},\"required\"" +
-  ":[\"code\",\"reason\"]}]}}]},\"WorkerOutcomeWire\":{\"oneOf\":[{\"additionalPrope" +
-  "rties\":false,\"properties\":{\"artifacts\":{\"items\":{\"$ref\":\"#/$defs/Artifac" +
-  "tRef\"},\"type\":\"array\"},\"output\":true,\"status\":{\"const\":\"verified\",\"type\"" +
-  ":\"string\"}},\"required\":[\"status\",\"output\",\"artifacts\"],\"type\":\"object\"}," +
-  "{\"additionalProperties\":false,\"properties\":{\"artifacts\":{\"items\":{\"$ref\"" +
-  ":\"#/$defs/ArtifactRef\"},\"type\":\"array\"},\"diagnostic\":true,\"output\":true," +
-  "\"signals\":{\"additionalProperties\":{\"maxLength\":128,\"minLength\":1,\"patter" +
-  "n\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"propertyNames\":{\"maxLe" +
-  "ngth\":128,\"minLength\":1,\"pattern\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"s" +
-  "tring\"},\"type\":\"object\"},\"status\":{\"const\":\"verifier\",\"type\":\"string\"}}," +
-  "\"required\":[\"status\",\"output\",\"signals\",\"diagnostic\",\"artifacts\"],\"type\"" +
-  ":\"object\"},{\"additionalProperties\":false,\"properties\":{\"code\":{\"$ref\":\"#" +
-  "/$defs/WorkerErrorCode\"},\"reason\":{\"$ref\":\"#/$defs/WorkerFailureReason\"}" +
-  ",\"status\":{\"const\":\"error\",\"type\":\"string\"}},\"required\":[\"status\",\"code\"" +
-  ",\"reason\"],\"type\":\"object\"}]},\"WriteBinding\":{\"additionalProperties\":fal" +
-  "se,\"properties\":{\"target\":{\"items\":{\"maxLength\":128,\"minLength\":1,\"patte" +
-  "rn\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"maxItems\":64,\"minItem" +
-  "s\":1,\"type\":\"array\"},\"value\":{\"$ref\":\"#/$defs/NodeOutputSelector\"}},\"req" +
-  "uired\":[\"value\",\"target\"],\"type\":\"object\"}},\"$schema\":\"https://json-sche" +
-  "ma.org/draft/2020-12/schema\",\"properties\":{\"agent_attach_closed_notifica" +
-  "tion\":{\"$ref\":\"#/$defs/JsonRpcNotification8\"},\"agent_attach_event_notifi" +
-  "cation\":{\"$ref\":\"#/$defs/JsonRpcNotification7\"},\"agent_attach_request\":{" +
-  "\"$ref\":\"#/$defs/JsonRpcRequest12\"},\"agent_attach_response\":{\"$ref\":\"#/$d" +
-  "efs/JsonRpcResponse12\"},\"apply_request\":{\"$ref\":\"#/$defs/JsonRpcRequest3" +
-  "\"},\"apply_response\":{\"$ref\":\"#/$defs/JsonRpcResponse3\"},\"cancel_request_" +
-  "notification\":{\"$ref\":\"#/$defs/JsonRpcNotification4\"},\"delete_request\":{" +
-  "\"$ref\":\"#/$defs/JsonRpcRequest9\"},\"delete_response\":{\"$ref\":\"#/$defs/Jso" +
-  "nRpcResponse9\"},\"event_notification\":{\"$ref\":\"#/$defs/JsonRpcNotificatio" +
-  "n\"},\"get_request\":{\"$ref\":\"#/$defs/JsonRpcRequest4\"},\"get_response\":{\"$r" +
-  "ef\":\"#/$defs/JsonRpcResponse4\"},\"initialize_request\":{\"$ref\":\"#/$defs/Js" +
-  "onRpcRequest\"},\"initialize_response\":{\"$ref\":\"#/$defs/JsonRpcResponse\"}," +
-  "\"log_event_notification\":{\"$ref\":\"#/$defs/JsonRpcNotification5\"},\"logs_c" +
-  "losed_notification\":{\"$ref\":\"#/$defs/JsonRpcNotification6\"},\"logs_reques" +
-  "t\":{\"$ref\":\"#/$defs/JsonRpcRequest11\"},\"logs_response\":{\"$ref\":\"#/$defs/" +
-  "JsonRpcResponse11\"},\"plan_request\":{\"$ref\":\"#/$defs/JsonRpcRequest2\"},\"p" +
-  "lan_response\":{\"$ref\":\"#/$defs/JsonRpcResponse2\"},\"resubmit_request\":{\"$" +
-  "ref\":\"#/$defs/JsonRpcRequest8\"},\"resubmit_response\":{\"$ref\":\"#/$defs/Jso" +
-  "nRpcResponse8\"},\"retry_request\":{\"$ref\":\"#/$defs/JsonRpcRequest7\"},\"retr" +
-  "y_response\":{\"$ref\":\"#/$defs/JsonRpcResponse7\"},\"run_attach_event_notifi" +
-  "cation\":{\"$ref\":\"#/$defs/JsonRpcNotification11\"},\"run_attach_request\":{\"" +
-  "$ref\":\"#/$defs/JsonRpcRequest18\"},\"run_attach_response\":{\"$ref\":\"#/$defs" +
-  "/JsonRpcResponse18\"},\"run_force_request\":{\"$ref\":\"#/$defs/JsonRpcRequest" +
-  "19\"},\"run_force_response\":{\"$ref\":\"#/$defs/JsonRpcResponse19\"},\"run_list" +
-  "_request\":{\"$ref\":\"#/$defs/JsonRpcRequest14\"},\"run_list_response\":{\"$ref" +
-  "\":\"#/$defs/JsonRpcResponse14\"},\"run_log_event_notification\":{\"$ref\":\"#/$" +
-  "defs/JsonRpcNotification10\"},\"run_logs_request\":{\"$ref\":\"#/$defs/JsonRpc" +
-  "Request17\"},\"run_logs_response\":{\"$ref\":\"#/$defs/JsonRpcResponse17\"},\"ru" +
-  "n_status_request\":{\"$ref\":\"#/$defs/JsonRpcRequest15\"},\"run_status_respon" +
-  "se\":{\"$ref\":\"#/$defs/JsonRpcResponse15\"},\"run_submit_request\":{\"$ref\":\"#" +
-  "/$defs/JsonRpcRequest13\"},\"run_submit_response\":{\"$ref\":\"#/$defs/JsonRpc" +
-  "Response13\"},\"run_watch_event_notification\":{\"$ref\":\"#/$defs/JsonRpcNoti" +
-  "fication9\"},\"run_watch_request\":{\"$ref\":\"#/$defs/JsonRpcRequest16\"},\"run" +
-  "_watch_response\":{\"$ref\":\"#/$defs/JsonRpcResponse16\"},\"stop_request\":{\"$" +
-  "ref\":\"#/$defs/JsonRpcRequest6\"},\"stop_response\":{\"$ref\":\"#/$defs/JsonRpc" +
-  "Response6\"},\"subscription_cancel_notification\":{\"$ref\":\"#/$defs/JsonRpcN" +
-  "otification2\"},\"subscription_closed_notification\":{\"$ref\":\"#/$defs/JsonR" +
-  "pcNotification3\"},\"update_request\":{\"$ref\":\"#/$defs/JsonRpcRequest5\"},\"u" +
-  "pdate_response\":{\"$ref\":\"#/$defs/JsonRpcResponse5\"},\"watch_request\":{\"$r" +
-  "ef\":\"#/$defs/JsonRpcRequest10\"},\"watch_response\":{\"$ref\":\"#/$defs/JsonRp" +
-  "cResponse10\"}},\"required\":[\"initialize_request\",\"initialize_response\",\"p" +
-  "lan_request\",\"plan_response\",\"apply_request\",\"apply_response\",\"get_reque" +
-  "st\",\"get_response\",\"update_request\",\"update_response\",\"stop_request\",\"st" +
-  "op_response\",\"retry_request\",\"retry_response\",\"resubmit_request\",\"resubm" +
-  "it_response\",\"delete_request\",\"delete_response\",\"watch_request\",\"watch_r" +
-  "esponse\",\"event_notification\",\"subscription_cancel_notification\",\"subscr" +
-  "iption_closed_notification\",\"cancel_request_notification\",\"logs_request\"" +
-  ",\"logs_response\",\"log_event_notification\",\"logs_closed_notification\",\"ag" +
-  "ent_attach_request\",\"agent_attach_response\",\"agent_attach_event_notifica" +
-  "tion\",\"agent_attach_closed_notification\",\"run_submit_request\",\"run_submi" +
-  "t_response\",\"run_list_request\",\"run_list_response\",\"run_status_request\"," +
-  "\"run_status_response\",\"run_watch_request\",\"run_watch_response\",\"run_watc" +
-  "h_event_notification\",\"run_logs_request\",\"run_logs_response\",\"run_log_ev" +
-  "ent_notification\",\"run_attach_request\",\"run_attach_response\",\"run_attach" +
-  "_event_notification\",\"run_force_request\",\"run_force_response\"],\"title\":\"" +
-  "ImplementedProtocolSchema\",\"type\":\"object\"}"
+  ":\"integer\"},\"mode\":{\"$ref\":\"#/$defs/StopMode\"}},\"required\":[\"mode\",\"ifGe" +
+  "neration\",\"idempotencyKey\"],\"type\":\"object\"},\"StopResult\":{\"additionalPr" +
+  "operties\":false,\"properties\":{\"acceptedMode\":{\"$ref\":\"#/$defs/StopMode\"}" +
+  ",\"atCursor\":{\"type\":\"string\"},\"deduped\":{\"type\":\"boolean\"},\"effectiveMod" +
+  "e\":{\"$ref\":\"#/$defs/StopMode\"},\"generation\":{\"maximum\":9007199254740991," +
+  "\"minimum\":0,\"type\":\"integer\"},\"operational\":{\"$ref\":\"#/$defs/Operational" +
+  "Status\"},\"phase\":{\"$ref\":\"#/$defs/Phase\"},\"runId\":{\"type\":\"string\"}},\"re" +
+  "quired\":[\"generation\",\"runId\",\"phase\",\"acceptedMode\",\"effectiveMode\",\"op" +
+  "erational\",\"atCursor\",\"deduped\"],\"type\":\"object\"},\"StructuralBounds\":{\"a" +
+  "dditionalProperties\":false,\"properties\":{\"attemptsPerNode\":{\"additionalP" +
+  "roperties\":{\"maximum\":9007199254740991,\"minimum\":1,\"type\":\"integer\"},\"pr" +
+  "opertyNames\":{\"maxLength\":128,\"minLength\":1,\"pattern\":\"^[A-Za-z_][A-Za-z" +
+  "0-9_.-]*$\",\"type\":\"string\"},\"type\":\"object\"},\"maxNodeExecutions\":{\"maxim" +
+  "um\":9007199254740991,\"minimum\":1,\"type\":\"integer\"},\"peakConcurrency\":{\"m" +
+  "aximum\":9007199254740991,\"minimum\":1,\"type\":\"integer\"},\"termination\":{\"$" +
+  "ref\":\"#/$defs/TerminationWitness\"}},\"required\":[\"termination\",\"maxNodeEx" +
+  "ecutions\",\"peakConcurrency\",\"attemptsPerNode\"],\"type\":\"object\"},\"Subscri" +
+  "ptionCancelParams\":{\"additionalProperties\":false,\"description\":\"Wire bod" +
+  "y of the generic `subscription/cancel` client notification.\",\"properties" +
+  "\":{\"subscriptionId\":{\"type\":\"string\"}},\"required\":[\"subscriptionId\"],\"ty" +
+  "pe\":\"object\"},\"SubscriptionCloseReason\":{\"enum\":[\"done\",\"SLOW_CONSUMER\"]" +
+  ",\"type\":\"string\"},\"SubscriptionClosedNotification\":{\"additionalPropertie" +
+  "s\":false,\"description\":\"Wire body of the terminal `subscription/closed` " +
+  "server notification.\",\"properties\":{\"lastDeliveredCursor\":{\"type\":[\"stri" +
+  "ng\",\"null\"]},\"reason\":{\"$ref\":\"#/$defs/SubscriptionCloseReason\"},\"subscr" +
+  "iptionId\":{\"type\":\"string\"}},\"required\":[\"subscriptionId\",\"reason\"],\"typ" +
+  "e\":\"object\"},\"TerminalResult\":{\"description\":\"Authoritative terminal val" +
+  "ue for backends that can durably reconstruct a completed graph.\\n\\nThis " +
+  "is additive to [`GetResult`]: backends that do not yet expose terminal v" +
+  "alues leave the\\noptional field absent, including when their status is a" +
+  "lready `finished`.\",\"oneOf\":[{\"additionalProperties\":false,\"properties\":" +
+  "{\"output\":true,\"status\":{\"const\":\"succeeded\",\"type\":\"string\"}},\"required" +
+  "\":[\"status\",\"output\"],\"type\":\"object\"},{\"additionalProperties\":false,\"pr" +
+  "operties\":{\"reason\":{\"maxLength\":128,\"minLength\":1,\"pattern\":\"^[A-Za-z_]" +
+  "[A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"status\":{\"const\":\"failed\",\"type\":\"st" +
+  "ring\"}},\"required\":[\"status\",\"reason\"],\"type\":\"object\"}]},\"TerminationWi" +
+  "tness\":{\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"kind\":{\"co" +
+  "nst\":\"acyclic\",\"type\":\"string\"},\"order\":{\"$ref\":\"#/$defs/NonEmptyVec_of_" +
+  "NodeName\"}},\"required\":[\"kind\",\"order\"],\"type\":\"object\"},{\"additionalPro" +
+  "perties\":false,\"properties\":{\"kind\":{\"const\":\"bounded\",\"type\":\"string\"}," +
+  "\"maxIterations\":{\"maximum\":9007199254740991,\"minimum\":1,\"type\":\"integer\"" +
+  "},\"ranking\":{\"$ref\":\"#/$defs/NonEmptyVec_of_FieldPath\"}},\"required\":[\"ki" +
+  "nd\",\"ranking\",\"maxIterations\"],\"type\":\"object\"}]},\"TokenUsage\":{\"additio" +
+  "nalProperties\":false,\"description\":\"Run-wide sum of provider-reported us" +
+  "age for every launched agent invocation.\\n\\n`complete` is false when at " +
+  "least one invocation did not report usable counters. Cache\\ncounters are" +
+  " omitted when the provider does not expose them consistently.\",\"properti" +
+  "es\":{\"cacheCreationInputTokens\":{\"maximum\":9007199254740991,\"minimum\":0," +
+  "\"type\":[\"integer\",\"null\"]},\"cacheReadInputTokens\":{\"maximum\":90071992547" +
+  "40991,\"minimum\":0,\"type\":[\"integer\",\"null\"]},\"complete\":{\"type\":\"boolean" +
+  "\"},\"inputTokens\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"integer" +
+  "\"},\"outputTokens\":{\"maximum\":9007199254740991,\"minimum\":0,\"type\":\"intege" +
+  "r\"}},\"required\":[\"inputTokens\",\"outputTokens\",\"complete\"],\"type\":\"object" +
+  "\"},\"UpdateParams\":{\"additionalProperties\":false,\"anyOf\":[{\"required\":[\"l" +
+  "abels\"]},{\"required\":[\"logLevel\"]},{\"required\":[\"suspended\"]}],\"properti" +
+  "es\":{\"idempotencyKey\":{\"maxLength\":256,\"minLength\":1,\"pattern\":\"^[^\\\\u00" +
+  "00-\\\\u001f\\\\u007f-\\\\u009f]+$\",\"type\":\"string\"},\"ifGeneration\":{\"maximum\"" +
+  ":9007199254740991,\"minimum\":0,\"type\":\"integer\"},\"labels\":{\"$ref\":\"#/$def" +
+  "s/Labels\"},\"logLevel\":{\"$ref\":\"#/$defs/LogLevel\"},\"suspended\":{\"type\":\"b" +
+  "oolean\"}},\"required\":[\"ifGeneration\",\"idempotencyKey\"],\"type\":\"object\"}," +
+  "\"UpdateResult\":{\"additionalProperties\":false,\"properties\":{\"atCursor\":{\"" +
+  "type\":\"string\"},\"deduped\":{\"type\":\"boolean\"},\"generation\":{\"maximum\":900" +
+  "7199254740991,\"minimum\":0,\"type\":\"integer\"},\"operational\":{\"$ref\":\"#/$de" +
+  "fs/OperationalStatus\"},\"phase\":{\"$ref\":\"#/$defs/Phase\"},\"runId\":{\"type\":" +
+  "\"string\"}},\"required\":[\"generation\",\"runId\",\"phase\",\"operational\",\"atCur" +
+  "sor\",\"deduped\"],\"type\":\"object\"},\"WatchEvent\":{\"description\":\"The closed" +
+  " public event algebra. `Phase` folds the observable cluster status (admi" +
+  "ssion\\ncommit, update, suspend/resume, stop-request); `NodeBegin`/`NodeE" +
+  "nd` are a testkit-only\\nsynthetic hook decoupled from the real dispatch/" +
+  "lease turn mechanism, since no native graph\\nexecutor exists yet; `Bookm" +
+  "ark` advances the cursor without changing folded public state;\\n`Fault` " +
+  "carries a durable, backend-neutral projected `BackendFault`: it correlat" +
+  "es to the\\nenclosing `EventNotification.run_id` plus its own optional op" +
+  "aque `executionRef`, and its\\nordering/emission never itself authorizes " +
+  "a retry or changes terminal semantics -- it folds to\\nno public status c" +
+  "hange, exactly like `Bookmark`; `Finished` is always the last event for " +
+  "a\\nrun.\",\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"admission" +
+  "\":{\"anyOf\":[{\"$ref\":\"#/$defs/AdmissionTransition\"},{\"type\":\"null\"}]},\"st" +
+  "atus\":{\"$ref\":\"#/$defs/ClusterStatus\"},\"type\":{\"const\":\"phase\",\"type\":\"s" +
+  "tring\"}},\"required\":[\"type\",\"status\"],\"type\":\"object\"},{\"additionalPrope" +
+  "rties\":false,\"properties\":{\"input\":true,\"node\":{\"$ref\":\"#/$defs/NodeAddr" +
+  "ess\"},\"type\":{\"const\":\"node_begin\",\"type\":\"string\"}},\"required\":[\"type\"," +
+  "\"node\",\"input\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properti" +
+  "es\":{\"node\":{\"$ref\":\"#/$defs/NodeAddress\"},\"outcome\":{\"$ref\":\"#/$defs/Wo" +
+  "rkerOutcome\"},\"type\":{\"const\":\"node_end\",\"type\":\"string\"}},\"required\":[\"" +
+  "type\",\"node\",\"outcome\"],\"type\":\"object\"},{\"additionalProperties\":false,\"" +
+  "properties\":{\"type\":{\"const\":\"bookmark\",\"type\":\"string\"}},\"required\":[\"t" +
+  "ype\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"faul" +
+  "t\":{\"$ref\":\"#/$defs/BackendFault\"},\"type\":{\"const\":\"fault\",\"type\":\"strin" +
+  "g\"}},\"required\":[\"type\",\"fault\"],\"type\":\"object\"},{\"additionalProperties" +
+  "\":false,\"properties\":{\"final_status\":{\"$ref\":\"#/$defs/ClusterStatus\"},\"s" +
+  "top_mode\":{\"anyOf\":[{\"$ref\":\"#/$defs/StopMode\"},{\"type\":\"null\"}]},\"type\"" +
+  ":{\"const\":\"finished\",\"type\":\"string\"}},\"required\":[\"type\",\"final_status\"" +
+  "],\"type\":\"object\"}]},\"WatchParams\":{\"additionalProperties\":false,\"proper" +
+  "ties\":{\"fromCursor\":{\"default\":null,\"type\":[\"string\",\"null\"]},\"runId\":{\"" +
+  "default\":null,\"type\":[\"string\",\"null\"]}},\"type\":\"object\"},\"WatchResult\":" +
+  "{\"properties\":{\"atCursor\":{\"type\":[\"string\",\"null\"]},\"runId\":{\"type\":[\"s" +
+  "tring\",\"null\"]},\"subscriptionId\":{\"type\":\"string\"}},\"required\":[\"subscri" +
+  "ptionId\"],\"type\":\"object\"},\"WorkerErrorCode\":{\"enum\":[\"timeout\",\"crash\"," +
+  "\"malformed\",\"refusal\"],\"type\":\"string\"},\"WorkerFailureReason\":{\"enum\":[\"" +
+  "declared_failure\",\"policy_denied\",\"interactive_input_required\",\"authenti" +
+  "cation_required\",\"malformed_result\"],\"type\":\"string\"},\"WorkerOutcome\":{\"" +
+  "allOf\":[{\"$ref\":\"#/$defs/WorkerOutcomeWire\"},{\"if\":{\"properties\":{\"statu" +
+  "s\":{\"const\":\"error\"}},\"required\":[\"status\"]},\"then\":{\"oneOf\":[{\"properti" +
+  "es\":{\"reason\":{\"const\":\"declared_failure\"}},\"required\":[\"reason\"]},{\"pro" +
+  "perties\":{\"code\":{\"const\":\"refusal\"},\"reason\":{\"enum\":[\"policy_denied\",\"" +
+  "interactive_input_required\",\"authentication_required\"]}},\"required\":[\"co" +
+  "de\",\"reason\"]},{\"properties\":{\"code\":{\"const\":\"malformed\"},\"reason\":{\"co" +
+  "nst\":\"malformed_result\"}},\"required\":[\"code\",\"reason\"]}]}}]},\"WorkerOutc" +
+  "omeWire\":{\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"artifact" +
+  "s\":{\"items\":{\"$ref\":\"#/$defs/ArtifactRef\"},\"type\":\"array\"},\"output\":true" +
+  ",\"status\":{\"const\":\"verified\",\"type\":\"string\"}},\"required\":[\"status\",\"ou" +
+  "tput\",\"artifacts\"],\"type\":\"object\"},{\"additionalProperties\":false,\"prope" +
+  "rties\":{\"artifacts\":{\"items\":{\"$ref\":\"#/$defs/ArtifactRef\"},\"type\":\"arra" +
+  "y\"},\"diagnostic\":true,\"output\":true,\"signals\":{\"additionalProperties\":{\"" +
+  "maxLength\":128,\"minLength\":1,\"pattern\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"typ" +
+  "e\":\"string\"},\"propertyNames\":{\"maxLength\":128,\"minLength\":1,\"pattern\":\"^" +
+  "[A-Za-z_][A-Za-z0-9_.-]*$\",\"type\":\"string\"},\"type\":\"object\"},\"status\":{\"" +
+  "const\":\"verifier\",\"type\":\"string\"}},\"required\":[\"status\",\"output\",\"signa" +
+  "ls\",\"diagnostic\",\"artifacts\"],\"type\":\"object\"},{\"additionalProperties\":f" +
+  "alse,\"properties\":{\"code\":{\"$ref\":\"#/$defs/WorkerErrorCode\"},\"reason\":{\"" +
+  "$ref\":\"#/$defs/WorkerFailureReason\"},\"status\":{\"const\":\"error\",\"type\":\"s" +
+  "tring\"}},\"required\":[\"status\",\"code\",\"reason\"],\"type\":\"object\"}]},\"Write" +
+  "Binding\":{\"additionalProperties\":false,\"properties\":{\"target\":{\"items\":{" +
+  "\"maxLength\":128,\"minLength\":1,\"pattern\":\"^[A-Za-z_][A-Za-z0-9_.-]*$\",\"ty" +
+  "pe\":\"string\"},\"maxItems\":64,\"minItems\":1,\"type\":\"array\"},\"value\":{\"$ref\"" +
+  ":\"#/$defs/NodeOutputSelector\"}},\"required\":[\"value\",\"target\"],\"type\":\"ob" +
+  "ject\"}},\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"proper" +
+  "ties\":{\"agent_attach_closed_notification\":{\"$ref\":\"#/$defs/JsonRpcNotifi" +
+  "cation8\"},\"agent_attach_event_notification\":{\"$ref\":\"#/$defs/JsonRpcNoti" +
+  "fication7\"},\"agent_attach_request\":{\"$ref\":\"#/$defs/JsonRpcRequest12\"},\"" +
+  "agent_attach_response\":{\"$ref\":\"#/$defs/JsonRpcResponse12\"},\"apply_reque" +
+  "st\":{\"$ref\":\"#/$defs/JsonRpcRequest3\"},\"apply_response\":{\"$ref\":\"#/$defs" +
+  "/JsonRpcResponse3\"},\"cancel_request_notification\":{\"$ref\":\"#/$defs/JsonR" +
+  "pcNotification4\"},\"delete_request\":{\"$ref\":\"#/$defs/JsonRpcRequest9\"},\"d" +
+  "elete_response\":{\"$ref\":\"#/$defs/JsonRpcResponse9\"},\"event_notification\"" +
+  ":{\"$ref\":\"#/$defs/JsonRpcNotification\"},\"get_request\":{\"$ref\":\"#/$defs/J" +
+  "sonRpcRequest4\"},\"get_response\":{\"$ref\":\"#/$defs/JsonRpcResponse4\"},\"ini" +
+  "tialize_request\":{\"$ref\":\"#/$defs/JsonRpcRequest\"},\"initialize_response\"" +
+  ":{\"$ref\":\"#/$defs/JsonRpcResponse\"},\"log_event_notification\":{\"$ref\":\"#/" +
+  "$defs/JsonRpcNotification5\"},\"logs_closed_notification\":{\"$ref\":\"#/$defs" +
+  "/JsonRpcNotification6\"},\"logs_request\":{\"$ref\":\"#/$defs/JsonRpcRequest11" +
+  "\"},\"logs_response\":{\"$ref\":\"#/$defs/JsonRpcResponse11\"},\"plan_request\":{" +
+  "\"$ref\":\"#/$defs/JsonRpcRequest2\"},\"plan_response\":{\"$ref\":\"#/$defs/JsonR" +
+  "pcResponse2\"},\"resubmit_request\":{\"$ref\":\"#/$defs/JsonRpcRequest8\"},\"res" +
+  "ubmit_response\":{\"$ref\":\"#/$defs/JsonRpcResponse8\"},\"retry_request\":{\"$r" +
+  "ef\":\"#/$defs/JsonRpcRequest7\"},\"retry_response\":{\"$ref\":\"#/$defs/JsonRpc" +
+  "Response7\"},\"run_attach_event_notification\":{\"$ref\":\"#/$defs/JsonRpcNoti" +
+  "fication11\"},\"run_attach_request\":{\"$ref\":\"#/$defs/JsonRpcRequest18\"},\"r" +
+  "un_attach_response\":{\"$ref\":\"#/$defs/JsonRpcResponse18\"},\"run_force_requ" +
+  "est\":{\"$ref\":\"#/$defs/JsonRpcRequest19\"},\"run_force_response\":{\"$ref\":\"#" +
+  "/$defs/JsonRpcResponse19\"},\"run_list_request\":{\"$ref\":\"#/$defs/JsonRpcRe" +
+  "quest14\"},\"run_list_response\":{\"$ref\":\"#/$defs/JsonRpcResponse14\"},\"run_" +
+  "log_event_notification\":{\"$ref\":\"#/$defs/JsonRpcNotification10\"},\"run_lo" +
+  "gs_request\":{\"$ref\":\"#/$defs/JsonRpcRequest17\"},\"run_logs_response\":{\"$r" +
+  "ef\":\"#/$defs/JsonRpcResponse17\"},\"run_status_request\":{\"$ref\":\"#/$defs/J" +
+  "sonRpcRequest15\"},\"run_status_response\":{\"$ref\":\"#/$defs/JsonRpcResponse" +
+  "15\"},\"run_submit_request\":{\"$ref\":\"#/$defs/JsonRpcRequest13\"},\"run_submi" +
+  "t_response\":{\"$ref\":\"#/$defs/JsonRpcResponse13\"},\"run_watch_event_notifi" +
+  "cation\":{\"$ref\":\"#/$defs/JsonRpcNotification9\"},\"run_watch_request\":{\"$r" +
+  "ef\":\"#/$defs/JsonRpcRequest16\"},\"run_watch_response\":{\"$ref\":\"#/$defs/Js" +
+  "onRpcResponse16\"},\"stop_request\":{\"$ref\":\"#/$defs/JsonRpcRequest6\"},\"sto" +
+  "p_response\":{\"$ref\":\"#/$defs/JsonRpcResponse6\"},\"subscription_cancel_not" +
+  "ification\":{\"$ref\":\"#/$defs/JsonRpcNotification2\"},\"subscription_closed_" +
+  "notification\":{\"$ref\":\"#/$defs/JsonRpcNotification3\"},\"update_request\":{" +
+  "\"$ref\":\"#/$defs/JsonRpcRequest5\"},\"update_response\":{\"$ref\":\"#/$defs/Jso" +
+  "nRpcResponse5\"},\"watch_request\":{\"$ref\":\"#/$defs/JsonRpcRequest10\"},\"wat" +
+  "ch_response\":{\"$ref\":\"#/$defs/JsonRpcResponse10\"}},\"required\":[\"initiali" +
+  "ze_request\",\"initialize_response\",\"plan_request\",\"plan_response\",\"apply_" +
+  "request\",\"apply_response\",\"get_request\",\"get_response\",\"update_request\"," +
+  "\"update_response\",\"stop_request\",\"stop_response\",\"retry_request\",\"retry_" +
+  "response\",\"resubmit_request\",\"resubmit_response\",\"delete_request\",\"delet" +
+  "e_response\",\"watch_request\",\"watch_response\",\"event_notification\",\"subsc" +
+  "ription_cancel_notification\",\"subscription_closed_notification\",\"cancel_" +
+  "request_notification\",\"logs_request\",\"logs_response\",\"log_event_notifica" +
+  "tion\",\"logs_closed_notification\",\"agent_attach_request\",\"agent_attach_re" +
+  "sponse\",\"agent_attach_event_notification\",\"agent_attach_closed_notificat" +
+  "ion\",\"run_submit_request\",\"run_submit_response\",\"run_list_request\",\"run_" +
+  "list_response\",\"run_status_request\",\"run_status_response\",\"run_watch_req" +
+  "uest\",\"run_watch_response\",\"run_watch_event_notification\",\"run_logs_requ" +
+  "est\",\"run_logs_response\",\"run_log_event_notification\",\"run_attach_reques" +
+  "t\",\"run_attach_response\",\"run_attach_event_notification\",\"run_force_requ" +
+  "est\",\"run_force_response\"],\"title\":\"ImplementedProtocolSchema\",\"type\":\"o" +
+  "bject\"}"
 );

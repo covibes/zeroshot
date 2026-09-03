@@ -21,6 +21,8 @@ async fn durable_logs_resume_exclusively_without_gaps_or_duplicates() {
         ["v2:4", "v2:6"]
     );
     assert_eq!(records.assert_at(0).record.message.as_str(), "first");
+    assert_eq!(records.assert_at(0).timestamp.get(), 1_725_000_000_123);
+    assert_eq!(records.assert_at(1).timestamp.get(), 1_725_000_000_456);
     let saved_log_cursor = records.assert_at(0).cursor.clone();
     drop(logs);
     let (_, mut resumed_logs) = service
@@ -34,6 +36,7 @@ async fn durable_logs_resume_exclusively_without_gaps_or_duplicates() {
     let resumed = resumed_logs.read_available().await.assert_value();
     assert_eq!(resumed.len(), 1);
     assert_eq!(resumed.assert_at(0).cursor.as_str(), "v2:6");
+    assert_eq!(resumed.assert_at(0).timestamp.get(), 1_725_000_000_456);
 }
 
 #[derive(Default)]
@@ -83,10 +86,12 @@ impl NodeDriver for ParallelVerifierDriver {
         control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
         self.release.wait().await;
-        control.emit(LiveOutput::new(
-            LiveOutputStream::Output,
-            invocation.node.reference.node.as_str(),
-        )?)?;
+        control
+            .emit(LiveOutput::new(
+                LiveOutputStream::Output,
+                invocation.node.reference.node.as_str(),
+            )?)
+            .await?;
         Ok(WorkerOutcome::Verifier {
             output: Value::Null,
             signals: BTreeMap::new(),
@@ -105,10 +110,14 @@ impl NodeDriver for ControlledDriver {
         _invocation: DriverInvocation,
         control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        control.emit(LiveOutput::new(LiveOutputStream::Output, "before attach")?)?;
+        control
+            .emit(LiveOutput::new(LiveOutputStream::Output, "before attach")?)
+            .await?;
         self.first_emitted.notify_one();
         self.release.notified().await;
-        control.emit(LiveOutput::new(LiveOutputStream::Output, "after attach")?)?;
+        control
+            .emit(LiveOutput::new(LiveOutputStream::Output, "after attach")?)
+            .await?;
         Ok(WorkerOutcome::Verified {
             output: Value::Null,
             artifacts: Vec::new(),

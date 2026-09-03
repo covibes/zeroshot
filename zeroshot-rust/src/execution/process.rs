@@ -4,28 +4,50 @@ mod platform_unix;
 #[cfg(windows)]
 mod platform_windows;
 mod session;
+mod session_io;
 mod session_runtime;
 mod spawn_recovery;
+mod tail_buffer;
+
+#[path = "process/diagnostic.rs"]
+mod diagnostic;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use thiserror::Error;
 
 use platform::ProcessContainment;
+pub(super) use diagnostic::io_error_detail;
 pub use session::{
     MAX_PROCESS_FRAME_BYTES, MAX_PROCESS_FRAMING_OVERHEAD_BYTES, MAX_PROCESS_MESSAGE_BYTES,
     PROCESS_STDIN_CAPACITY, PROCESS_STDOUT_CAPACITY, ProcessFrame, ProcessOutputChunk,
     ProcessSession, ProcessSessionCommand, ProcessSessionOutput,
 };
+pub(crate) use session::ProcessStdout;
 
 pub const MAX_PROCESS_DIAGNOSTIC_BYTES: usize = 64 * 1024;
-pub const MAX_PROCESS_ARGV_ITEMS: usize = 256;
-pub const MAX_PROCESS_ARGV_BYTES: usize = 64 * 1024;
-pub const MAX_PROCESS_ENV_ITEMS: usize = 256;
-pub const MAX_PROCESS_ENV_BYTES: usize = 64 * 1024;
+/// Last-resort allocation guards for already-constructed provider commands.
+///
+/// Provider-owned schemas and admitted environments have substantially smaller domain bounds.
+/// These limits deliberately sit far above those bounds so this generic process seam cannot
+/// reject an otherwise valid provider invocation before the operating system applies its own
+/// platform-specific launch limits.
+pub const MAX_PROCESS_ARGV_ITEMS: usize = 16 * 1024;
+pub const MAX_PROCESS_ARGV_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_PROCESS_ENV_ITEMS: usize = 16 * 1024;
+pub const MAX_PROCESS_ENV_BYTES: usize = 16 * 1024 * 1024;
 pub const HOSTED_WORKER_UID: u32 = 10_002;
 pub const HOSTED_WORKER_GID: u32 = 10_002;
+pub(super) const PROCESS_RELEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const PROCESS_TREE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const PROCESS_FORCED_IO_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+pub(crate) const CONTAINED_PROCESS_CLEANUP_BUDGET: Duration = Duration::from_secs(
+    PROCESS_RELEASE_WAIT_TIMEOUT.as_secs()
+        + PROCESS_TREE_CLEANUP_TIMEOUT.as_secs()
+        + PROCESS_FORCED_IO_DRAIN_TIMEOUT.as_secs(),
+);
 
 pub(crate) fn write_new_file(path: &Path, bytes: &[u8], unix_mode: u32) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
@@ -301,15 +323,19 @@ fn create_private_directory(path: &Path) -> Result<(), ProcessRunnerError> {
     match std::fs::create_dir(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(_) => Err(ProcessRunnerError::Launch(
-            "provider private home could not be created".to_owned(),
-        )),
+        Err(error) => Err(ProcessRunnerError::Launch(io_error_detail(
+            "provider private home create failed",
+            &error,
+        ))),
     }
 }
 
 fn validate_private_directory(path: &Path) -> Result<(), ProcessRunnerError> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|_| {
-        ProcessRunnerError::Launch("provider private home could not be inspected".to_owned())
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        ProcessRunnerError::Launch(io_error_detail(
+            "provider private home inspection failed",
+            &error,
+        ))
     })?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(ProcessRunnerError::InvalidCommand(
@@ -323,8 +349,11 @@ fn validate_private_directory(path: &Path) -> Result<(), ProcessRunnerError> {
 fn set_private_directory_mode(path: &Path) -> Result<(), ProcessRunnerError> {
     use std::os::unix::fs::PermissionsExt;
 
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|_| {
-        ProcessRunnerError::Launch("provider private home mode could not be set".to_owned())
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|error| {
+        ProcessRunnerError::Launch(io_error_detail(
+            "provider private home chmod failed",
+            &error,
+        ))
     })
 }
 
@@ -346,9 +375,10 @@ fn set_private_directory_owner(
         })?;
         // SAFETY: the path is a live NUL-free C string and the caller supplied fixed numeric IDs.
         if unsafe { libc::chown(path.as_ptr(), uid, gid) } != 0 {
-            return Err(ProcessRunnerError::Launch(
-                "provider private home ownership could not be set".to_owned(),
-            ));
+            return Err(ProcessRunnerError::Launch(io_error_detail(
+                "provider private home chown failed",
+                &std::io::Error::last_os_error(),
+            )));
         }
     }
     Ok(())

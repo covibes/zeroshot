@@ -399,6 +399,7 @@ impl NativeV2CliBackend for FakeBackend {
                     "subscriptionId":format!("logs-{attempt}"),
                     "runId":params.run_id,
                     "cursor":cursor,
+                    "timestamp":1_725_000_000_123_u64,
                     "record":{"level":"info","target":"agent","message":message}
                 }))
                 .assert_value(),

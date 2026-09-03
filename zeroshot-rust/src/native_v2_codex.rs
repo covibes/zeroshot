@@ -6,6 +6,7 @@
 
 mod command;
 mod output;
+mod process;
 mod schema_file;
 #[path = "native_v2_codex/session.rs"]
 mod session;
@@ -19,14 +20,13 @@ use tokio::time::{Duration, Instant};
 
 use crate::execution::driver::WorkspaceCapability;
 use crate::execution::process::{
-    HostedProcessPool, LocalProcessRunner, ProcessFrame, ProcessSession, ProcessSessionCommand,
-    ProcessSessionOutput,
+    HostedProcessPool, LocalProcessRunner, ProcessRunnerError, ProcessSessionCommand,
 };
 use crate::native_v2_capsule::provider_process::{
     ClosedSessionFailure, ProviderFailure, ProviderFailureRetry, ProviderProcessRunners,
-    process_scope, redaction_values, validate_process_cleanup, validate_process_output,
+    process_scope, redaction_values, with_driver_detail,
 };
-use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
+use crate::native_v2_contract::CodexProvider;
 use crate::native_v2_runner::{
     AgentResponse, AgentResponseState, render_agent_prompt, resolve_agent_response_with_dialect,
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError,
@@ -35,16 +35,16 @@ use crate::native_v2_runner::{
 
 use command::{
     add_local_execution_config, add_local_execution_policy, add_node_args, add_provider_args,
-    add_resume_command, add_session_target, configure_provider_auth, process_environment,
-    role_settings,
+    add_resume_command, add_session_target, agent_selection, configure_provider_auth,
+    process_environment, path_text, role_settings,
 };
-use output::{CodexOutput, CodexOutputDecoder};
+use output::CodexOutput;
+use process::{ProcessOpen, exchange_turn, open_process};
 use schema_file::CodexSchemaFile;
 use session::CodexSession;
-use turn::{CodexCommandInput, CodexTurnProcess};
+use turn::{CodexCommandInput, CodexTurnProcess, CodexTurnProcessOpen};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
-const MAX_CODEX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Runtime capabilities required to launch Codex. None of these paths are durable run data.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -116,9 +116,11 @@ impl NativeV2CodexAdapter {
     fn turn_process(
         &self,
         invocation: &DriverInvocation,
-    ) -> Result<(LocalProcessRunner, PathBuf), NodeRunnerError> {
-        let scope = process_scope(invocation)?;
-        self.runners.turn_process(&self.config.runtime_home, scope)
+    ) -> Result<Result<(LocalProcessRunner, PathBuf), ProcessRunnerError>, NodeRunnerError> {
+        let scope = process_scope(invocation).map_err(|error| {
+            with_driver_detail(error, "Codex process scope requires an agent node role")
+        })?;
+        Ok(self.runners.turn_process(&self.config.runtime_home, scope))
     }
 
     fn command(
@@ -127,9 +129,15 @@ impl NativeV2CodexAdapter {
         input: CodexCommandInput<'_>,
     ) -> Result<ProcessSessionCommand, NodeRunnerError> {
         let invocation = turn.invocation;
-        let (model, effort) = agent_selection(&invocation.node.binding)?;
-        let (sandbox, access) = role_settings(invocation.role)?;
-        let executable = path_text(&self.config.executable)?;
+        let (model, effort) = agent_selection(&invocation.node.binding).map_err(|error| {
+            with_driver_detail(error, "Codex command requires an agent runtime binding")
+        })?;
+        let (sandbox, access) = role_settings(invocation.role).map_err(|error| {
+            with_driver_detail(error, "Codex workspace policy rejected the node role")
+        })?;
+        let executable = path_text(&self.config.executable).map_err(|error| {
+            with_driver_detail(error, "Codex executable path is not valid on this platform")
+        })?;
         let workspace = self.config.workspace.clone();
         let mut argv = vec!["exec".to_owned()];
         self.add_execution_policy(&mut argv, sandbox);
@@ -137,13 +145,25 @@ impl NativeV2CodexAdapter {
         add_provider_args(&mut argv, self.config.provider);
         self.add_execution_config(&mut argv, invocation.role);
         add_node_args(&mut argv, model.as_str(), effort.copied());
-        argv.extend(["--output-schema".to_owned(), path_text(input.schema_path)?]);
+        argv.extend([
+            "--output-schema".to_owned(),
+            path_text(input.schema_path).map_err(|error| {
+                with_driver_detail(
+                    error,
+                    "Codex response schema path is not valid on this platform",
+                )
+            })?,
+        ]);
         add_session_target(&mut argv, input.resume);
 
         Ok(ProcessSessionCommand {
             program: executable,
             argv,
-            environment: self.provider_environment(&invocation.environment, input.runtime_home)?,
+            environment: self
+                .provider_environment(&invocation.environment, input.runtime_home)
+                .map_err(|error| {
+                    with_driver_detail(error, "Codex provider environment is invalid")
+                })?,
             workspace: WorkspaceCapability {
                 current_dir: workspace,
                 mode: access,
@@ -158,9 +178,21 @@ impl NativeV2CodexAdapter {
         runtime_home: &Path,
     ) -> Result<BTreeMap<String, String>, NodeRunnerError> {
         let (home, codex_home) = match &self.config.local_user {
-            Some(local) => (path_text(&local.home)?, path_text(&local.codex_home)?),
+            Some(local) => (
+                path_text(&local.home).map_err(|error| {
+                    with_driver_detail(error, "Codex user home is not a valid platform path")
+                })?,
+                path_text(&local.codex_home).map_err(|error| {
+                    with_driver_detail(
+                        error,
+                        "Codex configuration home is not a valid platform path",
+                    )
+                })?,
+            ),
             None => {
-                let runtime_home = path_text(runtime_home)?;
+                let runtime_home = path_text(runtime_home).map_err(|error| {
+                    with_driver_detail(error, "Codex runtime home is not a valid platform path")
+                })?;
                 (runtime_home.clone(), runtime_home)
             }
         };
@@ -169,17 +201,31 @@ impl NativeV2CodexAdapter {
             home,
             codex_home,
             self.config.search_path.clone(),
-        )?;
+        )
+        .map_err(|error| {
+            with_driver_detail(
+                error,
+                "Codex declared environment conflicts with reserved runtime configuration",
+            )
+        })?;
         for provider_control in ["CODEX_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"] {
             if values.contains_key(provider_control) {
-                return Err(NodeRunnerError::Driver);
+                return Err(NodeRunnerError::DriverDetail(format!(
+                    "Codex declared environment contains provider-owned variable {provider_control}"
+                )));
             }
         }
         configure_provider_auth(
             &mut values,
             self.config.provider,
             self.config.local_user.is_some(),
-        )?;
+        )
+        .map_err(|error| {
+            with_driver_detail(
+                error,
+                "Codex provider credentials are missing or conflict with reserved credentials",
+            )
+        })?;
         Ok(values)
     }
 
@@ -200,7 +246,8 @@ impl NativeV2CodexAdapter {
             invocation.agent_instructions()?,
             &invocation.node.input,
             &invocation.response,
-        )?;
+        )
+        .map_err(|error| with_driver_detail(error, "Codex prompt could not be serialized"))?;
         let mut state = CodexRunState::new(invocation, prompt);
         loop {
             if let Some(outcome) = self.advance_run(&turn, &mut state).await? {
@@ -215,13 +262,17 @@ impl NativeV2CodexAdapter {
         state: &mut CodexRunState,
     ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
         match self.advance_turn(turn, state.response.prompt()).await {
-            Ok(CodexTurnAdvance::Response(response)) => state.accept_response(turn, response),
+            Ok(CodexTurnAdvance::Response(response)) => state.accept_response(turn, response).await,
             Ok(CodexTurnAdvance::ProviderFailure(detail)) => {
                 state.retry_provider_failure(turn, Some(&detail)).await?;
                 Ok(None)
             }
             Err(NodeRunnerError::Driver) => {
                 state.retry_provider_failure(turn, None).await?;
+                Ok(None)
+            }
+            Err(NodeRunnerError::DriverDetail(detail)) => {
+                state.retry_provider_failure(turn, Some(&detail)).await?;
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -238,8 +289,14 @@ impl NativeV2CodexAdapter {
             .ensure_live(ClosedSessionFailure::Driver)?;
         let resume = turn.session.thread_id.lock().await.clone();
         let output = self.execute_turn(turn, resume.as_deref(), prompt).await?;
-        record_attempt_thread(turn.session, &output, resume.as_deref()).await?;
-        resolve_codex_output(turn, output)
+        if let Err(detail) = turn
+            .session
+            .record_attempt_thread(&output, resume.as_deref())
+            .await
+        {
+            return Ok(CodexTurnAdvance::ProviderFailure(detail.to_owned()));
+        }
+        resolve_codex_output(turn, output).await
     }
 
     async fn execute_turn(
@@ -248,36 +305,42 @@ impl NativeV2CodexAdapter {
         resume: Option<&str>,
         prompt: &str,
     ) -> Result<CodexOutput, NodeRunnerError> {
-        let mut turn_process = self.open_turn_process(turn, resume, prompt).await?;
+        let mut turn_process = match self.open_turn_process(turn, resume).await? {
+            CodexTurnProcessOpen::Ready(process) => process,
+            CodexTurnProcessOpen::ProviderFailure(detail) => {
+                return Ok(CodexOutput::provider_failure(detail));
+            }
+        };
         let redactions =
             redaction_values(turn.invocation.environment.iter().map(|(_, value)| value));
-        let output = collect_output(&mut turn_process.process, turn.control, &redactions).await;
-        let completion = finish_process(&mut turn_process.process, output.is_ok()).await;
-        turn.control
-            .record_token_usage(output.as_ref().ok().and_then(CodexOutput::token_usage))?;
-        let completion = completion?;
-        validate_process_cleanup(&completion, turn.control)?;
-        let output = output?;
-        if output.failure_message().is_none() {
-            validate_process_output(&completion, turn.control)?;
-        }
-        Ok(output)
+        exchange_turn(&mut turn_process.process, prompt, turn.control, &redactions).await
     }
 
     async fn open_turn_process(
         &self,
         turn: &CodexTurn<'_>,
         resume: Option<&str>,
-        prompt: &str,
-    ) -> Result<CodexTurnProcess, NodeRunnerError> {
-        let (runner, runtime_home) = self.turn_process(turn.invocation)?;
-        let schema = CodexSchemaFile::create(
+    ) -> Result<CodexTurnProcessOpen, NodeRunnerError> {
+        let (runner, runtime_home) = match self.turn_process(turn.invocation)? {
+            Ok(resources) => resources,
+            Err(error) => {
+                return Ok(CodexTurnProcessOpen::ProviderFailure(format!(
+                    "provider process setup failed: {error}"
+                )));
+            }
+        };
+        let schema = match CodexSchemaFile::create(
             &runtime_home,
             &turn
                 .invocation
                 .response
                 .provider_schema(ProviderSchemaDialect::OpenAiStrict),
-        )?;
+        ) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return Ok(CodexTurnProcessOpen::ProviderFailure(error.to_string()));
+            }
+        };
         let command = self.command(
             turn,
             CodexCommandInput {
@@ -286,30 +349,16 @@ impl NativeV2CodexAdapter {
                 schema_path: schema.path(),
             },
         )?;
-        let prompt =
-            ProcessFrame::new(prompt.as_bytes().to_vec()).map_err(|_| NodeRunnerError::Driver)?;
-        let process = Self::open_process(runner, command, prompt, turn.control).await?;
-        Ok(CodexTurnProcess {
+        let process = match open_process(runner, command, turn.control).await? {
+            ProcessOpen::Ready(process) => process,
+            ProcessOpen::ProviderFailure(detail) => {
+                return Ok(CodexTurnProcessOpen::ProviderFailure(detail));
+            }
+        };
+        Ok(CodexTurnProcessOpen::Ready(CodexTurnProcess {
             process,
             _schema: schema,
-        })
-    }
-
-    async fn open_process(
-        runner: LocalProcessRunner,
-        command: ProcessSessionCommand,
-        prompt: ProcessFrame,
-        control: &DriverControl,
-    ) -> Result<ProcessSession, NodeRunnerError> {
-        let mut process = runner
-            .open(command, control.cancellation())
-            .await
-            .map_err(|_| NodeRunnerError::Driver)?;
-        if process.send(prompt).await.is_err() || process.close_stdin().await.is_err() {
-            let _ = process.release().await;
-            return Err(NodeRunnerError::Driver);
-        }
-        Ok(process)
+        }))
     }
 }
 
@@ -334,12 +383,12 @@ impl CodexRunState {
         }
     }
 
-    fn accept_response(
+    async fn accept_response(
         &mut self,
         turn: &CodexTurn<'_>,
         response: AgentResponse,
     ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
-        self.response.accept("Codex", turn.control, response)
+        self.response.accept("Codex", turn.control, response).await
     }
 
     async fn retry_provider_failure(
@@ -348,15 +397,18 @@ impl CodexRunState {
         detail: Option<&str>,
     ) -> Result<(), NodeRunnerError> {
         let has_session = turn.session.thread_id.lock().await.is_some();
-        let prompt = self.retry.after_failure(
-            turn.control,
-            ProviderFailure {
-                detail,
-                retryable: true,
-                has_session,
-                deadline: turn.deadline,
-            },
-        )?;
+        let prompt = self
+            .retry
+            .after_failure(
+                turn.control,
+                ProviderFailure {
+                    detail,
+                    retryable: true,
+                    has_session,
+                    deadline: turn.deadline,
+                },
+            )
+            .await?;
         self.response.replace_prompt(prompt);
         Ok(())
     }
@@ -367,20 +419,7 @@ enum CodexTurnAdvance {
     ProviderFailure(String),
 }
 
-async fn record_attempt_thread(
-    session: &CodexSession,
-    output: &CodexOutput,
-    resumed: Option<&str>,
-) -> Result<(), NodeRunnerError> {
-    if output.thread_id.is_none() && resumed.is_none() {
-        return Ok(());
-    }
-    session
-        .record_thread(output.thread_id.as_deref(), resumed)
-        .await
-}
-
-fn resolve_codex_output(
+async fn resolve_codex_output(
     turn: &CodexTurn<'_>,
     output: CodexOutput,
 ) -> Result<CodexTurnAdvance, NodeRunnerError> {
@@ -392,104 +431,22 @@ fn resolve_codex_output(
         output.final_message()?,
         ProviderSchemaDialect::OpenAiStrict,
     )?;
+    if let Some(diagnostic) = turn
+        .session
+        .missing_required_thread(turn.invocation, &response)
+        .await
+    {
+        return Ok(CodexTurnAdvance::ProviderFailure(diagnostic.to_owned()));
+    }
     if matches!(response, AgentResponse::Correction(_)) {
-        turn.control.emit(LiveOutput::new(
-            LiveOutputStream::System,
-            "Codex final output rejected; requesting correction",
-        )?)?;
+        turn.control
+            .emit(LiveOutput::new(
+                LiveOutputStream::System,
+                "Codex final output rejected; requesting correction",
+            )?)
+            .await?;
     }
     Ok(CodexTurnAdvance::Response(response))
-}
-
-async fn collect_output(
-    process: &mut ProcessSession,
-    control: &DriverControl,
-    redactions: &[String],
-) -> Result<CodexOutput, NodeRunnerError> {
-    let mut decoder = CodexOutputDecoder::new();
-    let mut total = 0usize;
-    while let Some(chunk) = process.recv_stdout().await {
-        total = total
-            .checked_add(chunk.as_slice().len())
-            .ok_or(NodeRunnerError::Driver)?;
-        if total > MAX_CODEX_STDOUT_BYTES {
-            return Err(NodeRunnerError::Driver);
-        }
-        for emission in decoder.push(chunk.as_slice())? {
-            let (stream, message) = emission.log();
-            emit_text(control, stream, message, redactions)?;
-        }
-    }
-    decoder.finish()
-}
-
-async fn finish_process(
-    process: &mut ProcessSession,
-    output_complete: bool,
-) -> Result<ProcessSessionOutput, NodeRunnerError> {
-    let completion = if output_complete {
-        process.wait().await
-    } else {
-        process.release().await
-    };
-    completion.map_err(|_| NodeRunnerError::Driver)
-}
-
-fn emit_text(
-    control: &DriverControl,
-    stream: LiveOutputStream,
-    text: &str,
-    redactions: &[String],
-) -> Result<(), NodeRunnerError> {
-    let safe = redact_text(text, redactions);
-    let mut rest = safe.as_str();
-    while !rest.is_empty() {
-        let split = if rest.len() <= 8 * 1024 {
-            rest.len()
-        } else {
-            rest.char_indices()
-                .map(|(index, _)| index)
-                .take_while(|index| *index <= 8 * 1024)
-                .last()
-                .filter(|index| *index > 0)
-                .ok_or(NodeRunnerError::UnsafeOutput)?
-        };
-        let (part, tail) = rest.split_at(split);
-        control.emit(LiveOutput::new(stream, part)?)?;
-        rest = tail;
-    }
-    if text.is_empty() {
-        control.emit(LiveOutput::new(stream, "")?)?;
-    }
-    Ok(())
-}
-
-fn agent_selection(
-    binding: &NodeRuntimeBinding,
-) -> Result<
-    (
-        &crate::worker_catalog::ModelId,
-        Option<&crate::worker_catalog::ReasoningEffort>,
-    ),
-    NodeRunnerError,
-> {
-    let NodeRuntimeBinding::Agent { model, effort, .. } = binding else {
-        return Err(NodeRunnerError::Driver);
-    };
-    Ok((model, effort.as_ref()))
-}
-
-fn redact_text(text: &str, redactions: &[String]) -> String {
-    redactions.iter().fold(text.to_owned(), |safe, value| {
-        safe.replace(value, "[REDACTED]")
-    })
-}
-
-fn path_text(path: &Path) -> Result<String, NodeRunnerError> {
-    path.to_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-        .ok_or(NodeRunnerError::Driver)
 }
 
 #[cfg(test)]

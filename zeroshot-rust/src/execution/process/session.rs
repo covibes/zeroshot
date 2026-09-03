@@ -8,13 +8,12 @@ use tokio::time::Instant;
 use crate::execution::driver::{DriverCancellation, WorkspaceCapability};
 
 use super::platform::{ProcessContainment, capture_process_tree, register_process_tree_for};
-use super::session_runtime::{
-    SupervisorRequest, TailBuffer, WriterCommand, spawn_stderr_pump, spawn_stdout_pump,
-    spawn_writer, supervise_session,
-};
+use super::session_io::{WriterCommand, spawn_stderr_pump, spawn_stdout_pump, spawn_writer};
+use super::session_runtime::{SupervisorRequest, supervise_session};
 use super::spawn_recovery::{
     ChildCommandSpec, SpawnRecovery, build_child_command, validate_launch_fields,
 };
+use super::tail_buffer::TailBuffer;
 use super::{LocalProcessRunner, ProcessCleanupEvidence, ProcessLaunchEvidence, ProcessRunnerError};
 
 pub const PROCESS_STDOUT_CAPACITY: usize = 64;
@@ -113,7 +112,10 @@ impl ProcessOutputChunk {
 pub struct ProcessSessionOutput {
     pub launch_evidence: ProcessLaunchEvidence,
     pub exit_code: Option<i32>,
+    pub termination_signal: Option<i32>,
+    pub core_dumped: bool,
     pub stderr_tail: Vec<u8>,
+    pub stderr_tail_truncated: bool,
     pub cancelled: bool,
     pub timed_out: bool,
     pub cleanup: ProcessCleanupEvidence,
@@ -126,6 +128,20 @@ pub struct ProcessSession {
     release: watch::Sender<bool>,
     completion: watch::Receiver<Option<Arc<ProcessSessionOutput>>>,
     stdin_closed: bool,
+}
+
+/// The bounded stdout half of a running process session.
+///
+/// Detaching this half lets callers drain child output while they continue streaming stdin,
+/// without adding another buffer between the process pump and the provider parser.
+pub(crate) struct ProcessStdout {
+    stdout: mpsc::Receiver<ProcessOutputChunk>,
+}
+
+impl ProcessStdout {
+    pub(crate) async fn recv(&mut self) -> Option<ProcessOutputChunk> {
+        self.stdout.recv().await
+    }
 }
 
 impl ProcessSession {
@@ -160,7 +176,7 @@ impl ProcessSession {
         acknowledged
             .await
             .map_err(|_| ProcessRunnerError::Io("process stdin writer stopped".to_owned()))?
-            .map_err(|message| ProcessRunnerError::Io(message.to_owned()))
+            .map_err(ProcessRunnerError::Io)
     }
 
     pub async fn close_stdin(&mut self) -> Result<(), ProcessRunnerError> {
@@ -189,11 +205,24 @@ impl ProcessSession {
         acknowledged
             .await
             .map_err(|_| ProcessRunnerError::Io("process stdin writer stopped".to_owned()))?
-            .map_err(|message| ProcessRunnerError::Io(message.to_owned()))
+            .map_err(ProcessRunnerError::Io)
     }
 
     pub async fn recv_stdout(&mut self) -> Option<ProcessOutputChunk> {
         self.stdout.recv().await
+    }
+
+    /// Detaches the single bounded stdout receiver from this session.
+    ///
+    /// A subsequent call receives an already-closed stream. Dropping the detached half closes its
+    /// receiver, so an input failure can unblock the stdout pump before releasing the process.
+    #[must_use]
+    pub(crate) fn detach_stdout(&mut self) -> ProcessStdout {
+        let (closed_sender, closed_receiver) = mpsc::channel(1);
+        drop(closed_sender);
+        ProcessStdout {
+            stdout: std::mem::replace(&mut self.stdout, closed_receiver),
+        }
     }
 
     /// Waits for process completion without consuming the bounded stdout queue.
@@ -207,6 +236,7 @@ impl ProcessSession {
 
     pub async fn release(&mut self) -> Result<ProcessSessionOutput, ProcessRunnerError> {
         self.stdin_closed = true;
+        self.stdout.close();
         self.release.send_replace(true);
         await_completion(&mut self.completion).await
     }
@@ -222,8 +252,11 @@ async fn spawn_contained_process(
     command: &ProcessSessionCommand,
     containment: ProcessContainment,
 ) -> Result<SpawnRecovery, ProcessRunnerError> {
-    let process_tree_registration = register_process_tree_for(containment).map_err(|_| {
-        ProcessRunnerError::Launch("process containment registration failed".to_owned())
+    let process_tree_registration = register_process_tree_for(containment).map_err(|error| {
+        ProcessRunnerError::Launch(super::io_error_detail(
+            "process containment registration failed",
+            &error,
+        ))
     })?;
     let mut recovery = SpawnRecovery::registered();
     let mut child_command = build_child_command(
@@ -236,8 +269,8 @@ async fn spawn_contained_process(
         containment,
     );
     child_command.kill_on_drop(true);
-    let child = child_command.spawn().map_err(|_| {
-        ProcessRunnerError::Launch("operating system rejected process launch".to_owned())
+    let child = child_command.spawn().map_err(|error| {
+        ProcessRunnerError::Launch(super::io_error_detail("process spawn failed", &error))
     })?;
     recovery.capture(child);
     let Some(recovery_child) = recovery.child_mut() else {
@@ -247,11 +280,13 @@ async fn spawn_contained_process(
     };
     let process_tree = match capture_process_tree(process_tree_registration, recovery_child) {
         Ok(process_tree) => process_tree,
-        Err(_) => {
-            recovery.recover().await;
-            return Err(ProcessRunnerError::Io(
-                "process containment capture failed".to_owned(),
-            ));
+        Err(error) => {
+            let mut detail = super::io_error_detail("process containment capture failed", &error);
+            if let Some(recovery_detail) = recovery.recover().await {
+                detail.push_str("; ");
+                detail.push_str(&recovery_detail);
+            }
+            return Err(ProcessRunnerError::Io(detail));
         }
     };
     recovery.capture_process_tree(process_tree);
@@ -268,10 +303,12 @@ impl LocalProcessRunner {
 
         let mut recovery = spawn_contained_process(&command, self.containment).await?;
         let Some(child) = recovery.child_mut() else {
-            recovery.recover().await;
-            return Err(ProcessRunnerError::Io(
-                "contained process was not retained".to_owned(),
-            ));
+            let mut detail = "contained process was not retained".to_owned();
+            if let Some(recovery_detail) = recovery.recover().await {
+                detail.push_str("; ");
+                detail.push_str(&recovery_detail);
+            }
+            return Err(ProcessRunnerError::Io(detail));
         };
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -302,9 +339,9 @@ impl LocalProcessRunner {
             release: release_rx,
             writer_stop: writer_stop_tx,
             io_failures: io_failure_rx,
-            stdout_task,
-            stderr_task,
-            writer_task,
+            stdout_task: Some(stdout_task),
+            stderr_task: Some(stderr_task),
+            writer_task: Some(writer_task),
             stderr_tail,
             completion: completion_tx,
         }));

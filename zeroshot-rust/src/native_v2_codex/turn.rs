@@ -14,3 +14,8 @@ pub(super) struct CodexTurnProcess {
     pub(super) process: ProcessSession,
     pub(super) _schema: CodexSchemaFile,
 }
+
+pub(super) enum CodexTurnProcessOpen {
+    Ready(CodexTurnProcess),
+    ProviderFailure(String),
+}

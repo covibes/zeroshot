@@ -12,6 +12,7 @@ from .values import JsonValue
 _Size: TypeAlias = Literal["tiny", "small", "standard", "large"]
 _Phase: TypeAlias = Literal["admitted", "running", "stopping", "finished"]
 _Level: TypeAlias = Literal["debug", "info", "error"]
+_MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 def _status(value: object) -> RunStatus:
@@ -84,6 +85,7 @@ def _log_event(value: object) -> LogEvent:
     return LogEvent(
         run_id=_string(root, "runId", "log event"),
         cursor=_string(root, "cursor", "log event"),
+        timestamp=_positive_javascript_safe_integer(root, "timestamp", "log event"),
         execution=execution,
         level=cast(
             _Level,
@@ -149,6 +151,17 @@ def _mapping_list(value: object, kind: str) -> tuple[Mapping[str, object], ...]:
 def _string(value: Mapping[str, object], name: str, kind: str) -> str:
     selected = value.get(name)
     if not isinstance(selected, str):
+        raise ProtocolError(f"Zeroshot Rust emitted malformed {kind}.{name}")
+    return selected
+
+
+def _positive_javascript_safe_integer(
+    value: Mapping[str, object],
+    name: str,
+    kind: str,
+) -> int:
+    selected = value.get(name)
+    if type(selected) is not int or not 1 <= selected <= _MAX_JAVASCRIPT_SAFE_INTEGER:
         raise ProtocolError(f"Zeroshot Rust emitted malformed {kind}.{name}")
     return selected
 

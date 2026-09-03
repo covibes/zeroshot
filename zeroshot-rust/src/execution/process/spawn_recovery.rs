@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tokio::process::{Child, Command};
+use tokio::time::{Instant, timeout_at};
 
 use crate::execution::driver::WorkspaceCapability;
 
 use super::platform::{self, ProcessContainment, ProcessTreeHandle, terminate_process_tree};
 use super::{
     MAX_PROCESS_ARGV_BYTES, MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS,
-    ProcessRunnerError,
+    PROCESS_TREE_CLEANUP_TIMEOUT, ProcessRunnerError, io_error_detail,
 };
 
 pub(super) struct SpawnRecovery {
@@ -36,16 +37,9 @@ impl SpawnRecovery {
         self.child.as_mut()
     }
 
-    pub(super) async fn recover(mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        if let Some(process_tree) = self.process_tree.take() {
-            let _ = terminate_process_tree(&process_tree, &mut child).await;
-        } else {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
+    pub(super) async fn recover(mut self) -> Option<String> {
+        let mut child = self.child.take()?;
+        recover_child(&mut child, self.process_tree.take()).await
     }
 
     pub(super) fn disarm(mut self) -> Option<(Child, ProcessTreeHandle)> {
@@ -60,14 +54,30 @@ impl Drop for SpawnRecovery {
         };
         let process_tree = self.process_tree.take();
         tokio::spawn(async move {
-            if let Some(process_tree) = process_tree {
-                let _ = terminate_process_tree(&process_tree, &mut child).await;
-            } else {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-            }
+            // No observer remains during Drop, so cleanup is necessarily best-effort here. Every
+            // explicit recovery path awaits this same helper and returns its safe diagnostics.
+            let _ = recover_child(&mut child, process_tree).await;
         });
     }
+}
+
+async fn recover_child(
+    child: &mut Child,
+    process_tree: Option<ProcessTreeHandle>,
+) -> Option<String> {
+    if let Some(process_tree) = process_tree {
+        return terminate_process_tree(&process_tree, child).await.error;
+    }
+    let mut errors = Vec::new();
+    if let Err(error) = child.start_kill() {
+        errors.push(io_error_detail("spawn recovery kill failed", &error));
+    }
+    match timeout_at(Instant::now() + PROCESS_TREE_CLEANUP_TIMEOUT, child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => errors.push(io_error_detail("spawn recovery wait failed", &error)),
+        Err(_) => errors.push("spawn recovery wait timed out".to_owned()),
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 pub(super) struct ChildCommandSpec<'a> {
@@ -183,4 +193,29 @@ fn total_env_bytes(environment: &BTreeMap<String, String>) -> Result<usize, Proc
 
 fn c_string_storage_bytes(value: &str) -> usize {
     value.len() + 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_validation_accepts_domain_sized_schema_and_environment() {
+        let argv = vec!["--json-schema".to_owned(), "x".repeat(1024 * 1024)];
+        let environment = (0..4)
+            .map(|index| (format!("TOKEN_{index}"), "x".repeat(64 * 1024)))
+            .collect::<BTreeMap<_, _>>();
+
+        assert!(validate_launch_fields("claude", &argv, &environment).is_ok());
+    }
+
+    #[test]
+    fn launch_validation_retains_finite_allocation_guards() {
+        let oversized_argv = vec!["x".repeat(MAX_PROCESS_ARGV_BYTES)];
+        assert!(validate_launch_fields("claude", &oversized_argv, &BTreeMap::new()).is_err());
+
+        let oversized_environment =
+            BTreeMap::from([("TOKEN".to_owned(), "x".repeat(MAX_PROCESS_ENV_BYTES))]);
+        assert!(validate_launch_fields("claude", &[], &oversized_environment).is_err());
+    }
 }

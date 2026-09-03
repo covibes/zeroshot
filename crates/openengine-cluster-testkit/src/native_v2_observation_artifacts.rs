@@ -10,6 +10,7 @@ use openengine_cluster_protocol::{
     RunMetadata, RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle,
     RunWatchEventNotification, RunWatchParams, RunWatchResult, SourceBranchId, SourceRepositoryId,
     SourceRevisionId, ResolvedSource, SubscriptionId, TerminalResult, TokenCount, TokenUsage,
+    UnixTimestampMillis,
 };
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Value};
@@ -165,6 +166,7 @@ fn logs_fixture() -> Value {
             subscription_id: SubscriptionId::new("logs-1"),
             run_id: run_id(),
             cursor: cursor(9),
+            timestamp: UnixTimestampMillis::new(1_725_000_000_123).assert_value(),
             execution: Some(execution("opaque-verifier-b")),
             record: LogRecord {
                 level: LogLevel::Info,

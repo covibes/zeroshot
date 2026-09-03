@@ -112,7 +112,9 @@ impl NodeDriver for FakeDriver {
                 .collect(),
         );
         let _ = self.started.send(true);
-        control.emit(LiveOutput::new(LiveOutputStream::Output, "safe output")?)?;
+        control
+            .emit(LiveOutput::new(LiveOutputStream::Output, "safe output")?)
+            .await?;
         match self.behavior {
             Behavior::Complete => Ok(fake_worker_outcome(&invocation)),
             Behavior::Hang => {

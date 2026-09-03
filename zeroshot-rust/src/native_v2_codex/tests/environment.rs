@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_v2_capsule::provider_process::safe_provider_text;
 
 #[test]
 fn command_is_exact_and_rejects_adapter_owned_collisions() {
@@ -68,7 +69,7 @@ fn log_redactions_are_longest_first_and_do_not_leave_overlapping_suffixes() {
     let redactions = redaction_values(environment.iter().map(|(_, value)| value));
     assert_eq!(redactions, vec!["secret-tail", "secret"]);
     assert_eq!(
-        redact_text("value=secret-tail", &redactions),
-        "value=[REDACTED]"
+        safe_provider_text("value=secret-tail\0after", &redactions),
+        "value=[REDACTED]\u{fffd}after"
     );
 }

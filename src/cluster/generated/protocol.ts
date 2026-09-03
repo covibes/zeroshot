@@ -733,6 +733,7 @@ export type RunLogEventNotification =
   readonly "record": LogRecord;
   readonly "runId": string;
   readonly "subscriptionId": string;
+  readonly "timestamp": number;
   };
 export type RunLogsParams =
   { readonly "execution"?: string

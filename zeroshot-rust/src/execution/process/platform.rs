@@ -3,7 +3,8 @@ use std::io;
 use tokio::process::Command;
 use tokio::time::{Duration, Instant, sleep, timeout_at};
 
-const PROCESS_TREE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+use super::{PROCESS_TREE_CLEANUP_TIMEOUT, io_error_detail};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessContainment {
     ProcessGroup,
@@ -174,19 +175,26 @@ pub async fn terminate_process_tree(
     handle: &ProcessTreeHandle,
     child: &mut tokio::process::Child,
 ) -> TerminationOutcome {
-    kill_process_tree(handle, child);
+    let mut errors = kill_process_tree(handle, child);
     let cleanup_deadline = Instant::now() + PROCESS_TREE_CLEANUP_TIMEOUT;
     match timeout_at(cleanup_deadline, child.wait()).await {
         Ok(Ok(status)) => {
             let cleanup = await_group_exit(handle, cleanup_deadline).await;
+            errors.extend(cleanup.error);
             TerminationOutcome {
                 exit_status: Some(status),
                 cleanup: cleanup.cleanup,
-                error: cleanup.error,
+                error: join_errors(errors),
             }
         }
-        Ok(Err(error)) => termination_without_status(handle, cleanup_deadline, Some(error)).await,
-        Err(_) => termination_without_status(handle, cleanup_deadline, None).await,
+        Ok(Err(error)) => {
+            errors.push(io_error_detail("process cleanup wait failed", &error));
+            termination_without_status(handle, cleanup_deadline, errors).await
+        }
+        Err(_) => {
+            errors.push("process cleanup wait timed out".to_owned());
+            termination_without_status(handle, cleanup_deadline, errors).await
+        }
     }
 }
 
@@ -203,7 +211,7 @@ pub fn configure_process(command: &mut Command, _containment: ProcessContainment
 pub fn configure_process(_command: &mut Command, _containment: ProcessContainment) {}
 
 #[cfg(unix)]
-fn kill_process_tree(handle: &ProcessTreeHandle, child: &mut tokio::process::Child) {
+fn kill_process_tree(handle: &ProcessTreeHandle, child: &mut tokio::process::Child) -> Vec<String> {
     super::platform_unix::kill_process_tree(
         handle.process_group_id,
         {
@@ -217,17 +225,23 @@ fn kill_process_tree(handle: &ProcessTreeHandle, child: &mut tokio::process::Chi
             }
         },
         child,
-    );
+    )
 }
 
 #[cfg(windows)]
-fn kill_process_tree(handle: &ProcessTreeHandle, child: &mut tokio::process::Child) {
-    super::platform_windows::kill_process_tree(handle.job, child);
+fn kill_process_tree(handle: &ProcessTreeHandle, child: &mut tokio::process::Child) -> Vec<String> {
+    super::platform_windows::kill_process_tree(handle.job, child)
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn kill_process_tree(_handle: &ProcessTreeHandle, child: &mut tokio::process::Child) {
-    let _ = child.start_kill();
+fn kill_process_tree(
+    _handle: &ProcessTreeHandle,
+    child: &mut tokio::process::Child,
+) -> Vec<String> {
+    child.start_kill().map_or_else(
+        |error| vec![io_error_detail("process termination failed", &error)],
+        |()| Vec::new(),
+    )
 }
 
 pub fn process_tree_has_live_members(handle: &ProcessTreeHandle) -> Result<bool, io::Error> {
@@ -287,7 +301,7 @@ async fn await_process_group_exit(process_group_id: i32, deadline: Instant) -> C
     loop {
         #[cfg(target_os = "linux")]
         if let Err(error) = super::platform_unix::reap_process_group_children(process_group_id) {
-            return cleanup_failure(error);
+            return cleanup_failure("process group child reap failed", &error);
         }
         match super::platform_unix::process_group_has_live_members(process_group_id) {
             Ok(false) => {
@@ -297,7 +311,7 @@ async fn await_process_group_exit(process_group_id: i32, deadline: Instant) -> C
                 };
             }
             Ok(true) => {}
-            Err(error) => return cleanup_failure(error),
+            Err(error) => return cleanup_failure("process group inspection failed", &error),
         }
         if Instant::now() >= deadline {
             return cleanup_timeout();
@@ -316,7 +330,7 @@ async fn await_worker_uid_exit(worker_uid: u32, deadline: Instant) -> CleanupOut
                 };
             }
             Ok(true) => {}
-            Err(error) => return cleanup_failure(error),
+            Err(error) => return cleanup_failure("worker containment cleanup failed", &error),
         }
         if Instant::now() >= deadline {
             return cleanup_timeout();
@@ -336,7 +350,7 @@ async fn await_process_tree_exit(handle: &ProcessTreeHandle, deadline: Instant) 
                 };
             }
             Ok(true) => {}
-            Err(error) => return cleanup_failure(error),
+            Err(error) => return cleanup_failure("Windows job inspection failed", &error),
         }
         if Instant::now() >= deadline {
             return cleanup_timeout();
@@ -345,10 +359,10 @@ async fn await_process_tree_exit(handle: &ProcessTreeHandle, deadline: Instant) 
     }
 }
 
-fn cleanup_failure(error: io::Error) -> CleanupOutcome {
+fn cleanup_failure(operation: &'static str, error: &io::Error) -> CleanupOutcome {
     CleanupOutcome {
         cleanup: ProcessCleanupEvidence::TimedOut,
-        error: Some(format!("process cleanup failed: {error}")),
+        error: Some(io_error_detail(operation, error)),
     }
 }
 
@@ -362,20 +376,46 @@ fn cleanup_timeout() -> CleanupOutcome {
 async fn termination_without_status(
     handle: &ProcessTreeHandle,
     cleanup_deadline: Instant,
-    wait_error: Option<io::Error>,
+    mut errors: Vec<String>,
 ) -> TerminationOutcome {
     let cleanup = await_group_exit(handle, cleanup_deadline).await;
-    let error = match (wait_error, cleanup.error) {
-        (Some(wait_error), Some(cleanup_error)) => Some(format!(
-            "process cleanup wait failed: {wait_error}; {cleanup_error}"
-        )),
-        (Some(wait_error), None) => Some(format!("process cleanup wait failed: {wait_error}")),
-        (None, Some(cleanup_error)) => Some(cleanup_error),
-        (None, None) => Some("process cleanup timed out".to_owned()),
-    };
+    errors.extend(cleanup.error);
     TerminationOutcome {
         exit_status: None,
         cleanup: cleanup.cleanup,
-        error,
+        error: join_errors(errors),
+    }
+}
+
+fn join_errors(errors: Vec<String>) -> Option<String> {
+    (!errors.is_empty()).then(|| errors.join("; "))
+}
+
+#[cfg(test)]
+mod tests {
+    use openengine_cluster_testkit::assertions::AssertValue;
+
+    use super::*;
+
+    #[test]
+    fn cleanup_failure_retains_structured_io_evidence() {
+        let error = io::Error::new(io::ErrorKind::PermissionDenied, "injected cleanup cause");
+
+        let outcome = cleanup_failure("process group inspection failed", &error);
+        let detail = outcome.error.assert_value();
+
+        assert_eq!(outcome.cleanup, ProcessCleanupEvidence::TimedOut);
+        assert!(detail.starts_with("process group inspection failed"));
+        assert!(detail.contains("kind=PermissionDenied"));
+        assert!(detail.contains("raw_os_error=none"));
+        assert!(detail.contains("message=injected cleanup cause"));
+    }
+
+    #[test]
+    fn termination_errors_keep_all_observable_causes() {
+        assert_eq!(
+            join_errors(vec!["kill cause".to_owned(), "wait cause".to_owned()]),
+            Some("kill cause; wait cause".to_owned())
+        );
     }
 }

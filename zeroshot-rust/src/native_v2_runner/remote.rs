@@ -1,34 +1,38 @@
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tokio::sync::{broadcast, oneshot, watch};
 
 use super::{
-    DurableNodeEvent, DurableOutput, LIVE_OUTPUT_CAPACITY, LiveOutput, NodeHandle, NodeRunnerError,
+    DurableEventSender, DurableNodeEvent, LIVE_OUTPUT_CAPACITY, LiveOutput, NodeHandle,
+    NodeRunnerError, durable_event_channel,
 };
+#[cfg(test)]
+use super::output::current_timestamp;
 use crate::native_v2_contract::{ExecutionRef, NodeCompletion, TokenUsageDelta};
+use openengine_cluster_protocol::UnixTimestampMillis;
 
 /// Producer half used only by the private capsule transport.
 pub(crate) struct RemoteNodeHandleBridge {
+    cancellation_signal: watch::Sender<bool>,
     cancellation: watch::Receiver<bool>,
     output: Option<broadcast::Sender<LiveOutput>>,
-    durable_output: Option<mpsc::UnboundedSender<DurableNodeEvent>>,
+    durable_output: Option<DurableEventSender>,
     completion: Option<oneshot::Sender<Result<NodeCompletion, NodeRunnerError>>>,
 }
 
 pub(crate) fn remote_node_handle(reference: ExecutionRef) -> (NodeHandle, RemoteNodeHandleBridge) {
     let (cancel, cancellation) = watch::channel(false);
     let (output, _) = broadcast::channel(LIVE_OUTPUT_CAPACITY);
-    let (durable_output, durable_receiver) = mpsc::unbounded_channel();
+    let (durable_output, durable) = durable_event_channel();
     let (completion, completion_receiver) = oneshot::channel();
     let handle = NodeHandle {
         reference,
-        cancel,
+        cancel: cancel.clone(),
         output: Some(output.clone()),
-        initial_output: Some(DurableOutput {
-            receiver: durable_receiver,
-        }),
+        initial_output: Some(durable),
         completion: Some(completion_receiver),
         cancel_on_drop: true,
     };
     let bridge = RemoteNodeHandleBridge {
+        cancellation_signal: cancel,
         cancellation,
         output: Some(output),
         durable_output: Some(durable_output),
@@ -38,6 +42,10 @@ pub(crate) fn remote_node_handle(reference: ExecutionRef) -> (NodeHandle, Remote
 }
 
 impl RemoteNodeHandleBridge {
+    pub(crate) fn cancellation_signal(&self) -> watch::Sender<bool> {
+        self.cancellation_signal.clone()
+    }
+
     pub(crate) async fn cancelled(&mut self) {
         while !*self.cancellation.borrow_and_update() {
             if self.cancellation.changed().await.is_err() {
@@ -46,27 +54,47 @@ impl RemoteNodeHandleBridge {
         }
     }
 
-    pub(crate) fn emit(&self, output: LiveOutput) -> Result<(), NodeRunnerError> {
-        self.durable_output
-            .as_ref()
-            .ok_or(NodeRunnerError::DurableOutputClosed)?
-            .send(DurableNodeEvent::Output(output.clone()))
-            .map_err(|_| NodeRunnerError::DurableOutputClosed)?;
+    #[cfg(test)]
+    pub(crate) async fn emit(&self, output: LiveOutput) -> Result<(), NodeRunnerError> {
+        self.emit_at(output, current_timestamp()).await
+    }
+
+    pub(crate) async fn emit_at(
+        &self,
+        output: LiveOutput,
+        timestamp: UnixTimestampMillis,
+    ) -> Result<(), NodeRunnerError> {
+        self.send_durable(DurableNodeEvent::Output {
+            output: output.clone(),
+            timestamp,
+        })
+        .await?;
         if let Some(live) = &self.output {
             let _ = live.send(output);
         }
         Ok(())
     }
 
-    pub(crate) fn record_token_usage(
+    pub(crate) async fn record_token_usage(
         &self,
         usage: Option<TokenUsageDelta>,
     ) -> Result<(), NodeRunnerError> {
         self.durable_output
             .as_ref()
             .ok_or(NodeRunnerError::DurableOutputClosed)?
-            .send(DurableNodeEvent::TokenUsage(usage))
-            .map_err(|_| NodeRunnerError::DurableOutputClosed)
+            .send_terminal(
+                DurableNodeEvent::TokenUsage(usage),
+                self.cancellation.clone(),
+            )
+            .await
+    }
+
+    async fn send_durable(&self, event: DurableNodeEvent) -> Result<(), NodeRunnerError> {
+        let durable = self
+            .durable_output
+            .as_ref()
+            .ok_or(NodeRunnerError::DurableOutputClosed)?;
+        durable.send(event, self.cancellation.clone()).await
     }
 
     pub(crate) fn finish(mut self, result: Result<NodeCompletion, NodeRunnerError>) {

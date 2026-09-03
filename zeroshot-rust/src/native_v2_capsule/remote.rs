@@ -1,5 +1,11 @@
 use super::*;
 
+mod activity;
+mod execution;
+mod start;
+use activity::{ProxyActivity, ProxyRegistration};
+use execution::drive_remote_execution;
+
 #[derive(Clone)]
 pub struct RemoteCapsuleNodeRunner {
     channel: Arc<dyn CapsuleNodeChannel>,
@@ -7,6 +13,9 @@ pub struct RemoteCapsuleNodeRunner {
     loss: RunnerLoss,
     activity: ProxyActivity,
     control_timeout: Duration,
+    close_timeout: Duration,
+    #[cfg(test)]
+    start_readiness_pause: Option<StartReadinessPause>,
 }
 
 impl RemoteCapsuleNodeRunner {
@@ -19,7 +28,7 @@ impl RemoteCapsuleNodeRunner {
             let forward = loss.clone();
             tokio::spawn(async move {
                 let mut channel_loss = channel_loss;
-                wait_for_connection_loss(&mut channel_loss).await;
+                wait_for_signal(&mut channel_loss).await;
                 forward.promote();
             });
         }
@@ -29,12 +38,26 @@ impl RemoteCapsuleNodeRunner {
             loss,
             activity: ProxyActivity::default(),
             control_timeout: CONTROL_RPC_TIMEOUT,
+            close_timeout: CLOSE_RPC_TIMEOUT,
+            #[cfg(test)]
+            start_readiness_pause: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) async fn wait_for_test_run_settled(&self, run_id: &RunId) {
+        self.activity.wait_run(run_id).await;
     }
 
     #[cfg(test)]
     pub(super) fn with_control_timeout(mut self, timeout: Duration) -> Self {
         self.control_timeout = timeout;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_close_timeout(mut self, timeout: Duration) -> Self {
+        self.close_timeout = timeout;
         self
     }
 
@@ -47,68 +70,35 @@ impl RemoteCapsuleNodeRunner {
 #[async_trait]
 impl NodeRunner for RemoteCapsuleNodeRunner {
     async fn start(&self, request: NodeRunRequest) -> Result<NodeHandle, NodeRunnerError> {
-        if connection_is_lost(&self.connection_loss) {
-            return Err(NodeRunnerError::ConnectionLost);
-        }
-        let reference = request.invocation.reference.clone();
-        let mut connection_loss = self.connection_loss.clone();
-        let start = self.channel.start(request);
-        tokio::pin!(start);
-        let stream = tokio::select! {
-            result = &mut start => match result {
-                Ok(stream) => stream,
-                Err(CapsuleConnectionError::Lost) => {
-                    self.loss.promote();
-                    return Err(NodeRunnerError::ConnectionLost);
-                }
-                Err(CapsuleConnectionError::Rejected(failure)) => {
-                    return Err(failure.into_runner());
-                }
-            },
-            () = wait_for_connection_loss(&mut connection_loss) => {
-                return Err(NodeRunnerError::ConnectionLost);
-            }
-        };
-        let (handle, bridge) = remote_node_handle(reference.clone());
-        let registration = self.activity.register(reference.clone()).await;
-        let runtime = ProxyRuntime {
-            channel: self.channel.clone(),
-            connection_loss: self.connection_loss.clone(),
-            loss: self.loss.clone(),
-            activity: self.activity.clone(),
-            control_timeout: self.control_timeout,
-        };
-        tokio::spawn(drive_remote_execution(RemoteExecutionTask {
-            runtime,
-            reference,
-            stream,
-            bridge,
-            registration,
-        }));
-        Ok(handle)
+        start::remote_start(self, request).await
     }
 
     async fn close_run(&self, run_id: &RunId) {
+        self.activity.begin_close(run_id).await;
         let mut connection_loss = self.connection_loss.clone();
         let closed = control_rpc(
             self.channel.close_run(run_id),
             &mut connection_loss,
-            self.control_timeout,
+            self.close_timeout,
         )
         .await;
         if !closed {
             self.loss.promote();
-            self.activity.lose_run(run_id).await;
         }
-        if tokio::time::timeout(self.control_timeout, self.activity.wait_run(run_id))
-            .await
-            .is_err()
-        {
-            self.loss.promote();
-            self.activity.lose_run(run_id).await;
+        self.activity.complete_close(run_id).await;
+        if closed {
+            self.activity.wait_run(run_id).await;
+        } else {
             let _ =
                 tokio::time::timeout(self.control_timeout, self.activity.wait_run(run_id)).await;
         }
+    }
+}
+
+#[cfg(test)]
+impl WithStartReadinessPause for RemoteCapsuleNodeRunner {
+    fn start_readiness_pause(&mut self) -> &mut Option<StartReadinessPause> {
+        &mut self.start_readiness_pause
     }
 }
 
@@ -155,6 +145,7 @@ struct RemoteExecutionTask {
     stream: CapsuleExecutionStream,
     bridge: RemoteNodeHandleBridge,
     registration: ProxyRegistration,
+    acceptance: Option<oneshot::Receiver<()>>,
 }
 
 struct RemoteEventContext<'a> {
@@ -162,62 +153,103 @@ struct RemoteEventContext<'a> {
     reference: &'a ExecutionRef,
     bridge: &'a mut RemoteNodeHandleBridge,
     connection_loss: &'a mut watch::Receiver<bool>,
+    closing: &'a mut watch::Receiver<bool>,
+    pending_bridge_failure: &'a mut Option<NodeRunnerError>,
 }
 
 enum RemoteInput {
     Event(Option<CapsuleNodeEvent>),
     Cancel,
+    Closing,
+    Closed,
     Lost,
+    Acceptance(Result<(), oneshot::error::RecvError>),
 }
 
-async fn drive_remote_execution(task: RemoteExecutionTask) {
-    let RemoteExecutionTask {
-        runtime,
-        reference,
-        mut stream,
-        mut bridge,
-        registration,
-    } = task;
-    let mut local_loss = registration.loss;
-    let mut cancellation_forwarded = false;
-    let mut connection_loss = runtime.connection_loss.clone();
-    let result = loop {
-        let next = tokio::select! {
-            biased;
-            () = wait_for_connection_loss(&mut connection_loss) => RemoteInput::Lost,
-            () = wait_for_connection_loss(&mut local_loss) => RemoteInput::Lost,
-            () = bridge.cancelled(), if !cancellation_forwarded => RemoteInput::Cancel,
-            event = stream.recv() => RemoteInput::Event(event),
-        };
-        let finished = match next {
-            RemoteInput::Lost => Some(Err(NodeRunnerError::ConnectionLost)),
-            RemoteInput::Cancel => {
-                cancellation_forwarded = true;
-                forward_cancel(&runtime, &reference, &mut connection_loss)
-                    .await
-                    .err()
-                    .map(Err)
-            }
-            RemoteInput::Event(event) => {
-                handle_remote_event(
-                    event,
-                    RemoteEventContext {
-                        runtime: &runtime,
-                        reference: &reference,
-                        bridge: &mut bridge,
-                        connection_loss: &mut connection_loss,
-                    },
-                )
-                .await
-            }
-        };
-        if let Some(result) = finished {
-            break result;
+async fn settle_remote_acceptance(
+    acceptance: &mut Option<oneshot::Receiver<()>>,
+    connection_loss: &mut watch::Receiver<bool>,
+    closing: &mut watch::Receiver<bool>,
+) {
+    if acceptance.is_none() {
+        return;
+    }
+    tokio::select! {
+        biased;
+        () = wait_for_signal(connection_loss) => {}
+        () = wait_for_signal(closing) => {}
+        _ = receive_start_acceptance(acceptance) => {}
+    }
+    acceptance.take();
+}
+
+async fn handle_remote_cancel(
+    context: RemoteCancelContext<'_>,
+) -> Option<Result<NodeCompletion, NodeRunnerError>> {
+    match forward_cancel(
+        context.runtime,
+        context.reference,
+        context.connection_loss,
+        context.closing_signal,
+    )
+    .await
+    {
+        CancelOutcome::Forwarded => None,
+        CancelOutcome::Closing => {
+            *context.closing = true;
+            None
         }
-    };
-    bridge.finish(result);
-    let _ = registration.done.send(true);
-    runtime.activity.finish(&reference).await;
+        CancelOutcome::ConnectionLost => Some(Err(NodeRunnerError::ConnectionLost)),
+    }
+}
+
+struct RemoteCancelContext<'a> {
+    runtime: &'a ProxyRuntime,
+    reference: &'a ExecutionRef,
+    connection_loss: &'a mut watch::Receiver<bool>,
+    closing_signal: &'a mut watch::Receiver<bool>,
+    closing: &'a mut bool,
+}
+
+async fn next_remote_input(context: RemoteInputContext<'_>) -> RemoteInput {
+    if context.closing {
+        tokio::select! {
+            biased;
+            () = wait_for_signal(context.connection_loss) => RemoteInput::Lost,
+            event = context.stream.recv() => RemoteInput::Event(event),
+            () = wait_for_signal(context.closed_signal) => RemoteInput::Closed,
+        }
+    } else {
+        tokio::select! {
+            biased;
+            () = wait_for_signal(context.connection_loss) => RemoteInput::Lost,
+            () = wait_for_signal(context.closing_signal) => RemoteInput::Closing,
+            () = context.bridge.cancelled(), if !context.cancellation_handled => RemoteInput::Cancel,
+            input = receive_remote_event_or_acceptance(context.stream, context.acceptance) => input,
+        }
+    }
+}
+
+async fn receive_remote_event_or_acceptance(
+    stream: &mut CapsuleExecutionStream,
+    acceptance: &mut Option<oneshot::Receiver<()>>,
+) -> RemoteInput {
+    if acceptance.is_some() {
+        RemoteInput::Acceptance(receive_start_acceptance(acceptance).await)
+    } else {
+        RemoteInput::Event(stream.recv().await)
+    }
+}
+
+struct RemoteInputContext<'a> {
+    stream: &'a mut CapsuleExecutionStream,
+    bridge: &'a mut RemoteNodeHandleBridge,
+    connection_loss: &'a mut watch::Receiver<bool>,
+    closing_signal: &'a mut watch::Receiver<bool>,
+    closed_signal: &'a mut watch::Receiver<bool>,
+    closing: bool,
+    cancellation_handled: bool,
+    acceptance: &'a mut Option<oneshot::Receiver<()>>,
 }
 
 async fn handle_remote_event(
@@ -229,9 +261,15 @@ async fn handle_remote_event(
             context.runtime.loss.promote();
             Some(Err(NodeRunnerError::ConnectionLost))
         }
-        Some(CapsuleNodeEvent::Output { output }) => handle_remote_output(output, context).await,
+        Some(CapsuleNodeEvent::Output { output, timestamp }) => {
+            handle_remote_output(output, timestamp, context).await
+        }
         Some(CapsuleNodeEvent::TokenUsage { usage }) => {
-            let result = context.bridge.record_token_usage(usage);
+            let result = await_remote_bridge(
+                context.bridge.record_token_usage(usage),
+                context.connection_loss,
+            )
+            .await;
             handle_remote_bridge(result, context).await
         }
         Some(CapsuleNodeEvent::Completed { completion })
@@ -246,14 +284,36 @@ async fn handle_remote_event(
 
 async fn handle_remote_output(
     output: CapsuleOutput,
+    timestamp: openengine_cluster_protocol::UnixTimestampMillis,
     context: RemoteEventContext<'_>,
 ) -> Option<Result<NodeCompletion, NodeRunnerError>> {
     let output = match output.into_live() {
         Ok(output) => output,
         Err(error) => return Some(Err(error)),
     };
-    let result = context.bridge.emit(output);
+    let result = await_remote_bridge(
+        context.bridge.emit_at(output, timestamp),
+        context.connection_loss,
+    )
+    .await;
     handle_remote_bridge(result, context).await
+}
+
+async fn await_remote_bridge<F>(
+    operation: F,
+    connection_loss: &mut watch::Receiver<bool>,
+) -> Result<(), NodeRunnerError>
+where
+    F: Future<Output = Result<(), NodeRunnerError>>,
+{
+    tokio::pin!(operation);
+    tokio::select! {
+        biased;
+        () = wait_for_signal(connection_loss) => {
+            Err(NodeRunnerError::ConnectionLost)
+        }
+        result = &mut operation => result,
+    }
 }
 
 async fn handle_remote_bridge(
@@ -263,31 +323,58 @@ async fn handle_remote_bridge(
     let Err(error) = result else {
         return None;
     };
-    Some(
-        match forward_cancel(context.runtime, context.reference, context.connection_loss).await {
-            Ok(()) => Err(error),
-            Err(connection_lost) => Err(connection_lost),
+    match error {
+        NodeRunnerError::Cancelled => None,
+        NodeRunnerError::ConnectionLost => Some(Err(NodeRunnerError::ConnectionLost)),
+        error => match forward_cancel(
+            context.runtime,
+            context.reference,
+            context.connection_loss,
+            context.closing,
+        )
+        .await
+        {
+            CancelOutcome::Forwarded => Some(Err(error)),
+            CancelOutcome::Closing => {
+                if context.pending_bridge_failure.is_none() {
+                    *context.pending_bridge_failure = Some(error);
+                }
+                None
+            }
+            CancelOutcome::ConnectionLost => Some(Err(NodeRunnerError::ConnectionLost)),
         },
-    )
+    }
+}
+
+enum CancelOutcome {
+    Forwarded,
+    Closing,
+    ConnectionLost,
 }
 
 async fn forward_cancel(
     runtime: &ProxyRuntime,
     reference: &ExecutionRef,
     connection_loss: &mut watch::Receiver<bool>,
-) -> Result<(), NodeRunnerError> {
-    if control_rpc(
-        runtime.channel.cancel(reference),
-        connection_loss,
-        runtime.control_timeout,
-    )
-    .await
-    {
-        Ok(())
-    } else {
+    closing: &mut watch::Receiver<bool>,
+) -> CancelOutcome {
+    let cancel = runtime.channel.cancel(reference);
+    tokio::pin!(cancel);
+    let outcome = tokio::select! {
+        biased;
+        () = wait_for_signal(connection_loss) => CancelOutcome::ConnectionLost,
+        () = wait_for_signal(closing) => CancelOutcome::Closing,
+        result = &mut cancel => if result.is_ok() {
+            CancelOutcome::Forwarded
+        } else {
+            CancelOutcome::ConnectionLost
+        },
+        () = tokio::time::sleep(runtime.control_timeout) => CancelOutcome::ConnectionLost,
+    };
+    if matches!(outcome, CancelOutcome::ConnectionLost) {
         runtime.loss.promote();
-        Err(NodeRunnerError::ConnectionLost)
     }
+    outcome
 }
 
 async fn control_rpc<F>(
@@ -301,7 +388,7 @@ where
     tokio::pin!(operation);
     tokio::select! {
         biased;
-        () = wait_for_connection_loss(connection_loss) => false,
+        () = wait_for_signal(connection_loss) => false,
         result = &mut operation => result.is_ok(),
         () = tokio::time::sleep(timeout) => false,
     }
@@ -309,82 +396,4 @@ where
 
 fn connection_is_lost(receiver: &watch::Receiver<bool>) -> bool {
     *receiver.borrow() || receiver.has_changed().is_err()
-}
-
-async fn wait_for_connection_loss(receiver: &mut watch::Receiver<bool>) {
-    while !*receiver.borrow_and_update() {
-        if receiver.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-struct ProxyActivity {
-    entries: Arc<Mutex<Vec<ProxyExecution>>>,
-}
-
-struct ProxyExecution {
-    reference: ExecutionRef,
-    loss: watch::Sender<bool>,
-    done: watch::Receiver<bool>,
-}
-
-impl ProxyActivity {
-    async fn register(&self, reference: ExecutionRef) -> ProxyRegistration {
-        let (loss, loss_receiver) = watch::channel(false);
-        let (done_sender, done) = watch::channel(false);
-        self.entries.lock().await.push(ProxyExecution {
-            reference,
-            loss,
-            done,
-        });
-        ProxyRegistration {
-            loss: loss_receiver,
-            done: done_sender,
-        }
-    }
-
-    async fn finish(&self, reference: &ExecutionRef) {
-        let mut entries = self.entries.lock().await;
-        if let Some(index) = entries
-            .iter()
-            .position(|entry| &entry.reference == reference)
-        {
-            entries.swap_remove(index);
-        }
-    }
-
-    async fn lose_run(&self, run_id: &RunId) {
-        let entries = self.entries.lock().await;
-        for entry in entries
-            .iter()
-            .filter(|entry| &entry.reference.run_id == run_id)
-        {
-            let _ = entry.loss.send(true);
-        }
-    }
-
-    async fn wait_run(&self, run_id: &RunId) {
-        let mut completions = {
-            let entries = self.entries.lock().await;
-            entries
-                .iter()
-                .filter(|entry| &entry.reference.run_id == run_id)
-                .map(|entry| entry.done.clone())
-                .collect::<Vec<_>>()
-        };
-        for completion in &mut completions {
-            while !*completion.borrow_and_update() {
-                if completion.changed().await.is_err() {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-struct ProxyRegistration {
-    loss: watch::Receiver<bool>,
-    done: watch::Sender<bool>,
 }

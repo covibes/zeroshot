@@ -8,7 +8,7 @@ use openengine_cluster_protocol::{
     RunForceResult, RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams,
     RunLogsResult, RunStatus, RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult,
     RunSize, RunTitle, RunWatchEventNotification, RunWatchParams, RunWatchResult,
-    ServerCapabilities, SubscriptionCloseReason, SubscriptionId,
+    ServerCapabilities, SubscriptionCloseReason, SubscriptionId, UnixTimestampMillis,
 };
 use openengine_cluster_server::native_v2::{
     RunAttachEventStream, RunLogEventStream, RunSubscriptionItem, RunSubscriptionSource,
@@ -179,6 +179,7 @@ impl ClusterBackend for FakeBackend {
                 subscription_id,
                 run_id: run_id(),
                 cursor: cursor(4),
+                timestamp: UnixTimestampMillis::new(1_725_000_000_123).assert_value(),
                 execution: Some(execution()),
                 record: LogRecord {
                     level: LogLevel::Info,

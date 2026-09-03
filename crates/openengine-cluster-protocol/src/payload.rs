@@ -179,6 +179,8 @@ impl JsonSchema for FieldPath {
 pub struct PositiveInteger(u64);
 
 impl PositiveInteger {
+    pub(crate) const ONE: Self = Self(1);
+
     pub fn new(value: u64) -> Result<Self, ContractValueError> {
         if value == 0 || value > MAX_SAFE_GENERATION {
             Err(ContractValueError::NotPositive)

@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::execution::WorkspaceAccessMode;
-use crate::native_v2_capsule::provider_process::effort_token;
-use crate::native_v2_runner::{NodeRole, NodeRunnerError, ResolvedEnvironment};
+use crate::native_v2_capsule::provider_process::{effort_token, with_driver_detail};
+use crate::native_v2_runner::{
+    render_agent_prompt, DriverInvocation, NodeRole, NodeRunnerError, ResolvedEnvironment,
+};
 use crate::worker_catalog::ReasoningEffort;
 
 pub(super) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
@@ -17,7 +19,6 @@ pub(super) struct ClaudeTurnArguments<'a> {
     pub(super) role: NodeRole,
     pub(super) resume_id: Option<&'a str>,
     pub(super) json_schema: String,
-    pub(super) prompt: String,
 }
 
 pub(super) fn claude_arguments(
@@ -50,7 +51,6 @@ pub(super) fn claude_arguments(
     if let Some(resume_id) = turn.resume_id {
         argv.extend(["--resume".to_owned(), resume_id.to_owned()]);
     }
-    argv.push(turn.prompt);
     Ok(argv)
 }
 
@@ -113,4 +113,13 @@ pub(super) fn configure_openrouter(
         OPENROUTER_BASE_URL.to_owned(),
     );
     Ok(())
+}
+
+pub(super) fn prompt(invocation: &DriverInvocation) -> Result<String, NodeRunnerError> {
+    render_agent_prompt(
+        invocation.agent_instructions()?,
+        &invocation.node.input,
+        &invocation.response,
+    )
+    .map_err(|error| with_driver_detail(error, "Claude prompt could not be serialized"))
 }

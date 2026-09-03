@@ -13,18 +13,100 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::RunId;
+use openengine_cluster_protocol::{RunId, UnixTimestampMillis};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
-use crate::execution::process::{HostedProcessPool, HostedProcessScope};
+use crate::execution::process::{
+    CONTAINED_PROCESS_CLEANUP_BUDGET, HostedProcessPool, HostedProcessScope,
+};
 use crate::native_v2_contract::{ExecutionRef, NodeCompletion, TokenUsageDelta};
 use crate::native_v2_runner::{
-    DurableNodeEvent, LiveOutput, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner,
-    NodeRunnerError, RemoteNodeHandleBridge, remote_node_handle,
+    DURABLE_OUTPUT_CAPACITY, DurableNodeEvent, LiveOutput, LiveOutputStream, NodeHandle,
+    NodeRunRequest, NodeRunner, NodeRunnerError, RemoteNodeHandleBridge, remote_node_handle,
 };
 
 const CONTROL_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOSE_RPC_TRANSPORT_MARGIN: Duration = Duration::from_secs(60);
+const CLOSE_RPC_TIMEOUT: Duration =
+    CONTAINED_PROCESS_CLEANUP_BUDGET.saturating_add(CLOSE_RPC_TRANSPORT_MARGIN);
+
+#[cfg(test)]
+#[derive(Clone)]
+struct StartReadinessPause {
+    sent: watch::Sender<bool>,
+    release: watch::Sender<bool>,
+}
+
+#[cfg(test)]
+impl Default for StartReadinessPause {
+    fn default() -> Self {
+        let (sent, _) = watch::channel(false);
+        let (release, _) = watch::channel(false);
+        Self { sent, release }
+    }
+}
+
+#[cfg(test)]
+impl StartReadinessPause {
+    fn mark_sent(&self) {
+        self.sent.send_replace(true);
+    }
+
+    async fn pause_before_receive(&self) {
+        wait_for_signal(&mut self.sent.subscribe()).await;
+        wait_for_signal(&mut self.release.subscribe()).await;
+    }
+
+    async fn wait_until_sent(&self) {
+        wait_for_signal(&mut self.sent.subscribe()).await;
+    }
+
+    fn release(&self) {
+        self.release.send_replace(true);
+    }
+}
+
+#[cfg(test)]
+trait WithStartReadinessPause: Sized {
+    fn start_readiness_pause(&mut self) -> &mut Option<StartReadinessPause>;
+
+    fn with_start_readiness_pause(mut self, pause: StartReadinessPause) -> Self {
+        *self.start_readiness_pause() = Some(pause);
+        self
+    }
+}
+
+#[cfg(test)]
+fn mark_start_readiness_sent(pause: Option<&StartReadinessPause>) {
+    if let Some(pause) = pause {
+        pause.mark_sent();
+    }
+}
+
+#[cfg(test)]
+async fn pause_before_start_readiness(pause: Option<&StartReadinessPause>) {
+    if let Some(pause) = pause {
+        pause.pause_before_receive().await;
+    }
+}
+
+async fn wait_for_signal(signal: &mut watch::Receiver<bool>) {
+    while !*signal.borrow_and_update() {
+        if signal.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+async fn receive_start_acceptance(
+    acceptance: &mut Option<oneshot::Receiver<()>>,
+) -> Result<(), oneshot::error::RecvError> {
+    match acceptance {
+        Some(acceptance) => acceptance.await,
+        None => std::future::pending().await,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +165,7 @@ impl CapsuleNodeFailure {
             NodeRunnerError::SessionLost => Self::SessionLost,
             NodeRunnerError::RunClosed => Self::RunClosed,
             NodeRunnerError::ExecutionActive => Self::ExecutionActive,
+            NodeRunnerError::Driver | NodeRunnerError::DriverDetail(_) => Self::ExecutionFailed,
             _ => Self::ExecutionFailed,
         }
     }
@@ -101,24 +184,60 @@ impl CapsuleNodeFailure {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
 pub enum CapsuleNodeEvent {
-    Output { output: CapsuleOutput },
-    TokenUsage { usage: Option<TokenUsageDelta> },
-    Completed { completion: NodeCompletion },
-    Failed { failure: CapsuleNodeFailure },
+    Output {
+        output: CapsuleOutput,
+        timestamp: UnixTimestampMillis,
+    },
+    TokenUsage {
+        usage: Option<TokenUsageDelta>,
+    },
+    Completed {
+        completion: NodeCompletion,
+    },
+    Failed {
+        failure: CapsuleNodeFailure,
+    },
 }
 
 pub struct CapsuleExecutionStream {
-    events: mpsc::UnboundedReceiver<CapsuleNodeEvent>,
+    events: mpsc::Receiver<CapsuleNodeEvent>,
+    terminal: Option<oneshot::Receiver<Vec<CapsuleNodeEvent>>>,
+    terminal_events: std::vec::IntoIter<CapsuleNodeEvent>,
 }
 
 impl CapsuleExecutionStream {
     #[must_use]
-    pub fn from_receiver(events: mpsc::UnboundedReceiver<CapsuleNodeEvent>) -> Self {
-        Self { events }
+    pub fn from_receiver(events: mpsc::Receiver<CapsuleNodeEvent>) -> Self {
+        Self {
+            events,
+            terminal: None,
+            terminal_events: Vec::new().into_iter(),
+        }
+    }
+
+    fn from_bounded_receiver(
+        events: mpsc::Receiver<CapsuleNodeEvent>,
+        terminal: oneshot::Receiver<Vec<CapsuleNodeEvent>>,
+    ) -> Self {
+        Self {
+            events,
+            terminal: Some(terminal),
+            terminal_events: Vec::new().into_iter(),
+        }
     }
 
     pub async fn recv(&mut self) -> Option<CapsuleNodeEvent> {
-        self.events.recv().await
+        if let Some(event) = self.terminal_events.next() {
+            return Some(event);
+        }
+        let event = self.events.recv().await;
+        if event.is_some() {
+            return event;
+        }
+        let terminal = self.terminal.as_mut()?.await.ok()?;
+        self.terminal = None;
+        self.terminal_events = terminal.into_iter();
+        self.terminal_events.next()
     }
 }
 
@@ -146,6 +265,7 @@ pub trait CapsuleNodeChannel: Send + Sync {
 }
 
 mod endpoint;
+pub(crate) mod provider_json_lines;
 pub(crate) mod provider_process;
 mod remote;
 

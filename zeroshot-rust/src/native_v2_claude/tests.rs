@@ -1,9 +1,15 @@
 #![cfg(unix)]
 
+#[path = "tests/backpressure.rs"]
+mod backpressure;
+#[path = "tests/command.rs"]
+mod command;
 #[path = "tests/correction.rs"]
 mod correction;
 #[path = "tests/environment.rs"]
 mod environment;
+#[path = "tests/limits.rs"]
+mod limits;
 #[path = "tests/local_identity.rs"]
 mod local_identity;
 
@@ -26,7 +32,7 @@ use crate::native_v2_candidate::test_support::{
 };
 use crate::native_v2_contract::{
     ClaudeProvider, DeclaredConnections, DeclaredEnvironment, NodeRuntimeBinding, RunSubmission,
-    RuntimePlan,
+    RuntimePlan, TokenUsageDelta,
 };
 use crate::native_v2_runner::{
     AttachReceiveError, LiveOutputStream, NativeNodeRunner, NodeRunRequest, NodeRunner,
@@ -84,6 +90,51 @@ async fn runner(
     binding: NodeRuntimeBinding,
     verifier: bool,
 ) -> NativeNodeRunner {
+    runner_with_command(
+        workspace,
+        TestRunnerConfig {
+            provider,
+            binding,
+            verifier,
+            command: TestProviderCommand {
+                executable: "/bin/sh".to_owned(),
+                prefix_arguments: vec![
+                    workspace
+                        .path()
+                        .join("fake-claude.sh")
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                base_environment: BTreeMap::new(),
+            },
+        },
+    )
+    .await
+}
+
+struct TestProviderCommand {
+    executable: String,
+    prefix_arguments: Vec<String>,
+    base_environment: BTreeMap<String, String>,
+}
+
+struct TestRunnerConfig {
+    provider: ClaudeProvider,
+    binding: NodeRuntimeBinding,
+    verifier: bool,
+    command: TestProviderCommand,
+}
+
+async fn runner_with_command(
+    workspace: &TestDirectory,
+    configuration: TestRunnerConfig,
+) -> NativeNodeRunner {
+    let TestRunnerConfig {
+        provider,
+        binding,
+        verifier,
+        command,
+    } = configuration;
     let runtime = RuntimePlan::Claude {
         provider,
         size: RunSize::Medium,
@@ -103,25 +154,20 @@ async fn runner(
         submission_key: IdempotencyKey::new("claude-test").assert_value(),
     })
     .await;
-    let base_environment = ClaudeProcessEnvironment::new(BTreeMap::from([
+    let mut base_environment = BTreeMap::from([
         (
             "HOME".to_owned(),
             workspace.path().to_string_lossy().into_owned(),
         ),
         ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-    ]))
-    .assert_value();
+    ]);
+    base_environment.extend(command.base_environment);
+    let base_environment = ClaudeProcessEnvironment::new(base_environment).assert_value();
     let adapter = Arc::new(
         ClaudeAdapter::new_for_test(ClaudeAdapterConfig {
             provider,
-            executable: "/bin/sh".to_owned(),
-            prefix_arguments: vec![
-                workspace
-                    .path()
-                    .join("fake-claude.sh")
-                    .to_string_lossy()
-                    .into_owned(),
-            ],
+            executable: command.executable,
+            prefix_arguments: command.prefix_arguments,
             workspace: workspace.path().to_owned(),
             runtime_home: workspace.path().to_owned(),
             local_user_home: None,
@@ -153,20 +199,85 @@ fn request(binding: NodeRuntimeBinding, execution: u64, values: &[(&str, &str)])
     .into_request()
 }
 
+async fn anthropic_runner(
+    workspace: &TestDirectory,
+    model: &str,
+    effort: Option<ReasoningEffort>,
+    scope: SessionScope,
+) -> (NativeNodeRunner, NodeRuntimeBinding) {
+    let binding = agent_binding(model, effort, scope, &[ANTHROPIC_KEY]);
+    let runtime = runner(workspace, ClaudeProvider::Anthropic, binding.clone(), false).await;
+    (runtime, binding)
+}
+
+async fn start_anthropic(
+    workspace: &TestDirectory,
+    model: &str,
+    effort: Option<ReasoningEffort>,
+) -> crate::native_v2_runner::NodeHandle {
+    let (runtime, binding) =
+        anthropic_runner(workspace, model, effort, SessionScope::Execution).await;
+    runtime
+        .start(request(binding, 1, &[(ANTHROPIC_KEY, "anthropic-fake")]))
+        .await
+        .assert_value()
+}
+
+fn assert_token_usage(usage: Option<TokenUsageDelta>, expected: [u64; 4]) {
+    let usage = usage.assert_value();
+    assert_eq!(usage.input_tokens.get(), expected[0]);
+    assert_eq!(usage.output_tokens.get(), expected[1]);
+    assert_eq!(
+        usage.cache_read_input_tokens.assert_value().get(),
+        expected[2]
+    );
+    assert_eq!(
+        usage.cache_creation_input_tokens.assert_value().get(),
+        expected[3]
+    );
+}
+
+async fn cancel_and_assert_reaped(
+    mut handle: crate::native_v2_runner::NodeHandle,
+    workspace: &TestDirectory,
+    child_pid: u32,
+) {
+    handle.cancel();
+    assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
+    let process = format!("/proc/{child_pid}");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while Path::new(&process).exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .assert_value_with("provider child remained alive after cancellation");
+    assert!(!workspace.child("survivor.txt").exists());
+}
+
 async fn complete_two_turns(runner: &NativeNodeRunner, binding: &NodeRuntimeBinding) {
     for execution in [1, 2] {
-        runner
-            .start(request(
-                binding.clone(),
-                execution,
-                &[(ANTHROPIC_KEY, "anthropic-fake")],
-            ))
-            .await
-            .assert_value()
-            .completion()
-            .await
-            .assert_value();
+        complete_turn(runner, binding, execution).await;
     }
+}
+
+async fn complete_turn(
+    runner: &NativeNodeRunner,
+    binding: &NodeRuntimeBinding,
+    execution: u64,
+) -> WorkerOutcome {
+    runner
+        .start(request(
+            binding.clone(),
+            execution,
+            &[(ANTHROPIC_KEY, "anthropic-fake")],
+        ))
+        .await
+        .assert_value()
+        .completion()
+        .await
+        .assert_value()
+        .outcome
 }
 
 async fn two_turn_workspace(
@@ -196,14 +307,15 @@ fn assert_resumed_session(arguments: &str) {
 
 const SUCCESS_SCRIPT: &str = r#"
 set -eu
-target=initial.args
+target=initial
 previous=
 for argument in "$@"; do
-  if [ "$previous" = "--resume" ]; then target=resumed.args; fi
+  if [ "$previous" = "--resume" ]; then target=resumed; fi
   previous=$argument
 done
-: > "$target"
-for argument in "$@"; do printf '%s\n' "$argument" >> "$target"; done
+: > "$target.args"
+for argument in "$@"; do printf '%s\n' "$argument" >> "$target.args"; done
+cat > "$target.prompt"
 printf '%s\n' "${ANTHROPIC_API_KEY-unset}" > anthropic-key.txt
 printf '%s\n' "${ANTHROPIC_AUTH_TOKEN-unset}" > anthropic-token.txt
 printf '%s\n' "${ANTHROPIC_BASE_URL-unset}" > anthropic-base-url.txt
@@ -214,7 +326,7 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-1"}'
 printf '%s%s\n' \
   '{"type":"stream_event","event":{"type":"content_block_delta",' \
   '"delta":{"type":"text_delta","text":"visible sentinel-secret"}}}'
-if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$target" = initial.args ]; then
+if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$target" = initial ]; then
   result=done
 else
   result='{\"response\":\"done\"}'
@@ -225,87 +337,6 @@ printf '%s%s%s%s\n' \
   '","session_id":"session-1","usage":{"input_tokens":11,"output_tokens":4,' \
   '"cache_read_input_tokens":6,"cache_creation_input_tokens":2}}'
 "#;
-
-#[tokio::test]
-async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free() {
-    for provider in [ClaudeProvider::Anthropic, ClaudeProvider::OpenRouter] {
-        let workspace = TestDirectory::new("claude-command");
-        workspace.write("fake-claude.sh", SUCCESS_SCRIPT);
-        let (provider_name, provider_value) = match provider {
-            ClaudeProvider::Anthropic => (ANTHROPIC_KEY, "anthropic-fake"),
-            ClaudeProvider::OpenRouter => (OPENROUTER_KEY, "openrouter-fake"),
-        };
-        let model = match provider {
-            ClaudeProvider::Anthropic => "claude-sonnet-5",
-            ClaudeProvider::OpenRouter => "anthropic/provider-owned-model",
-        };
-        let binding = agent_binding(
-            model,
-            Some(ReasoningEffort::Max),
-            SessionScope::Execution,
-            &[provider_name, "TEST_SECRET"],
-        );
-        let runner = runner(&workspace, provider, binding.clone(), false).await;
-        let mut handle = runner
-            .start(request(
-                binding,
-                1,
-                &[
-                    (provider_name, provider_value),
-                    ("TEST_SECRET", "sentinel-secret"),
-                ],
-            ))
-            .await
-            .assert_value();
-        let mut attach = handle.take_initial_output().assert_value();
-        let (live, completion) = tokio::join!(attach.recv_output(), handle.completion());
-        assert_eq!(live.assert_value().text, "visible [REDACTED]");
-        assert_eq!(
-            completion.assert_value().outcome,
-            WorkerOutcome::Verified {
-                output: json!("done"),
-                artifacts: Vec::new(),
-            }
-        );
-        let usage = attach.recv_usage().await.assert_value().assert_value();
-        assert_eq!(
-            [
-                usage.input_tokens.get(),
-                usage.output_tokens.get(),
-                usage.cache_read_input_tokens.assert_value().get(),
-                usage.cache_creation_input_tokens.assert_value().get(),
-            ],
-            [11, 4, 6, 2]
-        );
-        assert_eq!(attach.recv().await, Err(AttachReceiveError::Closed));
-        let arguments = workspace.read("initial.args");
-        let expected_prefix = format!(
-            concat!(
-                "--print\n--input-format\ntext\n--output-format\nstream-json\n",
-                "--verbose\n--include-partial-messages\n--model\n{}\n--json-schema\n",
-            ),
-            model
-        );
-        assert!(arguments.starts_with(&expected_prefix));
-        let schema = arguments
-            .lines()
-            .skip_while(|line| *line != "--json-schema")
-            .nth(1)
-            .and_then(|line| serde_json::from_str::<Value>(line).ok())
-            .assert_value();
-        assert_eq!(
-            schema.pointer("/properties/response").assert_value(),
-            &json!({"type":"string"})
-        );
-        assert!(arguments.contains("--effort\nmax\n--dangerously-skip-permissions\n"));
-        assert!(!arguments.contains("--setting-sources"));
-        assert!(arguments.contains("Authored instructions:\nExercise the Claude adapter."));
-        assert!(arguments.contains("Input JSON:\n\"perform the node task\""));
-        assert!(arguments.contains("Runtime-owned response contract:\n{\"kind\":\"worker\""));
-        assert_eq!(workspace.read("ambient.txt").trim(), "unset");
-        assert_provider_environment(&workspace, provider, provider_value);
-    }
-}
 
 fn assert_provider_environment(
     workspace: &TestDirectory,
@@ -393,6 +424,7 @@ async fn verifier_result_is_normalized_to_the_closed_worker_outcome() {
         "fake-claude.sh",
         r#"
 set -eu
+cat > verifier.prompt
 printf '%s\n' "$@" > verifier.args
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"verifier-session"}'
 printf '%s%s%s%s\n' \
@@ -433,7 +465,11 @@ printf '%s%s%s%s\n' \
     assert!(!arguments.contains("--tools"));
     assert!(!arguments.contains("--setting-sources"));
     assert!(!arguments.contains("--dangerously-skip-permissions"));
-    assert!(arguments.contains("\"signals\":{\"verdict\":[\"accepted\",\"rejected\"]}"));
+    assert!(
+        workspace
+            .read("verifier.prompt")
+            .contains("\"signals\":{\"verdict\":[\"accepted\",\"rejected\"]}")
+    );
 }
 
 #[tokio::test]
@@ -443,6 +479,7 @@ async fn cancellation_reaps_the_script_and_its_child_before_completion() {
         "fake-claude.sh",
         r#"
 set -eu
+cat >/dev/null
 (sleep 30; printf survived > survivor.txt) &
 printf '%s' "$!" > child.pid
 printf '%s%s\n' \
@@ -451,30 +488,11 @@ printf '%s%s\n' \
 wait
 "#,
     );
-    let binding = agent_binding(
-        "claude-haiku-4-5",
-        None,
-        SessionScope::Execution,
-        &[ANTHROPIC_KEY],
-    );
-    let runner = runner(
-        &workspace,
-        ClaudeProvider::Anthropic,
-        binding.clone(),
-        false,
-    )
-    .await;
-    let mut handle = runner
-        .start(request(binding, 1, &[(ANTHROPIC_KEY, "anthropic-fake")]))
-        .await
-        .assert_value();
+    let mut handle = start_anthropic(&workspace, "claude-haiku-4-5", None).await;
     let mut attach = handle.take_initial_output().assert_value();
     assert_eq!(attach.recv_output().await.assert_value().text, "started");
     let child_pid: u32 = workspace.read("child.pid").parse().assert_value();
-    handle.cancel();
-    assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
-    assert!(!Path::new(&format!("/proc/{child_pid}")).exists());
-    assert!(!workspace.child("survivor.txt").exists());
+    cancel_and_assert_reaped(handle, &workspace, child_pid).await;
 }
 
 #[path = "tests/failure.rs"]

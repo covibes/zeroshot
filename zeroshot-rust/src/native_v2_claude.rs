@@ -10,6 +10,8 @@ mod command;
 mod session;
 #[path = "native_v2_claude/transcript.rs"]
 mod transcript;
+#[path = "native_v2_claude/turn_process.rs"]
+mod turn_process;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,24 +19,24 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::execution::process::{HostedProcessPool, LocalProcessRunner, ProcessSessionCommand};
+use crate::execution::process::{HostedProcessPool, ProcessSessionCommand, ProcessStdout};
 use crate::native_v2_capsule::provider_process::{
     ClosedSessionFailure, ProviderProcessRunners, process_scope, redaction_values,
-    validate_process_cleanup, validate_process_output,
+    with_driver_detail,
 };
 use crate::native_v2_contract::{ClaudeProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
-    AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
-    LiveOutput, LiveOutputStream, NodeRunnerError, ProviderSchemaDialect, ResolvedEnvironment,
+    AgentResponse, resolve_agent_response, DriverControl, DriverInvocation, LiveOutput,
+    LiveOutputStream, NodeRunnerError, ProviderSchemaDialect, ResolvedEnvironment,
 };
 use command::{
     ClaudeTurnArguments, claude_arguments, configure_openrouter, extend_declared_environment,
-    reject_provider_controls, workspace_access,
+    prompt, reject_provider_controls, workspace_access,
 };
-use session::ClaudeSession;
-use transcript::{ClaudeAttempt, ClaudeTranscript};
+use session::{ClaudeSession, attempt_session_id, observe_session};
+use transcript::{ClaudeAttempt, ClaudeEmission, ClaudeTranscript};
+use turn_process::ClaudeProcessStart;
 
-const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MINIMAL_ENVIRONMENT_NAMES: [&str; 6] = ["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"];
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -62,7 +64,7 @@ impl ClaudeProcessEnvironment {
                     name.clone(),
                 ));
             }
-            if value.contains('\0') || name.len().saturating_add(value.len()) > 16 * 1024 {
+            if value.contains('\0') {
                 return Err(ClaudeAdapterConfigError::InvalidEnvironment);
             }
         }
@@ -162,14 +164,6 @@ impl ClaudeAdapter {
         Self::new_local(configuration)
     }
 
-    fn turn_process(
-        &self,
-        invocation: &DriverInvocation,
-    ) -> Result<(LocalProcessRunner, PathBuf), NodeRunnerError> {
-        let scope = process_scope(invocation)?;
-        self.runners.turn_process(&self.runtime_home, scope)
-    }
-
     fn command(
         &self,
         turn: &ClaudeTurn<'_>,
@@ -177,7 +171,9 @@ impl ClaudeAdapter {
     ) -> Result<ProcessSessionCommand, NodeRunnerError> {
         let invocation = turn.invocation;
         let NodeRuntimeBinding::Agent { model, effort, .. } = &invocation.node.binding else {
-            return Err(NodeRunnerError::Driver);
+            return Err(NodeRunnerError::DriverDetail(
+                "Claude command requires an agent runtime binding".to_owned(),
+            ));
         };
         let argv = claude_arguments(
             self.prefix_arguments.clone(),
@@ -191,18 +187,30 @@ impl ClaudeAdapter {
                         .response
                         .provider_schema(ProviderSchemaDialect::Standard),
                 )
-                .map_err(|_| NodeRunnerError::Driver)?,
-                prompt: input.prompt,
+                .map_err(|_| {
+                    NodeRunnerError::DriverDetail(
+                        "Claude response schema could not be serialized".to_owned(),
+                    )
+                })?,
             },
-        )?;
+        )
+        .map_err(|error| {
+            with_driver_detail(error, "Claude command rejected the selected node role")
+        })?;
 
         Ok(ProcessSessionCommand {
             program: self.executable.clone(),
             argv,
-            environment: self.process_environment(&invocation.environment, input.runtime_home)?,
+            environment: self
+                .process_environment(&invocation.environment, input.runtime_home)
+                .map_err(|error| {
+                    with_driver_detail(error, "Claude provider environment is invalid")
+                })?,
             workspace: crate::execution::driver::WorkspaceCapability {
                 current_dir: self.workspace.clone(),
-                mode: workspace_access(invocation.role)?,
+                mode: workspace_access(invocation.role).map_err(|error| {
+                    with_driver_detail(error, "Claude workspace policy rejected the node role")
+                })?,
             },
             deadline: turn.deadline,
         })
@@ -217,7 +225,11 @@ impl ClaudeAdapter {
         let runtime_home = runtime_home
             .to_str()
             .filter(|value| !value.is_empty())
-            .ok_or(NodeRunnerError::Driver)?;
+            .ok_or_else(|| {
+                NodeRunnerError::DriverDetail(
+                    "Claude runtime home is not a valid non-empty platform path".to_owned(),
+                )
+            })?;
         let provider_home = self
             .local_user_home
             .as_deref()
@@ -228,10 +240,25 @@ impl ClaudeAdapter {
         // Hosted targets may expose a read-only or root-owned shared `/tmp`. Keep Claude's
         // sockets and temporary files inside the same provider-private session home instead.
         environment.insert("TMPDIR".to_owned(), runtime_home.to_owned());
-        extend_declared_environment(&mut environment, resolved)?;
-        reject_provider_controls(&environment)?;
+        extend_declared_environment(&mut environment, resolved).map_err(|error| {
+            with_driver_detail(
+                error,
+                "Claude declared environment conflicts with reserved process configuration",
+            )
+        })?;
+        reject_provider_controls(&environment).map_err(|error| {
+            with_driver_detail(
+                error,
+                "Claude declared environment contains a provider-owned control variable",
+            )
+        })?;
         if self.provider == ClaudeProvider::OpenRouter {
-            configure_openrouter(&mut environment)?;
+            configure_openrouter(&mut environment).map_err(|error| {
+                with_driver_detail(
+                    error,
+                    "Claude OpenRouter credentials are missing or conflict with Anthropic credentials",
+                )
+            })?;
         }
         Ok(environment)
     }
@@ -250,8 +277,13 @@ impl ClaudeAdapter {
         let attempt = self
             .execute_turn(turn, resume_id.as_deref(), prompt)
             .await?;
-        observe_session(resume_id, attempt_session_id(&attempt))?;
-        resolve_claude_attempt(turn, resume_id, attempt)
+        if let Err(diagnostic) = observe_session(resume_id, attempt_session_id(&attempt)) {
+            return Ok(ClaudeTurnAdvance::ProviderFailure {
+                retryable: false,
+                diagnostic: diagnostic.to_owned(),
+            });
+        }
+        resolve_claude_attempt(turn, resume_id, attempt).await
     }
 
     async fn execute_turn(
@@ -260,62 +292,41 @@ impl ClaudeAdapter {
         resume_id: Option<&str>,
         prompt: String,
     ) -> Result<ClaudeAttempt, NodeRunnerError> {
-        let mut process = self.open_turn_process(turn, resume_id, prompt).await?;
-        let mut transcript = ClaudeTranscript::new(redaction_values(
+        let mut process = match self.open_turn_process(turn, resume_id).await? {
+            ClaudeProcessStart::Ready(process) => process,
+            ClaudeProcessStart::Failed(attempt) => return Ok(attempt),
+        };
+        let transcript = ClaudeTranscript::new(redaction_values(
             turn.invocation.environment.iter().map(|(_, value)| value),
         ));
-        let collected = collect_transcript(&mut process, &mut transcript, turn.control).await;
-        let process_output = if collected.is_ok() {
-            process.wait().await
-        } else {
-            process.release().await
-        };
-        turn.control.record_token_usage(transcript.token_usage())?;
-        let process_output = process_output.map_err(|_| NodeRunnerError::Driver)?;
-        validate_process_cleanup(&process_output, turn.control)?;
-        collected?;
-        let attempt = transcript.finish()?;
-        if matches!(attempt, ClaudeAttempt::Complete(_)) {
-            validate_process_output(&process_output, turn.control)?;
-        }
-        Ok(attempt)
+        turn_process::finish_process(&mut process, prompt.as_bytes(), transcript, turn.control)
+            .await
     }
 
     async fn open_turn_process(
         &self,
         turn: &ClaudeTurn<'_>,
         resume_id: Option<&str>,
-        prompt: String,
-    ) -> Result<crate::execution::process::ProcessSession, NodeRunnerError> {
-        let (runner, runtime_home) = self.turn_process(turn.invocation)?;
+    ) -> Result<ClaudeProcessStart, NodeRunnerError> {
+        let scope = process_scope(turn.invocation).map_err(|error| {
+            with_driver_detail(error, "Claude process scope requires an agent node role")
+        })?;
+        let (runner, runtime_home) = match self.runners.turn_process(&self.runtime_home, scope) {
+            Ok(process) => process,
+            Err(error) => return turn_process::failed_before_start(error, turn.control),
+        };
         let command = self.command(
             turn,
             ClaudeCommandInput {
                 resume_id,
                 runtime_home: &runtime_home,
-                prompt,
             },
         )?;
-        let mut process = runner
-            .open(command, turn.control.cancellation())
-            .await
-            .map_err(|_| NodeRunnerError::Driver)?;
-        if process.close_stdin().await.is_err() {
-            let _ = process.release().await;
-            return Err(NodeRunnerError::Driver);
-        }
-        Ok(process)
+        turn_process::open(runner, command, turn.control).await
     }
 }
 
-fn attempt_session_id(attempt: &ClaudeAttempt) -> Option<&str> {
-    match attempt {
-        ClaudeAttempt::Complete(result) => result.session_id.as_deref(),
-        ClaudeAttempt::Failed(failure) => failure.session_id.as_deref(),
-    }
-}
-
-fn resolve_claude_attempt(
+async fn resolve_claude_attempt(
     turn: &ClaudeTurn<'_>,
     resume_id: &Option<String>,
     attempt: ClaudeAttempt,
@@ -332,12 +343,19 @@ fn resolve_claude_attempt(
     let response = resolve_agent_response(&turn.invocation.response, &result.message)?;
     if matches!(response, AgentResponse::Correction(_)) {
         if resume_id.is_none() {
-            return Err(NodeRunnerError::Driver);
+            return Ok(ClaudeTurnAdvance::ProviderFailure {
+                retryable: false,
+                diagnostic:
+                    "Claude output did not provide a session identifier required for correction"
+                        .to_owned(),
+            });
         }
-        turn.control.emit(LiveOutput::new(
-            LiveOutputStream::System,
-            "Claude final output rejected; requesting correction",
-        )?)?;
+        turn.control
+            .emit(LiveOutput::new(
+                LiveOutputStream::System,
+                "Claude final output rejected; requesting correction",
+            )?)
+            .await?;
     }
     Ok(ClaudeTurnAdvance::Response(response))
 }
@@ -357,47 +375,37 @@ enum ClaudeTurnAdvance {
 struct ClaudeCommandInput<'a> {
     resume_id: Option<&'a str>,
     runtime_home: &'a Path,
-    prompt: String,
 }
 
 async fn collect_transcript(
-    process: &mut crate::execution::process::ProcessSession,
+    mut stdout: ProcessStdout,
     transcript: &mut ClaudeTranscript,
     control: &DriverControl,
 ) -> Result<(), NodeRunnerError> {
-    while let Some(chunk) = process.recv_stdout().await {
-        transcript.push(chunk.as_slice(), control)?;
-    }
-    transcript.finish_stream()
-}
-
-fn observe_session(
-    retained: &mut Option<String>,
-    observed: Option<&str>,
-) -> Result<(), NodeRunnerError> {
-    let Some(observed) = observed else {
-        return Ok(());
-    };
-    match retained.as_deref() {
-        Some(existing) if existing != observed => Err(NodeRunnerError::Driver),
-        Some(_) => Ok(()),
-        None => {
-            *retained = Some(observed.to_owned());
-            Ok(())
+    let mut delivery_error = None;
+    while let Some(chunk) = stdout.recv().await {
+        let emissions = transcript.push(chunk.as_slice());
+        if delivery_error.is_none() {
+            delivery_error = emit_claude(control, emissions).await.err();
         }
     }
+    let emissions = transcript.finish_stream();
+    if delivery_error.is_none() {
+        delivery_error = emit_claude(control, emissions).await.err();
+    }
+    delivery_error.map_or(Ok(()), Err)
 }
 
-fn prompt(invocation: &DriverInvocation) -> Result<String, NodeRunnerError> {
-    let value = render_agent_prompt(
-        invocation.agent_instructions()?,
-        &invocation.node.input,
-        &invocation.response,
-    )?;
-    if value.len() > MAX_PROMPT_BYTES || value.contains('\0') {
-        return Err(NodeRunnerError::Driver);
+async fn emit_claude(
+    control: &DriverControl,
+    emissions: Vec<ClaudeEmission>,
+) -> Result<(), NodeRunnerError> {
+    for emission in emissions {
+        control
+            .emit(LiveOutput::new(emission.stream, emission.text)?)
+            .await?;
     }
-    Ok(value)
+    Ok(())
 }
 
 #[cfg(test)]

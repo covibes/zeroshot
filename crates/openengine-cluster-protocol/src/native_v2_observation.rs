@@ -71,6 +71,42 @@ impl JsonSchema for TokenCount {
 #[error("token count {0} exceeds the JavaScript-safe integer maximum {MAX_SAFE_GENERATION}")]
 pub struct TokenCountOutOfRange(pub u64);
 
+/// Milliseconds since the Unix epoch for one durable observation.
+///
+/// Timestamps are positive and bounded to integers JavaScript represents exactly. Unix
+/// milliseconds remain within that range for hundreds of thousands of years.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct UnixTimestampMillis(crate::PositiveInteger);
+
+impl UnixTimestampMillis {
+    /// Earliest timestamp admitted by the wire contract.
+    pub const MIN: Self = Self(crate::PositiveInteger::ONE);
+
+    pub fn new(value: u64) -> Result<Self, crate::ContractValueError> {
+        crate::PositiveInteger::new(value).map(Self)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl JsonSchema for UnixTimestampMillis {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "UnixTimestampMillis".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        crate::value::javascript_safe_integer_schema(1)
+    }
+}
+
 /// Run-wide sum of provider-reported usage for every launched agent invocation.
 ///
 /// `complete` is false when at least one invocation did not report usable counters. Cache
@@ -213,6 +249,8 @@ pub struct RunLogEventNotification {
     pub subscription_id: SubscriptionId,
     pub run_id: RunId,
     pub cursor: Cursor,
+    /// Producer-captured Unix epoch milliseconds, preserved unchanged by durable replay.
+    pub timestamp: UnixTimestampMillis,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionRef>,
     pub record: LogRecord,

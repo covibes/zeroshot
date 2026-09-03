@@ -152,10 +152,12 @@ impl NodeDriver for BlockingDriver {
         _invocation: DriverInvocation,
         mut control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        control.emit(LiveOutput::new(
-            LiveOutputStream::Output,
-            "acceptance-live-output",
-        )?)?;
+        control
+            .emit(LiveOutput::new(
+                LiveOutputStream::Output,
+                "acceptance-live-output",
+            )?)
+            .await?;
         control.cancelled().await;
         Err(NodeRunnerError::Cancelled)
     }

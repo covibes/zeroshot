@@ -74,6 +74,7 @@ pub(super) fn log_notification(
 ) -> Result<Option<RunLogEventNotification>, NativeV2ObservationError> {
     let RunEvent::SafeLog {
         execution,
+        timestamp,
         stream,
         line,
     } = &stored.event
@@ -96,6 +97,7 @@ pub(super) fn log_notification(
         subscription_id: subscription_id.clone(),
         run_id: snapshot.run_id.clone(),
         cursor: stored.cursor.clone(),
+        timestamp: *timestamp,
         execution: public_execution,
         record: log_record(*stream, line.as_str())?,
     }))

@@ -118,6 +118,7 @@ elif args and args[0] == "logs":
     event = {
         "runId": args[1],
         "cursor": "v2:3",
+        "timestamp": 1725000000123,
         "record": {"level": "info", "target": "agent", "message": "done"},
     }
     if option("--execution") is not None:

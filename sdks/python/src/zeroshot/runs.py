@@ -137,6 +137,7 @@ class LogEvent:
     Args:
         run_id: Public durable run identity.
         cursor: Opaque durable log cursor.
+        timestamp: Producer-captured Unix epoch milliseconds, preserved by replay.
         execution: Opaque execution selector, or None for run-wide records.
         level: Native debug, info, or error level.
         target: Bounded native log target.
@@ -145,6 +146,7 @@ class LogEvent:
 
     run_id: str
     cursor: str
+    timestamp: int
     execution: str | None
     level: Literal["debug", "info", "error"]
     target: str

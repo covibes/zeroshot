@@ -193,10 +193,12 @@ impl NodeDriver for ScriptedAgent {
         self.starts.fetch_add(1, Ordering::SeqCst);
         fs::write(self.workspace.join("result.txt"), "native v2\n")
             .map_err(|_| NodeRunnerError::Driver)?;
-        control.emit(crate::native_v2_runner::LiveOutput::new(
-            crate::native_v2_runner::LiveOutputStream::Output,
-            "worker: mutation ready",
-        )?)?;
+        control
+            .emit(crate::native_v2_runner::LiveOutput::new(
+                crate::native_v2_runner::LiveOutputStream::Output,
+                "worker: mutation ready",
+            )?)
+            .await?;
         Ok(WorkerOutcome::Verified {
             output: Value::Null,
             artifacts: Vec::new(),

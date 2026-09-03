@@ -166,18 +166,29 @@ pub(super) async fn bridge_durable_events(
     execution: ExecutionId,
     mut output: crate::native_v2_runner::DurableOutput,
 ) -> Result<(), RunLedgerError> {
-    while let Ok(event) = output.recv().await {
-        let event = match event {
-            DurableNodeEvent::Output(output) => RunEvent::SafeLog {
-                execution: Some(execution),
-                stream: safe_log_stream(output.stream),
-                line: SafeLogLine::new(output.text)?,
-            },
-            DurableNodeEvent::TokenUsage(usage) => {
-                RunEvent::TokenUsageObserved { execution, usage }
-            }
-        };
-        ledger.append(&run_id, vec![event]).await?;
+    const BATCH_SIZE: usize = 64;
+
+    let mut queued = Vec::with_capacity(BATCH_SIZE);
+    loop {
+        queued.clear();
+        if output.recv_many(&mut queued, BATCH_SIZE).await == 0 {
+            break;
+        }
+        let mut events = Vec::with_capacity(queued.len());
+        for event in queued.drain(..) {
+            events.push(match event {
+                DurableNodeEvent::Output { output, timestamp } => RunEvent::SafeLog {
+                    execution: Some(execution),
+                    timestamp,
+                    stream: safe_log_stream(output.stream),
+                    line: SafeLogLine::new(output.text)?,
+                },
+                DurableNodeEvent::TokenUsage(usage) => {
+                    RunEvent::TokenUsageObserved { execution, usage }
+                }
+            });
+        }
+        ledger.append(&run_id, events).await?;
     }
     Ok(())
 }
@@ -349,6 +360,7 @@ pub(super) fn runner_failure(error: NodeRunnerError) -> WorkerOutcome {
         | NodeRunnerError::SessionOpen
         | NodeRunnerError::SessionLost
         | NodeRunnerError::Driver
+        | NodeRunnerError::DriverDetail(_)
         | NodeRunnerError::ConnectionLost
         | NodeRunnerError::UnsafeOutput
         | NodeRunnerError::DurableOutputClosed

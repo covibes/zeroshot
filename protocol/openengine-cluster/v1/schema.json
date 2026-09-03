@@ -3916,12 +3916,19 @@
         },
         "subscriptionId": {
           "type": "string"
+        },
+        "timestamp": {
+          "description": "Producer-captured Unix epoch milliseconds, preserved unchanged by durable replay.",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "required": [
         "subscriptionId",
         "runId",
         "cursor",
+        "timestamp",
         "record"
       ],
       "type": "object"

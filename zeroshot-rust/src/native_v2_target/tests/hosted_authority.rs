@@ -206,6 +206,7 @@ fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
                         "subscriptionId": "logs-1",
                         "runId": "run-hosted",
                         "cursor": "v2:4",
+                        "timestamp": 1_725_000_000_123_u64,
                         "execution": "worker/1",
                         "record": {
                             "level": "info",
