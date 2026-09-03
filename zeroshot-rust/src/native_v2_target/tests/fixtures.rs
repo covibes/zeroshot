@@ -335,6 +335,7 @@ pub(super) fn run_request() -> PreparedRunRequest {
         intent: run_intent(),
         connections: BTreeMap::new(),
         github_token: None,
+        profile: None,
     }
 }
 

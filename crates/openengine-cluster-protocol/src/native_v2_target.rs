@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ConnectionKey, EnvironmentVariableName, NativeV2RunValueError, RunId, RunSubmission,
-    MAX_DECLARED_ENVIRONMENT_NAMES,
+    TargetRunProfilesDiscovery, MAX_DECLARED_ENVIRONMENT_NAMES,
 };
 
 pub const TARGET_DISCOVERY_PATH: &str = "/.well-known/zeroshot-native-v2";
@@ -220,22 +220,25 @@ impl fmt::Debug for TargetRunRequest {
             .debug_struct("TargetRunRequest")
             .field("run_id", &self.run_id)
             .field("submission", &self.submission)
-            .field(
-                "connections",
-                &self
-                    .connections
-                    .iter()
-                    .map(|(key, values)| (key, values.field_names()))
-                    .collect::<BTreeMap<_, _>>(),
-            )
+            .field("connections", &connection_shape(&self.connections))
             .field("connection_values", &"[REDACTED]")
             .field("connection_resolver", &self.connection_resolver)
-            .field(
-                "github_token",
-                &self.github_token.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("github_token", &redacted(&self.github_token))
             .finish()
     }
+}
+
+fn connection_shape(
+    connections: &RunConnectionValues,
+) -> BTreeMap<&ConnectionKey, Vec<EnvironmentVariableName>> {
+    connections
+        .iter()
+        .map(|(key, values)| (key, values.field_names()))
+        .collect()
+}
+
+fn redacted(secret: &Option<String>) -> Option<&'static str> {
+    secret.as_ref().map(|_| "[REDACTED]")
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -355,6 +358,8 @@ pub struct TargetDiscoveryExtensions {
     pub hosted_runs: Option<TargetHostedRunsDiscovery>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connections: Option<TargetConnectionsDiscovery>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_profiles: Option<TargetRunProfilesDiscovery>,
 }
 
 /// One discovery document for direct Docker targets and OAuth-hosted targets.
@@ -380,7 +385,7 @@ pub struct TargetDiscoveryDocument {
 impl TargetDiscoveryExtensions {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.hosted_runs.is_none() && self.connections.is_none()
+        self.hosted_runs.is_none() && self.connections.is_none() && self.run_profiles.is_none()
     }
 }
 

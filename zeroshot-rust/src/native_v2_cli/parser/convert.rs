@@ -13,9 +13,14 @@ use super::{
 };
 use crate::native_v2_cli::{
     BuiltinGraphTemplate, ConnectionInput, ConnectionRoute, ConnectionSetCommand,
-    NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph, RunLogsCommand, RunRuntime,
-    RunSelector, RunWatchCommand, TargetAdd, TargetServe, TargetSetup, TemplateDelivery,
+    NativeV2CliCommand, NativeV2CliError, ProfileQualifier, ProfileReference, RunCommand, RunGraph,
+    RunLogsCommand, RunRuntime, RunSelection, RunSelector, RunWatchCommand, TargetAdd, TargetServe,
+    TargetSetup, TemplateDelivery,
 };
+
+#[path = "convert/profile_commands.rs"]
+mod profile_commands;
+use profile_commands::profile_name;
 
 /// Parse the public native-v2 command surface from arguments after the executable name.
 ///
@@ -56,6 +61,7 @@ impl CliCommand {
         match self {
             Self::Target { command } => command.into_command(),
             Self::Connection { command } => command.into_command(),
+            Self::Profile { command } => command.into_command(),
             Self::Template { command } => command.into_command(),
             Self::Run(args) => args.into_command(),
             Self::Utility(command) => command.into_command(),
@@ -207,19 +213,97 @@ impl TemplateName {
 impl RunArgs {
     fn into_command(self) -> Result<NativeV2CliCommand, NativeV2CliError> {
         let (target, branch) = run_route(self.target, self.branch)?;
+        let selection = run_selection(RunSelectionArgs {
+            profile: self.profile,
+            graph: self.graph,
+            template: self.template,
+            exact: self.runtime_config,
+            uniform: self.uniform_runtime_config,
+            delivery: self.delivery.selection(),
+        })?;
         Ok(NativeV2CliCommand::Run(RunCommand {
             target,
             title: RunTitle::new(self.title)
                 .map_err(|error| usage(format!("invalid --title: {error}")))?,
-            graph: run_graph(self.graph, self.template, self.delivery.selection())?,
             input: self.input,
-            runtime: run_runtime(self.runtime_config, self.uniform_runtime_config)?,
+            selection,
             branch,
             detach: self.detach,
             validate_only: self.validate_only,
             submission_key: submission_key(self.submission_key)?,
         }))
     }
+}
+
+struct RunSelectionArgs<'a> {
+    profile: Option<String>,
+    graph: Option<PathBuf>,
+    template: Option<TemplateName>,
+    exact: Option<PathBuf>,
+    uniform: Option<PathBuf>,
+    delivery: (Option<&'a str>, bool, bool),
+}
+
+fn run_selection(args: RunSelectionArgs<'_>) -> Result<RunSelection, NativeV2CliError> {
+    if args.profile.is_some() {
+        return profile_run_selection(args);
+    }
+    inline_or_default_selection(args)
+}
+
+fn profile_run_selection(args: RunSelectionArgs<'_>) -> Result<RunSelection, NativeV2CliError> {
+    let (has_graph, has_runtime, has_delivery) = selection_shape(&args);
+    if has_graph | has_runtime | has_delivery {
+        return Err(usage(
+            "--profile cannot be combined with graph, runtime, or delivery options",
+        ));
+    }
+    let profile = args
+        .profile
+        .ok_or_else(|| usage("profile selector is unavailable"))?;
+    Ok(RunSelection::Profile(Some(parse_profile_reference(
+        profile,
+    )?)))
+}
+
+fn inline_or_default_selection(
+    args: RunSelectionArgs<'_>,
+) -> Result<RunSelection, NativeV2CliError> {
+    let (has_graph, has_runtime, has_delivery) = selection_shape(&args);
+    if !(has_graph | has_runtime | has_delivery) {
+        return Ok(RunSelection::Profile(None));
+    }
+    if !has_graph | !has_runtime {
+        return Err(usage(
+            "inline runs require one graph/template and one runtime configuration",
+        ));
+    }
+    Ok(RunSelection::Inline {
+        graph: run_graph(args.graph, args.template, args.delivery)?,
+        runtime: run_runtime(args.exact, args.uniform)?,
+    })
+}
+
+fn selection_shape(args: &RunSelectionArgs<'_>) -> (bool, bool, bool) {
+    (
+        args.graph.is_some() | args.template.is_some(),
+        args.exact.is_some() | args.uniform.is_some(),
+        args.delivery.0.is_some() | args.delivery.1 | args.delivery.2,
+    )
+}
+
+fn parse_profile_reference(value: String) -> Result<ProfileReference, NativeV2CliError> {
+    let (qualifier, name) = match value.split_once(':') {
+        Some(("local", name)) => (Some(ProfileQualifier::Local), name),
+        Some(("user", name)) => (Some(ProfileQualifier::User), name),
+        Some(("org", name)) => (Some(ProfileQualifier::Org), name),
+        Some(_) => return Err(usage("profile scope must be local, user, or org")),
+        None => (None, value.as_str()),
+    };
+    Ok(ProfileReference {
+        qualifier,
+        name: profile_name(name.to_owned())?,
+    })
 }
 
 fn run_runtime(

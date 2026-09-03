@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 #[tokio::test]
 async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
@@ -22,6 +23,7 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
         target: target.clone(),
         head_branch: "zeroshot/v2-test".to_owned(),
         head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+        source_issue: Some(GitHubSourceIssue { number: 208 }),
     };
     let credential = GitHubCredential("test-token");
     authority
@@ -67,16 +69,27 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
     assert!(!argument_lines(&git_capture).contains("test-token"));
 
     let gh_capture = fs::read_to_string(format!("{}.capture", gh_program.display())).assert_value();
+    assert_production_github_capture(&gh_capture, repo.root.path());
+}
+
+fn assert_production_github_capture(gh_capture: &str, home: &Path) {
     assert!(gh_capture.contains(&format!(
         "token=test-token\nhost=github.com\nhome={}",
-        repo.root.path().display()
+        home.display()
     )));
     assert!(gh_capture.contains("arg=repos/acme/project/pulls"));
     assert!(gh_capture.contains("arg=state=all"));
     assert!(gh_capture.contains("arg=head=acme:zeroshot/v2-test"));
+    assert!(gh_capture.contains("arg=body=Created by Zeroshot v2.\n\nCloses #208"));
+    assert!(gh_capture.contains("arg=repos/acme/project/issues/208"));
+    assert!(gh_capture.contains("arg=repos/acme/project/issues/208/comments"));
+    assert!(gh_capture.contains("arg=page=1"));
+    assert!(gh_capture.contains(
+        "arg=body=Zeroshot opened pull request #17 for this issue.\n\n<!-- zeroshot-delivery:zeroshot/v2-test -->"
+    ));
     assert!(gh_capture.contains("arg=repos/acme/project/pulls/17/merge"));
     assert!(gh_capture.contains("arg=sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
-    assert!(!argument_lines(&gh_capture).contains("test-token"));
+    assert!(!argument_lines(gh_capture).contains("test-token"));
 }
 
 #[tokio::test]
@@ -97,6 +110,7 @@ async fn production_gh_transport_rejects_malformed_or_changed_authority() {
         .assert_value(),
         head_branch: "zeroshot/v2-test".to_owned(),
         head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+        source_issue: None,
     };
     for gh_program in [malformed, mismatch] {
         let authority = GhCliDeliveryAuthority::new(GhCliAuthorityConfig {

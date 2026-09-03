@@ -19,6 +19,8 @@ mod attach;
 mod connections;
 #[path = "execution/context.rs"]
 mod context;
+#[path = "execution/profiles.rs"]
+mod profiles;
 #[path = "execution/status.rs"]
 mod status;
 #[path = "execution/submission.rs"]
@@ -61,6 +63,9 @@ where
     }
     if command.is_connection_operation() {
         return connections::execute_connection(command, context.backend, output).await;
+    }
+    if command.is_profile_operation() {
+        return profiles::execute_profile(command, context.backend, output).await;
     }
     if command.is_target_operation() {
         return execute_target(command, context.backend).await;

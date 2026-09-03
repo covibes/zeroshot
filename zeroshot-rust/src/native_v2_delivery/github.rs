@@ -128,7 +128,7 @@ impl GhCliDeliveryAuthority {
                     "-f".to_owned(),
                     format!("title={PULL_REQUEST_TITLE}"),
                     "-f".to_owned(),
-                    format!("body={PULL_REQUEST_BODY}"),
+                    format!("body={}", pull_request_body(request)),
                     "-f".to_owned(),
                     format!("head={}", request.head_branch),
                     "-f".to_owned(),
@@ -275,10 +275,12 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         request: &GitHubReviewRequest,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubReviewReceipt, GitHubAuthorityError> {
-        match self.find_review(request, credential).await? {
+        let review = match self.find_review(request, credential).await? {
             Some(review) => Ok(review),
             None => self.create_review(request, credential).await,
-        }
+        }?;
+        connect_source_issue(self, request, &review, credential).await?;
+        Ok(review)
     }
 
     async fn inspect_review(
@@ -349,7 +351,9 @@ fn confirmed_merge(value: Value) -> Result<(), GitHubAuthorityError> {
         .ok_or(GitHubAuthorityError::Rejected)
 }
 
+mod source_issue;
 mod wire;
+use source_issue::{connect_source_issue, pull_request_body};
 use wire::{
     MergeWire, PullRequestWire, classify_checks, failed_check_job_ids, include_check_logs,
     require_review_identity, review_receipt,

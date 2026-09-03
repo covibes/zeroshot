@@ -11,6 +11,10 @@ use std::marker::PhantomData;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
+
+#[path = "native_v2_run/profile.rs"]
+mod profile;
+pub use profile::*;
 pub const RUN_SUBMIT_METHOD: &str = "run/submit";
 pub const RUN_LIST_METHOD: &str = "run/list";
 pub const RUN_STATUS_METHOD: &str = "run/status";
@@ -222,6 +226,22 @@ fn validate_connection_key(value: &str) -> Result<(), NativeV2RunValueError> {
     )
 }
 
+fn validate_profile_name(value: &str) -> Result<(), NativeV2RunValueError> {
+    let mut bytes = value.bytes();
+    let valid = value.len() <= 64
+        && bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    if valid {
+        Ok(())
+    } else {
+        Err(NativeV2RunValueError(
+            "run profile name must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+        ))
+    }
+}
+
 fn validate_non_control_text(
     value: &str,
     maximum: usize,
@@ -306,6 +326,17 @@ native_v2_string_kind!(
         "minLength": 1,
         "maxLength": 128,
         "pattern": r"^[^\u0000-\u001f\u007f-\u009f]+$"
+    })
+);
+native_v2_string_kind!(
+    RunProfileNameKind,
+    RunProfileName,
+    validate_profile_name,
+    json_schema!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     })
 );
 
@@ -424,5 +455,15 @@ mod tests {
             Some(&serde_json::json!("API_KEY"))
         );
         assert!(encoded.get("env").is_none());
+    }
+
+    #[test]
+    fn profile_name_is_a_compact_cli_safe_identifier() {
+        for valid in ["default", "software-change", "team_v2.1"] {
+            assert!(RunProfileName::new(valid).is_ok());
+        }
+        for invalid in ["", "-leading", "has space", "has/slash"] {
+            assert!(RunProfileName::new(invalid).is_err());
+        }
     }
 }

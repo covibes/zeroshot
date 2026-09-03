@@ -215,6 +215,12 @@ pub struct GitHubReviewRequest {
     pub target: DeliveryTarget,
     pub head_branch: String,
     pub head_revision: String,
+    pub source_issue: Option<GitHubSourceIssue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitHubSourceIssue {
+    pub number: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

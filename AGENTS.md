@@ -121,13 +121,14 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
 | Native v2 CLI grammar/help source         | `zeroshot-rust/src/native_v2_cli/parser.rs`                                                                                      |
+| Native v2 run profiles                    | `crates/openengine-cluster-protocol/src/native_v2_run/profile.rs`, `zeroshot-rust/src/native_v2_cli/profiles.rs`                 |
 | Generated native v2 CLI reference         | `docs/zeroshot-rust-cli.{md,html}`, `zeroshot-rust/examples/{generate_cli_docs.rs,cli_docs/}`                                    |
 | Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
 | Native v2 target connector/server command | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
 | Native self-hosted target image           | `docker/zeroshot-rust-target/`                                                                                                   |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
-| Python SDK sidecar client/package         | `sdks/python/`                                                                                                                    |
+| Python SDK sidecar client/package         | `sdks/python/`                                                                                                                   |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
 | Native distribution decision              | `docs/zeroshot-rust-distribution.md`                                                                                             |
 | Full-v1 pure graph reducer                | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |

@@ -387,9 +387,11 @@ async fn submit_through_cli(
         NativeV2CliCommand::Run(RunCommand {
             target: Some("candidate-cloud".to_owned()),
             title: RunTitle::new("Candidate end to end").assert_value_with("title"),
-            graph: RunGraph::File(graph_path),
+            selection: crate::native_v2_cli::RunSelection::Inline {
+                graph: RunGraph::File(graph_path),
+                runtime: crate::native_v2_cli::RunRuntime::Exact(runtime_path),
+            },
             input: input_path,
-            runtime: crate::native_v2_cli::RunRuntime::Exact(runtime_path),
             branch: None,
             detach: true,
             validate_only: false,

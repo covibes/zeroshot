@@ -10,7 +10,9 @@ use openengine_cluster_protocol::{
     ConnectionDeleteRequest, ConnectionDeleteResult, ConnectionListRequest, ConnectionListResult,
     ConnectionMutationResult, ConnectionSetRequest, Cursor, RunAttachEventNotification,
     RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
-    RunStatus, RunStatusParams, RunSubmitResult, RunWatchParams,
+    RunProfile, RunProfileDefaultRequest, RunProfileDefaultResult, RunProfileDeleteResult,
+    RunProfileListRequest, RunProfileListResult, RunProfileMutationResult, RunProfileSelector,
+    RunProfileSetRequest, RunStatus, RunStatusParams, RunSubmitResult, RunWatchParams,
 };
 use tokio::sync::mpsc;
 
@@ -23,6 +25,10 @@ use super::{
 #[path = "oecp/errors.rs"]
 mod errors;
 use errors::{protocol as protocol_error, require_named_target, subscription as subscription_error};
+
+#[path = "oecp/target_connector.rs"]
+mod target_connector;
+pub use target_connector::TargetConnector;
 
 pub struct BoxedSubscription<E> {
     inner: Box<dyn CliSubscription<E>>,
@@ -44,71 +50,6 @@ where
     async fn next(&mut self) -> Result<Option<CliSubscriptionItem<E>>, NativeV2CliError> {
         self.inner.next().await
     }
-}
-
-/// Named-target authority. The CLI does not interpret login credentials or runtime configuration.
-#[async_trait]
-pub trait TargetConnector: Send + Sync {
-    type Transport: SubscriptionTransport + Send + Sync + 'static;
-
-    async fn add(&self, request: TargetAdd) -> Result<(), NativeV2CliError>;
-    async fn login(&self, name: &str) -> Result<(), NativeV2CliError>;
-    async fn setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError>;
-    async fn connection_list(
-        &self,
-        name: &str,
-        request: ConnectionListRequest,
-    ) -> Result<ConnectionListResult, NativeV2CliError>;
-    async fn connection_set(
-        &self,
-        name: &str,
-        request: ConnectionSetRequest,
-    ) -> Result<ConnectionMutationResult, NativeV2CliError>;
-    async fn connection_delete(
-        &self,
-        name: &str,
-        request: ConnectionDeleteRequest,
-    ) -> Result<ConnectionDeleteResult, NativeV2CliError>;
-    async fn submit(
-        &self,
-        name: &str,
-        request: PreparedRunRequest,
-    ) -> Result<RunSubmitResult, NativeV2CliError>;
-    async fn connect(
-        &self,
-        name: &str,
-        run_id: Option<openengine_cluster_protocol::RunId>,
-    ) -> Result<Arc<Self::Transport>, NativeV2CliError>;
-
-    async fn hosted_run_list(
-        &self,
-        name: &str,
-        params: RunListParams,
-    ) -> Result<Option<CliRunListResult>, NativeV2CliError>;
-
-    async fn hosted_run_status(
-        &self,
-        name: &str,
-        params: RunStatusParams,
-    ) -> Result<Option<CliRunStatusResult>, NativeV2CliError>;
-
-    async fn hosted_run_watch(
-        &self,
-        name: &str,
-        params: RunWatchParams,
-    ) -> Result<Option<BoxedSubscription<CliRunWatchEventNotification>>, NativeV2CliError>;
-
-    async fn hosted_run_logs(
-        &self,
-        name: &str,
-        params: RunLogsParams,
-    ) -> Result<Option<BoxedSubscription<RunLogEventNotification>>, NativeV2CliError>;
-
-    async fn hosted_run_force(
-        &self,
-        name: &str,
-        params: RunForceParams,
-    ) -> Result<Option<CliRunForceResult>, NativeV2CliError>;
 }
 
 pub struct NamedTargetCliBackend<C> {
@@ -225,6 +166,56 @@ where
     ) -> Result<ConnectionDeleteResult, NativeV2CliError> {
         self.connector
             .connection_delete(require_named_target(target)?, request)
+            .await
+    }
+
+    async fn profile_list(
+        &self,
+        target: Option<&str>,
+        request: RunProfileListRequest,
+    ) -> Result<RunProfileListResult, NativeV2CliError> {
+        self.connector
+            .profile_list(require_named_target(target)?, request)
+            .await
+    }
+
+    async fn profile_show(
+        &self,
+        target: Option<&str>,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfile, NativeV2CliError> {
+        self.connector
+            .profile_show(require_named_target(target)?, selector)
+            .await
+    }
+
+    async fn profile_set(
+        &self,
+        target: Option<&str>,
+        request: RunProfileSetRequest,
+    ) -> Result<RunProfileMutationResult, NativeV2CliError> {
+        self.connector
+            .profile_set(require_named_target(target)?, request)
+            .await
+    }
+
+    async fn profile_delete(
+        &self,
+        target: Option<&str>,
+        selector: RunProfileSelector,
+    ) -> Result<RunProfileDeleteResult, NativeV2CliError> {
+        self.connector
+            .profile_delete(require_named_target(target)?, selector)
+            .await
+    }
+
+    async fn profile_default(
+        &self,
+        target: Option<&str>,
+        request: RunProfileDefaultRequest,
+    ) -> Result<RunProfileDefaultResult, NativeV2CliError> {
+        self.connector
+            .profile_default(require_named_target(target)?, request)
             .await
     }
 

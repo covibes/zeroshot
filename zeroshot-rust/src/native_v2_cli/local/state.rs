@@ -1,10 +1,10 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use openengine_cluster_protocol::{RunId, is_canonical_uuid_v7};
 use tokio::process::Command;
 
 use super::{NativeV2CliError, local_io, local_message};
+use crate::native_v2_cli::{absolute_user_path, nonempty_environment};
 
 pub(super) fn validate_local_run_id(run_id: &RunId) -> Result<(), NativeV2CliError> {
     is_canonical_uuid_v7(run_id)
@@ -102,32 +102,23 @@ pub(super) fn remove_private_bootstrap(path: &Path) {
 
 pub(super) fn default_local_state_root() -> Result<PathBuf, NativeV2CliError> {
     if let Some(path) = nonempty_environment("ZEROSHOT_RUST_STATE_DIR") {
-        return absolute_path(path);
+        return absolute_user_path(path, "controller state path must be absolute");
     }
     if let Some(path) = nonempty_environment("XDG_STATE_HOME") {
-        return absolute_path(PathBuf::from(path).join("zeroshot-rust"));
+        return absolute_user_path(
+            PathBuf::from(path).join("zeroshot-rust"),
+            "controller state path must be absolute",
+        );
     }
     let home = nonempty_environment("HOME")
         .ok_or_else(|| local_message("HOME and XDG_STATE_HOME are unavailable"))?;
-    absolute_path(
+    absolute_user_path(
         PathBuf::from(home)
             .join(".local")
             .join("state")
             .join("zeroshot-rust"),
+        "controller state path must be absolute",
     )
-}
-
-fn absolute_path(path: impl Into<PathBuf>) -> Result<PathBuf, NativeV2CliError> {
-    let path = path.into();
-    if path.is_absolute() && !path.as_os_str().is_empty() {
-        Ok(path)
-    } else {
-        Err(local_message("controller state path must be absolute"))
-    }
-}
-
-fn nonempty_environment(name: &str) -> Option<OsString> {
-    std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
