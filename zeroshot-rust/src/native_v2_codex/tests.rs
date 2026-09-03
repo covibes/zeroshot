@@ -134,13 +134,21 @@ fn environment_names(names: &[&str]) -> DeclaredEnvironment {
 }
 
 fn binding(scope: SessionScope, environment: &[&str]) -> NodeRuntimeBinding {
+    binding_with_model("gpt-5.6-sol", scope, environment)
+}
+
+fn binding_with_model(
+    model: &str,
+    scope: SessionScope,
+    environment: &[&str],
+) -> NodeRuntimeBinding {
     let connections = if environment.is_empty() {
         DeclaredConnections::empty()
     } else {
         DeclaredConnections::single("provider", environment_names(environment)).assert_value()
     };
     NodeRuntimeBinding::Agent {
-        model: worker_catalog::ModelId::new("gpt-5.6-sol").assert_value(),
+        model: worker_catalog::ModelId::new(model).assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
         connections,
@@ -289,7 +297,8 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
     let capture = directory.child("capture");
     let adapter = scripted_adapter(&directory, CodexProvider::OpenRouter);
     let admitted = admitted(
-        binding(
+        binding_with_model(
+            "openai/gpt-5.6-sol",
             SessionScope::Execution,
             &["CAPTURE_PATH", "OPENROUTER_API_KEY"],
         ),

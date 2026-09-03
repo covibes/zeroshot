@@ -127,7 +127,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native self-hosted target image           | `docker/zeroshot-rust-target/`                                                                                                   |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
-| Python SDK sidecar client/package         | `sdks/python/`                                                                                                                    |
+| Python SDK sidecar client/package         | `sdks/python/`                                                                                                                   |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
 | Native distribution decision              | `docs/zeroshot-rust-distribution.md`                                                                                             |
 | Full-v1 pure graph reducer                | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
@@ -190,6 +190,10 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested
 and effective state distinct and fail closed unless local help/version evidence proves the control.
+Native-v2 uniform runtime selection requires caller-authored `harness`, `provider`, and `model`
+values. Treat model IDs as opaque provider-owned strings and pass them to the selected harness
+unchanged; do not infer a harness from a provider or model, maintain model catalogs, or validate
+model availability. Admission may reject only harness/provider pairs known to be incompatible.
 Structured-output recovery eligibility is also registry-derived: every engine whose `jsonSchema`
 capability is `true` or `experimental` must implement its provider-owned, fail-closed recovery
 adapter. Recovery always runs as a fresh nested turn with provider sessions, MCP, approval bypass,
@@ -205,6 +209,8 @@ verify byte-for-byte drift with `npm run protocol:check`. These generator-format
 are excluded from Prettier; never format them independently.
 Full-v1 loops may omit `until`; such loops repeat to their bound unless an inner terminal ends the
 graph first.
+Full-v1 fan-out joins must merge controls and channels only from the completed child subgraph and
+its structural map scope; never merge a child's inherited sibling snapshot back into the parent.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.

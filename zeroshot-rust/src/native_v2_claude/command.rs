@@ -114,23 +114,3 @@ pub(super) fn configure_openrouter(
     );
     Ok(())
 }
-
-pub(super) fn validate_model_effort(
-    model: &str,
-    effort: Option<ReasoningEffort>,
-) -> Result<(), NodeRunnerError> {
-    match (model, effort) {
-        ("claude-haiku-4-5", None) => Ok(()),
-        (
-            "claude-sonnet-5" | "claude-opus-5" | "claude-fable-5",
-            Some(
-                ReasoningEffort::Low
-                | ReasoningEffort::Medium
-                | ReasoningEffort::High
-                | ReasoningEffort::Xhigh
-                | ReasoningEffort::Max,
-            ),
-        ) => Ok(()),
-        _ => Err(NodeRunnerError::Driver),
-    }
-}

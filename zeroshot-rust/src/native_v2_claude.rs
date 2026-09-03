@@ -29,7 +29,7 @@ use crate::native_v2_runner::{
 };
 use command::{
     ClaudeTurnArguments, claude_arguments, configure_openrouter, extend_declared_environment,
-    reject_provider_controls, validate_model_effort, workspace_access,
+    reject_provider_controls, workspace_access,
 };
 use session::ClaudeSession;
 use transcript::{ClaudeAttempt, ClaudeTranscript};
@@ -179,7 +179,6 @@ impl ClaudeAdapter {
         let NodeRuntimeBinding::Agent { model, effort, .. } = &invocation.node.binding else {
             return Err(NodeRunnerError::Driver);
         };
-        validate_model_effort(model.as_str(), *effort)?;
         let argv = claude_arguments(
             self.prefix_arguments.clone(),
             ClaudeTurnArguments {

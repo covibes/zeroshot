@@ -224,8 +224,9 @@ impl Engine<'_> {
             mode: traversal.mode,
             decisions: &mut self.decisions,
         })?;
+        let body_names = descendant_names(&group.body);
         for item in results {
-            merge_runtime_facts(&item.context, context);
+            merge_scoped_runtime_facts(&item.context, context, &body_names, &item.scope);
         }
         self.continue_decision(&group.name, traversal.mode);
         let position = results

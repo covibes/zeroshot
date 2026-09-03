@@ -217,25 +217,15 @@ async fn non_utf8_declared_environment_fails_before_backend_contact() {
     assert_declared_environment_rejected(command, &backend, &available).await;
 }
 
-#[tokio::test]
-async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
+fn uniform_runtime_command(title: &str, runtime: Value) -> (FixtureFiles, NativeV2CliCommand) {
     let files = FixtureFiles::new(graph(), json!({"task":"inspect it"}));
-    std::fs::write(
-        &files.runtime,
-        serde_json::to_vec(&json!({
-            "provider":"openrouter",
-            "model":"gpt-5.6-luna",
-            "effort":"max"
-        }))
-        .assert_value(),
-    )
-    .assert_value();
+    std::fs::write(&files.runtime, serde_json::to_vec(&runtime).assert_value()).assert_value();
     let command = parse_native_v2_args(args(&[
         "run",
         "--target",
         "prod",
         "--title",
-        "Uniform runtime",
+        title,
         "--template",
         "single-worker",
         "--input",
@@ -245,6 +235,20 @@ async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
         "-d",
     ]))
     .assert_value();
+    (files, command)
+}
+
+#[tokio::test]
+async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
+    let (_files, command) = uniform_runtime_command(
+        "Uniform runtime",
+        json!({
+            "harness":"codex",
+            "provider":"openrouter",
+            "model":"openai/provider-owned-model",
+            "effort":"max"
+        }),
+    );
     let backend = FakeBackend::default();
     let available =
         |name: &str| (name == "OPENROUTER_API_KEY").then(|| OsString::from("provider-secret"));
@@ -261,13 +265,42 @@ async fn uniform_runtime_is_materialized_by_rust_against_the_selected_graph() {
     let runtime = serde_json::to_value(runtime).assert_value();
     assert_eq!(
         runtime.pointer("/nodes/worker/model"),
-        Some(&json!("gpt-5.6-luna"))
+        Some(&json!("openai/provider-owned-model"))
     );
     assert_eq!(
         runtime.pointer("/nodes/worker/connections/openrouter/0"),
         Some(&json!("OPENROUTER_API_KEY"))
     );
     assert_eq!(runtime.pointer("/size"), Some(&json!("medium")));
+}
+
+#[tokio::test]
+async fn uniform_runtime_requires_harness_without_contacting_backend() {
+    let (_files, command) = uniform_runtime_command(
+        "Explicit harness",
+        json!({
+            "provider":"openrouter",
+            "model":"openai/provider-owned-model"
+        }),
+    );
+    let backend = FakeBackend::default();
+    let error = rejected_without_backend_contact(command, &backend).await;
+    assert!(error.to_string().contains("missing field `harness`"));
+}
+
+#[tokio::test]
+async fn uniform_runtime_rejects_only_known_incompatible_pair_without_contacting_backend() {
+    let (_files, command) = uniform_runtime_command(
+        "Incompatible pair",
+        json!({
+            "harness":"claude",
+            "provider":"openai",
+            "model":"provider-owned-model"
+        }),
+    );
+    let backend = FakeBackend::default();
+    let error = rejected_without_backend_contact(command, &backend).await;
+    assert!(error.to_string().contains("incompatible"));
 }
 
 #[tokio::test]

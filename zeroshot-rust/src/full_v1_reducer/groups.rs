@@ -249,7 +249,13 @@ impl Engine<'_> {
                 set_path(&mut joined.state, &path, value)?;
                 joined.local_writes.insert(path);
             }
-            merge_runtime_facts(&branch_context, &mut joined);
+            let branch_names = descendant_names(branch);
+            merge_scoped_runtime_facts(
+                &branch_context,
+                &mut joined,
+                &branch_names,
+                traversal.map_indices,
+            );
         }
         Ok((joined, join_position, winner_set))
     }

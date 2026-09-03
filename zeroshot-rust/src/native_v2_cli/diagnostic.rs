@@ -136,8 +136,6 @@ fn usage_code(message: &str) -> &'static str {
         || message.contains("valid only with --template software-change")
     {
         "template.unsupported_delivery"
-    } else if message.contains("model") && message.contains("unrecognized") {
-        "runtime.unsupported_model"
     } else {
         "request.invalid"
     }
@@ -165,8 +163,6 @@ fn admission_code(source: &NativeV2AdmissionError) -> &'static str {
         NativeV2AdmissionError::InitialInput(_) => "input.type_mismatch",
         NativeV2AdmissionError::MissingRuntimeBinding { .. } => "runtime.missing_binding",
         NativeV2AdmissionError::UnexpectedRuntimeBinding { .. } => "runtime.unexpected_binding",
-        NativeV2AdmissionError::UnsupportedModel { .. } => "runtime.unsupported_model",
-        NativeV2AdmissionError::UnsupportedEffort { .. } => "runtime.unsupported_effort",
         NativeV2AdmissionError::UnsupportedGraphProfile => "graph.unsupported_profile",
         _ => "request.invalid",
     }
@@ -182,19 +178,13 @@ fn admission_node(source: &NativeV2AdmissionError) -> Option<String> {
         | NativeV2AdmissionError::DeliveryMustBeVerifier { node }
         | NativeV2AdmissionError::UnsupportedDeliveryWorker { node, .. }
         | NativeV2AdmissionError::DeliveryWorkerRequiresBinding { node, .. }
-        | NativeV2AdmissionError::InvalidDeliveryContract { node, .. }
-        | NativeV2AdmissionError::UnsupportedModel { node, .. }
-        | NativeV2AdmissionError::UnsupportedEffort { node, .. } => Some(node.to_string()),
+        | NativeV2AdmissionError::InvalidDeliveryContract { node, .. } => Some(node.to_string()),
         _ => None,
     }
 }
 
 fn admission_details(source: &NativeV2AdmissionError) -> Value {
     match source {
-        NativeV2AdmissionError::UnsupportedModel { model, .. } => json!({"model": model}),
-        NativeV2AdmissionError::UnsupportedEffort { model, effort, .. } => {
-            json!({"model": model, "effort": format!("{effort:?}").to_lowercase()})
-        }
         NativeV2AdmissionError::DeliveryNodeCount { found, .. } => json!({"found": found}),
         NativeV2AdmissionError::DeclaredEnvironmentTooLarge { found } => json!({"found": found}),
         _ => json!({}),
@@ -288,7 +278,7 @@ pub(super) fn client_error(error: ClientError) -> NativeV2CliError {
 
 #[cfg(test)]
 mod tests {
-    use openengine_cluster_protocol::{ModelId, NodeName, ReasoningEffort};
+    use openengine_cluster_protocol::NodeName;
     use openengine_cluster_testkit::assertions::{AssertValue, JsonAt};
     use serde_json::json;
 
@@ -296,23 +286,15 @@ mod tests {
 
     #[test]
     fn admission_diagnostic_preserves_stable_code_node_and_details() {
-        let error = NativeV2CliError::InvalidRun(NativeV2AdmissionError::UnsupportedEffort {
+        let error = NativeV2CliError::InvalidRun(NativeV2AdmissionError::MissingRuntimeBinding {
             node: NodeName::new("worker").assert_value(),
-            model: ModelId::new("gpt-5.6-luna")
-                .assert_value()
-                .as_str()
-                .to_owned(),
-            effort: ReasoningEffort::Max,
         });
         let value = serde_json::to_value(error.diagnostic()).assert_value();
         assert_eq!(value.assert_key("schema"), ERROR_SCHEMA);
         assert_eq!(value.assert_key("kind"), "invalid_request");
-        assert_eq!(value.assert_key("code"), "runtime.unsupported_effort");
+        assert_eq!(value.assert_key("code"), "runtime.missing_binding");
         assert_eq!(value.assert_key("node"), "worker");
-        assert_eq!(
-            value.assert_key("details"),
-            &json!({"model": "gpt-5.6-luna", "effort": "max"})
-        );
+        assert_eq!(value.assert_key("details"), &json!({}));
     }
 
     #[test]

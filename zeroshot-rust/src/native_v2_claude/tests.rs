@@ -1,7 +1,5 @@
 #![cfg(unix)]
 
-#[path = "tests/configuration.rs"]
-mod configuration;
 #[path = "tests/correction.rs"]
 mod correction;
 #[path = "tests/environment.rs"]
@@ -20,7 +18,7 @@ use openengine_cluster_protocol::{
 use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
 
-use super::command::{ANTHROPIC_KEY, OPENROUTER_BASE_URL, OPENROUTER_KEY, validate_model_effort};
+use super::command::{ANTHROPIC_KEY, OPENROUTER_BASE_URL, OPENROUTER_KEY};
 use super::{ClaudeAdapter, ClaudeAdapterConfig, ClaudeProcessEnvironment};
 use crate::execution::{SessionScope, process::HostedProcessPool};
 use crate::native_v2_candidate::test_support::{
@@ -237,8 +235,12 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
             ClaudeProvider::Anthropic => (ANTHROPIC_KEY, "anthropic-fake"),
             ClaudeProvider::OpenRouter => (OPENROUTER_KEY, "openrouter-fake"),
         };
+        let model = match provider {
+            ClaudeProvider::Anthropic => "claude-sonnet-5",
+            ClaudeProvider::OpenRouter => "anthropic/provider-owned-model",
+        };
         let binding = agent_binding(
-            "claude-sonnet-5",
+            model,
             Some(ReasoningEffort::Max),
             SessionScope::Execution,
             &[provider_name, "TEST_SECRET"],
@@ -277,10 +279,14 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
         );
         assert_eq!(attach.recv().await, Err(AttachReceiveError::Closed));
         let arguments = workspace.read("initial.args");
-        assert!(arguments.starts_with(concat!(
-            "--print\n--input-format\ntext\n--output-format\nstream-json\n",
-            "--verbose\n--include-partial-messages\n--model\nclaude-sonnet-5\n--json-schema\n",
-        )));
+        let expected_prefix = format!(
+            concat!(
+                "--print\n--input-format\ntext\n--output-format\nstream-json\n",
+                "--verbose\n--include-partial-messages\n--model\n{}\n--json-schema\n",
+            ),
+            model
+        );
+        assert!(arguments.starts_with(&expected_prefix));
         let schema = arguments
             .lines()
             .skip_while(|line| *line != "--json-schema")

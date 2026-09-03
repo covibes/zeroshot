@@ -6,7 +6,7 @@ use crate::native_v2_contract::{
 };
 use crate::native_v2_delivery::DeliveryMode;
 use crate::native_v2_delivery::contract::{delivery_result_schema, delivery_signal_labels};
-use openengine_cluster_protocol::IdempotencyKey;
+use openengine_cluster_protocol::{IdempotencyKey, ReasoningEffort};
 use serde_json::{json, Value};
 
 fn null_verifier(name: &str, worker: &str) -> Value {
@@ -140,7 +140,7 @@ fn named(name: &str) -> NodeName {
 }
 
 #[tokio::test]
-async fn admits_authored_loop_and_parallel_verifiers_and_defaults_effort_to_max() {
+async fn admits_authored_loop_and_parallel_verifiers_without_defaulting_effort() {
     let graph = graph(vec![
         json!({
             "kind":"loop","name":"retry","state":{"kind":"record","fields":{
@@ -182,7 +182,7 @@ async fn admits_authored_loop_and_parallel_verifiers_and_defaults_effort_to_max(
             NodeRuntimeBinding::GitDelivery { .. } => None,
         };
         let effort = effort.assert_value_with("fixture has only agent bindings");
-        assert_eq!(*effort, Some(ReasoningEffort::Max));
+        assert_eq!(*effort, None);
     }
 }
 
@@ -317,10 +317,10 @@ async fn rejects_inconsistent_worker_reuse() {
 }
 
 #[tokio::test]
-async fn enforces_harness_model_and_effort_catalog() {
+async fn preserves_provider_owned_models_and_effort() {
     let graph = graph(vec![null_step("work", "agent.work@1"), succeed("done")]);
-    let codex_wrong_model = RunSubmission {
-        title: RunTitle::new("Codex model validation").assert_value(),
+    let codex_runtime = RunSubmission {
+        title: RunTitle::new("Opaque Codex model").assert_value(),
         graph: graph.clone(),
         initial_input: json!({"items":[null]}),
         runtime: RuntimePlan::Codex {
@@ -328,27 +328,31 @@ async fn enforces_harness_model_and_effort_catalog() {
             size: RunSize::Small,
             nodes: BTreeMap::from([(
                 named("work"),
-                binding("claude-sonnet-5", Some(ReasoningEffort::Max)),
+                binding("provider/future-model", Some(ReasoningEffort::Max)),
             )]),
         },
         source: resolved_source(),
-        submission_key: IdempotencyKey::new("codex-model").assert_value(),
+        submission_key: IdempotencyKey::new("opaque-codex-model").assert_value(),
     };
+    let admitted = NativeV2Admission.admit(codex_runtime).await.assert_value();
     assert!(matches!(
-        NativeV2Admission.admit(codex_wrong_model).await,
-        Err(NativeV2AdmissionError::UnsupportedModel { .. })
+        admitted.runtime.nodes().get(&named("work")),
+        Some(NodeRuntimeBinding::Agent { model, effort: Some(ReasoningEffort::Max), .. })
+            if model.as_str() == "provider/future-model"
     ));
 
-    let haiku_effort = submission(
+    let claude_runtime = submission(
         graph,
         BTreeMap::from([(
             named("work"),
             binding("claude-haiku-4-5", Some(ReasoningEffort::Low)),
         )]),
     );
+    let admitted = NativeV2Admission.admit(claude_runtime).await.assert_value();
     assert!(matches!(
-        NativeV2Admission.admit(haiku_effort).await,
-        Err(NativeV2AdmissionError::UnsupportedEffort { .. })
+        admitted.runtime.nodes().get(&named("work")),
+        Some(NodeRuntimeBinding::Agent { model, effort: Some(ReasoningEffort::Low), .. })
+            if model.as_str() == "claude-haiku-4-5"
     ));
 }
 
