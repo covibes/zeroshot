@@ -240,6 +240,23 @@ case "$endpoint:$method" in
       '"head":{"ref":"zeroshot/v2-test","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",' \
       '"repo":{"full_name":"acme/project"}}}'
     ;;
+  repos/acme/project/pulls/17:PATCH)
+    /usr/bin/printf '%s%s%s%s%s\n' \
+      '{"number":17,"body":"Created by Zeroshot v2.\\n\\nCloses #208","state":"open",' \
+      '"merged":false,"merge_commit_sha":null,"base":' \
+      '{"ref":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"acme/project"}},' \
+      '"head":{"ref":"zeroshot/v2-test","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",' \
+      '"repo":{"full_name":"acme/project"}}}'
+    ;;
+  repos/acme/project/issues/208:GET)
+    /usr/bin/printf '%s\n' '{"comments":0}'
+    ;;
+  repos/acme/project/issues/208/comments:GET)
+    /usr/bin/printf '%s\n' '[]'
+    ;;
+  repos/acme/project/issues/208/comments:POST)
+    /usr/bin/printf '%s\n' '{"id":71}'
+    ;;
   repos/acme/project/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/check-runs:GET)
     /usr/bin/printf '%s\n' '{"total_count":0,"check_runs":[]}'
     ;;

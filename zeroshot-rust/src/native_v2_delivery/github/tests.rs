@@ -85,6 +85,7 @@ fn receipt_rejects_changed_authority() {
         .assert_value(),
         head_branch: "zeroshot/v2-run".to_owned(),
         head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+        source_issue: None,
     };
     let changed = review_wire("other", None);
     assert!(review_receipt(changed, &request).is_err());

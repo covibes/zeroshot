@@ -1,5 +1,8 @@
 use super::*;
 
+mod input;
+use input::source_issue;
+
 #[derive(Clone)]
 pub struct NativeV2DeliveryAdapter {
     config: Arc<NativeV2DeliveryConfig>,
@@ -179,6 +182,7 @@ impl NativeV2DeliveryAdapter {
         &self,
         preparation: DeliveryPreparation<'_>,
     ) -> Result<GitHubReviewReceipt, DeliveryStop> {
+        let source_issue = source_issue(&preparation.invocation.node.input)?;
         let head_revision = self
             .prepare_head(preparation.session, preparation.control)
             .await?;
@@ -186,6 +190,7 @@ impl NativeV2DeliveryAdapter {
             target: self.config.target.clone(),
             head_branch: delivery_branch(preparation.invocation.node.reference.run_id.as_str()),
             head_revision,
+            source_issue,
         };
         self.push_review_head(&preparation, &review_request).await?;
         let review = self

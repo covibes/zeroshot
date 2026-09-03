@@ -3,12 +3,23 @@ use super::*;
 #[derive(Deserialize)]
 pub(super) struct PullRequestWire {
     number: u64,
+    pub(super) body: Option<String>,
     pub(super) state: String,
     pub(super) merged: Option<bool>,
     pub(super) merge_commit_sha: Option<String>,
     pub(super) mergeable: Option<bool>,
     base: ReviewBranchWire,
     head: ReviewBranchWire,
+}
+
+#[derive(Deserialize)]
+pub(super) struct IssueCommentWire {
+    pub(super) body: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct IssueWire {
+    pub(super) comments: u64,
 }
 
 #[derive(Deserialize)]
