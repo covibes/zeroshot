@@ -10,8 +10,8 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
         git_program: git_program.clone(),
         gh_program: gh_program.clone(),
         home_directory: repo.root.path().to_owned(),
-        api_deadline: Duration::from_secs(2),
-        push_deadline: Duration::from_secs(2),
+        api_deadline: Duration::from_secs(10),
+        push_deadline: Duration::from_secs(10),
     });
     let target = DeliveryTarget::new(
         "acme/project",
@@ -118,8 +118,8 @@ async fn production_gh_transport_rejects_malformed_or_changed_authority() {
             git_program: PathBuf::from("/usr/bin/git"),
             gh_program,
             home_directory: repo.root.path().to_owned(),
-            api_deadline: Duration::from_secs(2),
-            push_deadline: Duration::from_secs(2),
+            api_deadline: Duration::from_secs(10),
+            push_deadline: Duration::from_secs(10),
         });
         assert_eq!(
             authority

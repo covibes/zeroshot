@@ -5,8 +5,12 @@ use super::*;
 use crate::native_v2_delivery::DeliveryTarget;
 
 fn check_run(name: &str, status: &str, conclusion: Option<&str>) -> Value {
+    check_run_with_id(91, name, status, conclusion)
+}
+
+fn check_run_with_id(id: u64, name: &str, status: &str, conclusion: Option<&str>) -> Value {
     json!({
-        "id": 91,
+        "id": id,
         "name": name,
         "status": status,
         "conclusion": conclusion,
@@ -28,6 +32,30 @@ fn basic_credential_encoding_is_canonical() {
         encode_basic_credential("token"),
         "eC1hY2Nlc3MtdG9rZW46dG9rZW4="
     );
+}
+
+#[test]
+fn api_payload_budget_accepts_large_paginated_check_sets() {
+    let payload = vec![b'x'; 512 * 1024];
+    assert_eq!(
+        validate_api_output(payload).assert_value().len(),
+        512 * 1024
+    );
+    assert_eq!(
+        validate_api_output(vec![b'x'; MAX_API_OUTPUT_BYTES + 1]),
+        Err(GitHubAuthorityError::Rejected)
+    );
+}
+
+#[test]
+fn failed_check_log_diagnostics_keep_only_a_bounded_tail() {
+    let mut output = b"discard".to_vec();
+    output.extend(vec![b'x'; MAX_CHECK_LOG_TAIL_BYTES]);
+    output.extend_from_slice(b"failure at end");
+    let tail = check_log_tail(&output);
+    assert_eq!(tail.len(), MAX_CHECK_LOG_TAIL_BYTES);
+    assert!(!tail.contains("discard"));
+    assert!(tail.ends_with("failure at end"));
 }
 
 #[test]
@@ -96,7 +124,7 @@ fn check_evidence_is_closed_and_complete() {
 fn pending_check_runs_override_completed_successes_in_any_order() {
     let passed = check_run("scope", "completed", Some("success"));
     for pending_status in ["queued", "in_progress", "requested", "waiting", "pending"] {
-        let pending = check_run("frontend", pending_status, None);
+        let pending = check_run_with_id(92, "frontend", pending_status, None);
         for runs in [
             vec![passed.clone(), pending.clone()],
             vec![pending.clone(), passed.clone()],
@@ -184,7 +212,7 @@ fn paginated_check_runs_are_classified_as_one_complete_set() {
         },
         {
             "total_count": 2,
-            "check_runs": [check_run("matrix shard", "in_progress", None)]
+            "check_runs": [check_run_with_id(92, "matrix shard", "in_progress", None)]
         }
     ]);
     assert_eq!(
@@ -197,6 +225,23 @@ fn paginated_check_runs_are_classified_as_one_complete_set() {
                 "total_count": 2,
                 "check_runs": [check_run("only page", "completed", Some("success"))]
             }]),
+            no_statuses()
+        )
+        .assert_value(),
+        GitHubChecks::Pending
+    );
+    assert_eq!(
+        classify_checks(
+            json!([
+                {
+                    "total_count": 2,
+                    "check_runs": [check_run("page boundary", "completed", Some("success"))]
+                },
+                {
+                    "total_count": 2,
+                    "check_runs": [check_run("page boundary", "completed", Some("success"))]
+                }
+            ]),
             no_statuses()
         )
         .assert_value(),

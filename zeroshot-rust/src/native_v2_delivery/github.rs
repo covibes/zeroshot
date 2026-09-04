@@ -17,7 +17,12 @@ use super::{
     GitHubReviewRequest, GitHubReviewState, valid_revision,
 };
 
-const MAX_API_OUTPUT_BYTES: usize = 256 * 1024;
+// A single GitHub list page may contain 100 check runs or comments, including
+// bounded user/check output fields. Keep the subprocess output bounded while
+// leaving enough room for several paginated CI pages.
+const MAX_API_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FAILED_CHECK_LOGS: usize = 3;
+const MAX_CHECK_LOG_TAIL_BYTES: usize = 64 * 1024;
 const DEFAULT_API_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const DEFAULT_PUSH_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const PULL_REQUEST_TITLE: &str = "feat: complete Zeroshot task";
@@ -183,7 +188,7 @@ impl GhCliDeliveryAuthority {
         let failed_jobs = failed_check_job_ids(&check_runs)?;
         let checks = classify_checks(check_runs, statuses)?;
         let mut logs = Vec::new();
-        for job in failed_jobs {
+        for job in failed_jobs.into_iter().take(MAX_FAILED_CHECK_LOGS) {
             let output = self
                 .api_output(
                     &[
@@ -195,7 +200,7 @@ impl GhCliDeliveryAuthority {
                 )
                 .await;
             if let Ok(output) = output {
-                logs.push(String::from_utf8_lossy(&output).into_owned());
+                logs.push(check_log_tail(&output));
             }
         }
         Ok(include_check_logs(checks, &logs))
@@ -448,10 +453,19 @@ async fn bounded_output(
     if !status.success() {
         return Err(GitHubAuthorityError::Rejected);
     }
+    validate_api_output(output)
+}
+
+fn validate_api_output(output: Vec<u8>) -> Result<Vec<u8>, GitHubAuthorityError> {
     if output.is_empty() || output.len() > MAX_API_OUTPUT_BYTES {
         return Err(GitHubAuthorityError::Rejected);
     }
     Ok(output)
+}
+
+fn check_log_tail(output: &[u8]) -> String {
+    let start = output.len().saturating_sub(MAX_CHECK_LOG_TAIL_BYTES);
+    String::from_utf8_lossy(output.get(start..).unwrap_or_default()).into_owned()
 }
 
 #[cfg(test)]

@@ -187,7 +187,7 @@ fn decode_check_runs(check_runs: Value) -> Result<CheckRunsSnapshot, GitHubAutho
     if !check_runs.is_array() {
         let wire: CheckRunsWire =
             serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
-        if wire.total_count != wire.check_runs.len() as u64 {
+        if !check_run_snapshot_is_complete(wire.total_count, &wire.check_runs) {
             return Err(GitHubAuthorityError::Rejected);
         }
         return Ok(CheckRunsSnapshot {
@@ -206,11 +206,21 @@ fn decode_check_runs(check_runs: Value) -> Result<CheckRunsSnapshot, GitHubAutho
     for page in pages {
         runs.extend(page.check_runs);
     }
-    let complete = counts_match && total_count == runs.len() as u64;
+    let complete = counts_match && check_run_snapshot_is_complete(total_count, &runs);
     Ok(CheckRunsSnapshot {
         check_runs: runs,
         complete,
     })
+}
+
+fn check_run_snapshot_is_complete(total_count: u64, runs: &[CheckRunWire]) -> bool {
+    total_count == runs.len() as u64
+        && runs
+            .iter()
+            .map(|run| run.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            == runs.len()
 }
 
 fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAuthorityError> {
