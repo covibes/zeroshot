@@ -82,7 +82,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
         invocation: DriverInvocation,
         mut control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        let (session, credential, mode) = match self.authorize(&invocation) {
+        let (session, credentials, mode) = match self.authorize(&invocation) {
             Ok(authority) => authority,
             Err(stop) => return stop.result(),
         };
@@ -93,7 +93,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
             .prepare_review(DeliveryPreparation {
                 invocation: &invocation,
                 session,
-                credential,
+                credential: credentials.current(),
                 control: &control,
             })
             .await
@@ -105,7 +105,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
             mode,
             response: &invocation.response,
             review: &review,
-            credential,
+            credentials,
             control: &mut control,
             merge_requested: false,
             merge_rejection_reobserved: false,
@@ -145,17 +145,38 @@ struct ReviewDrive<'a> {
     mode: DeliveryMode,
     response: &'a NodeResponseContract,
     review: &'a GitHubReviewReceipt,
-    credential: GitHubCredential<'a>,
+    credentials: DeliveryCredentials<'a>,
     control: &'a mut DriverControl,
     merge_requested: bool,
     merge_rejection_reobserved: bool,
+}
+
+struct DeliveryCredentials<'a> {
+    environment: Option<&'a ResolvedEnvironment>,
+    token: String,
+}
+
+impl<'a> DeliveryCredentials<'a> {
+    fn current(&self) -> GitHubCredential<'_> {
+        GitHubCredential(&self.token)
+    }
+
+    async fn refresh(&mut self) -> Result<(), DeliveryStop> {
+        let environment = self.environment.ok_or_else(crash_outcome)?;
+        let refreshed = crate::native_v2_runner::refresh_environment(environment)
+            .await
+            .map_err(|_| crash_outcome())?;
+        let credential = github_credential(&refreshed).ok_or_else(crash_outcome)?;
+        self.token = credential.expose().to_owned();
+        Ok(())
+    }
 }
 
 impl NativeV2DeliveryAdapter {
     fn authorize<'a>(
         &'a self,
         invocation: &'a DriverInvocation,
-    ) -> Result<(&'a DeliverySession, GitHubCredential<'a>, DeliveryMode), DeliveryStop> {
+    ) -> Result<(&'a DeliverySession, DeliveryCredentials<'a>, DeliveryMode), DeliveryStop> {
         if invocation.role != NodeRole::GitDelivery
             || !matches!(
                 invocation.node.binding,
@@ -167,17 +188,22 @@ impl NativeV2DeliveryAdapter {
         let mode = DeliveryMode::from_worker(&invocation.node.worker)
             .ok_or(DeliveryStop::Runner(NodeRunnerError::InvalidRole))?;
         validate_delivery_contract(mode, &invocation.response)?;
-        let credential = match self.trusted_github_token.as_deref() {
-            Some(token) => GitHubCredential(token),
-            None => github_credential(&invocation.environment)
-                .ok_or_else(|| DeliveryStop::Outcome(WorkerOutcome::authentication_refusal()))?,
+        let (token, environment) = match self.trusted_github_token.as_deref() {
+            Some(token) => (token.to_owned(), None),
+            None => (
+                github_credential(&invocation.environment)
+                    .ok_or_else(|| DeliveryStop::Outcome(WorkerOutcome::authentication_refusal()))?
+                    .expose()
+                    .to_owned(),
+                Some(&invocation.environment),
+            ),
         };
         let session = invocation
             .session
             .as_any()
             .downcast_ref::<DeliverySession>()
             .ok_or(DeliveryStop::Runner(NodeRunnerError::InvalidRole))?;
-        Ok((session, credential, mode))
+        Ok((session, DeliveryCredentials { environment, token }, mode))
     }
 
     async fn prepare_review(
@@ -280,30 +306,38 @@ impl NativeV2DeliveryAdapter {
         &self,
         mut drive: ReviewDrive<'_>,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        for attempt in 0..self.config.poll.attempts {
-            ensure_active(drive.control)?;
-            let progress = match self.observe_review(drive.review, drive.credential).await {
-                Ok(progress) => progress,
-                Err(stop) => return stop.result(),
-            };
-            match self.advance_review(&mut drive, progress).await {
-                Ok(ReviewStep::Continue) => {}
-                Ok(ReviewStep::Complete(outcome)) => return Ok(outcome),
-                Err(stop) => return stop.result(),
+        let mut completed_attempts = 0usize;
+        loop {
+            if let Some(outcome) = self.drive_review_step(&mut drive).await? {
+                return Ok(outcome);
             }
-            poll_before_next(
-                drive.control,
-                self.config.poll.interval,
-                attempt + 1 < self.config.poll.attempts,
-            )
-            .await?;
+            completed_attempts = completed_attempts.saturating_add(1);
+            if !self.config.poll.has_next(completed_attempts) {
+                emit(
+                    drive.control,
+                    "delivery: authoritative confirmation timed out",
+                )
+                .await?;
+                return Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Timeout));
+            }
+            wait_for_poll(drive.control, self.config.poll.interval).await?;
         }
-        emit(
-            drive.control,
-            "delivery: authoritative confirmation timed out",
-        )
-        .await?;
-        Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Timeout))
+    }
+
+    async fn drive_review_step(
+        &self,
+        drive: &mut ReviewDrive<'_>,
+    ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
+        ensure_active(drive.control)?;
+        let progress = match self.observe_review(drive).await {
+            Ok(progress) => progress,
+            Err(stop) => return stop.result().map(Some),
+        };
+        match self.advance_review(drive, progress).await {
+            Ok(ReviewStep::Continue) => Ok(None),
+            Ok(ReviewStep::Complete(outcome)) => Ok(Some(outcome)),
+            Err(stop) => stop.result().map(Some),
+        }
     }
 
     async fn advance_review(
@@ -365,6 +399,7 @@ impl NativeV2DeliveryAdapter {
             }
             ReviewProgress::Mergeable => self.advance_mergeable(drive).await,
             ReviewProgress::Pending => {
+                drive.merge_rejection_reobserved = false;
                 emit(drive.control, "delivery: waiting for required CI checks").await?;
                 Ok(ReviewStep::Continue)
             }
@@ -383,10 +418,7 @@ impl NativeV2DeliveryAdapter {
             )
             .await?;
         } else {
-            match self
-                .request_merge(drive.review, drive.credential, drive.control)
-                .await?
-            {
+            match self.request_merge(drive).await? {
                 GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
                 GitHubMergeRequestOutcome::Pending => {
                     if let Some(completion) = rejected_merge_step(drive).await? {
@@ -408,15 +440,24 @@ impl NativeV2DeliveryAdapter {
 
     async fn observe_review(
         &self,
-        review: &GitHubReviewReceipt,
-        credential: GitHubCredential<'_>,
+        drive: &mut ReviewDrive<'_>,
     ) -> Result<ReviewProgress, DeliveryStop> {
-        let observation = self
+        let observation = match self
             .authority
-            .inspect_review(review, credential)
+            .inspect_review(drive.review, drive.credentials.current())
             .await
-            .map_err(|_| crash_outcome())?;
-        if !valid_observation(review, &observation) {
+        {
+            Ok(observation) => observation,
+            Err(_) => {
+                emit(drive.control, "delivery: refreshing GitHub credential").await?;
+                drive.credentials.refresh().await?;
+                self.authority
+                    .inspect_review(drive.review, drive.credentials.current())
+                    .await
+                    .map_err(|_| crash_outcome())?
+            }
+        };
+        if !valid_observation(drive.review, &observation) {
             return Err(DeliveryStop::Outcome(WorkerOutcome::malformed()));
         }
         ReviewProgress::from_state(observation.state)
@@ -424,14 +465,23 @@ impl NativeV2DeliveryAdapter {
 
     async fn request_merge(
         &self,
-        review: &GitHubReviewReceipt,
-        credential: GitHubCredential<'_>,
-        control: &DriverControl,
+        drive: &mut ReviewDrive<'_>,
     ) -> Result<GitHubMergeRequestOutcome, DeliveryStop> {
-        emit(control, "delivery: requesting merge").await?;
-        self.authority
-            .request_merge(review, credential)
+        emit(drive.control, "delivery: requesting merge").await?;
+        match self
+            .authority
+            .request_merge(drive.review, drive.credentials.current())
             .await
-            .map_err(|_| crash_outcome())
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(_) => {
+                emit(drive.control, "delivery: refreshing GitHub credential").await?;
+                drive.credentials.refresh().await?;
+                self.authority
+                    .request_merge(drive.review, drive.credentials.current())
+                    .await
+                    .map_err(|_| crash_outcome())
+            }
+        }
     }
 }

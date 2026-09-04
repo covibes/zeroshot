@@ -60,7 +60,6 @@ const DELIVERY_TARGET_BRANCH_FIELD: &str = "targetBranch";
 const DELIVERY_HEAD_REVISION_FIELD: &str = "headRevision";
 const DELIVERY_PULL_REQUEST_ID_FIELD: &str = "pullRequestId";
 
-const DEFAULT_POLL_ATTEMPTS: usize = 90;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(20);
 const REVIEW_SYNC_ATTEMPTS: usize = 5;
 const REVIEW_SYNC_INTERVAL: Duration = Duration::from_secs(1);
@@ -143,7 +142,7 @@ pub enum DeliveryConfigError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeliveryPollPolicy {
-    pub attempts: usize,
+    maximum_attempts: Option<usize>,
     pub interval: Duration,
 }
 
@@ -152,16 +151,30 @@ impl DeliveryPollPolicy {
         if attempts == 0 {
             return Err(DeliveryConfigError::PollAttempts);
         }
-        Ok(Self { attempts, interval })
+        Ok(Self {
+            maximum_attempts: Some(attempts),
+            interval,
+        })
+    }
+
+    const fn until_cancelled(interval: Duration) -> Self {
+        Self {
+            maximum_attempts: None,
+            interval,
+        }
+    }
+
+    const fn has_next(self, completed_attempts: usize) -> bool {
+        match self.maximum_attempts {
+            Some(maximum) => completed_attempts < maximum,
+            None => true,
+        }
     }
 }
 
 impl Default for DeliveryPollPolicy {
     fn default() -> Self {
-        Self {
-            attempts: DEFAULT_POLL_ATTEMPTS,
-            interval: DEFAULT_POLL_INTERVAL,
-        }
+        Self::until_cancelled(DEFAULT_POLL_INTERVAL)
     }
 }
 
@@ -422,18 +435,6 @@ async fn wait_for_poll(
     tokio::select! {
         _ = control.cancelled() => Err(NodeRunnerError::Cancelled),
         () = tokio::time::sleep(interval) => Ok(()),
-    }
-}
-
-async fn poll_before_next(
-    control: &mut DriverControl,
-    interval: Duration,
-    has_next: bool,
-) -> Result<(), NodeRunnerError> {
-    if has_next {
-        wait_for_poll(control, interval).await
-    } else {
-        Ok(())
     }
 }
 

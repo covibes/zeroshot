@@ -161,6 +161,8 @@ impl GhCliDeliveryAuthority {
                     "--slurp".to_owned(),
                     "-f".to_owned(),
                     "per_page=100".to_owned(),
+                    "-f".to_owned(),
+                    "filter=latest".to_owned(),
                 ],
                 credential,
             )
