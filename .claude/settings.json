@@ -9,6 +9,12 @@
             "command": "node \"$(git rev-parse --show-toplevel)/scripts/opcore-agent-gate.js\" --harness claude --repo \"$(git rev-parse --show-toplevel)\"",
             "timeout": 120,
             "statusMessage": "Running Opcore introduced-change gate"
+          },
+          {
+            "type": "command",
+            "command": "knos status 2>/dev/null || true",
+            "timeout": 10,
+            "statusMessage": "Checking shared claims"
           }
         ]
       }
