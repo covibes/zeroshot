@@ -140,7 +140,14 @@ pub(super) fn failed_check_job_ids(check_runs: &Value) -> Result<Vec<u64>, GitHu
             run.status == "completed"
                 && matches!(
                     run.conclusion.as_deref(),
-                    Some("failure" | "cancelled" | "timed_out" | "action_required" | "stale")
+                    Some(
+                        "failure"
+                            | "cancelled"
+                            | "timed_out"
+                            | "action_required"
+                            | "stale"
+                            | "startup_failure"
+                    )
                 )
         })
         .filter_map(|run| run.id)
@@ -182,9 +189,7 @@ fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAu
     let mut failures = Vec::new();
     for run in runs {
         if run.status != "completed" || run.conclusion.is_none() {
-            if component == CheckComponent::Absent {
-                component = CheckComponent::Pending;
-            }
+            component = CheckComponent::Pending;
             continue;
         }
         let conclusion = run.conclusion.as_deref().unwrap_or_default();
@@ -194,7 +199,7 @@ fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAu
             }
         } else if matches!(
             conclusion,
-            "failure" | "cancelled" | "timed_out" | "action_required" | "stale"
+            "failure" | "cancelled" | "timed_out" | "action_required" | "stale" | "startup_failure"
         ) {
             failures.push(failure_item(
                 &run.name,

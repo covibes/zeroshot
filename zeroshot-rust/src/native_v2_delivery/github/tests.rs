@@ -4,6 +4,24 @@ use serde_json::json;
 use super::*;
 use crate::native_v2_delivery::DeliveryTarget;
 
+fn check_run(name: &str, status: &str, conclusion: Option<&str>) -> Value {
+    json!({
+        "id": 91,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "details_url": "https://github.com/acme/project/actions/runs/17"
+    })
+}
+
+fn check_runs(runs: Vec<Value>) -> Value {
+    json!({"total_count":runs.len(),"check_runs":runs})
+}
+
+fn no_statuses() -> Value {
+    json!({"state":"pending","statuses":[]})
+}
+
 #[test]
 fn basic_credential_encoding_is_canonical() {
     assert_eq!(
@@ -72,6 +90,89 @@ fn check_evidence_is_closed_and_complete() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn pending_check_runs_override_completed_successes_in_any_order() {
+    let passed = check_run("scope", "completed", Some("success"));
+    for pending_status in ["queued", "in_progress", "requested", "waiting", "pending"] {
+        let pending = check_run("frontend", pending_status, None);
+        for runs in [
+            vec![passed.clone(), pending.clone()],
+            vec![pending.clone(), passed.clone()],
+        ] {
+            assert_eq!(
+                classify_checks(check_runs(runs), no_statuses()).assert_value(),
+                GitHubChecks::Pending
+            );
+        }
+    }
+}
+
+#[test]
+fn checks_and_commit_statuses_use_failure_pending_success_precedence() {
+    let passed_checks = check_runs(vec![check_run("checks", "completed", Some("success"))]);
+    let pending_checks = check_runs(vec![check_run("checks", "in_progress", None)]);
+    let failed_checks = check_runs(vec![check_run("checks", "completed", Some("failure"))]);
+    let passed_statuses = json!({"state":"success","statuses":[{
+        "state":"success","context":"legacy-ci","description":null,"target_url":null
+    }]});
+    let pending_statuses = json!({"state":"pending","statuses":[{
+        "state":"pending","context":"legacy-ci","description":null,"target_url":null
+    }]});
+    let failed_statuses = json!({"state":"failure","statuses":[{
+        "state":"failure","context":"legacy-ci","description":null,"target_url":null
+    }]});
+
+    assert_eq!(
+        classify_checks(passed_checks.clone(), pending_statuses.clone()).assert_value(),
+        GitHubChecks::Pending
+    );
+    assert_eq!(
+        classify_checks(pending_checks, passed_statuses.clone()).assert_value(),
+        GitHubChecks::Pending
+    );
+    assert!(matches!(
+        classify_checks(failed_checks, pending_statuses).assert_value(),
+        GitHubChecks::Failed { .. }
+    ));
+    assert!(matches!(
+        classify_checks(passed_checks.clone(), failed_statuses).assert_value(),
+        GitHubChecks::Failed { .. }
+    ));
+    assert_eq!(
+        classify_checks(passed_checks, passed_statuses).assert_value(),
+        GitHubChecks::Passed
+    );
+}
+
+#[test]
+fn every_github_terminal_check_conclusion_is_classified() {
+    for conclusion in ["success", "neutral", "skipped"] {
+        assert_eq!(
+            classify_checks(
+                check_runs(vec![check_run("checks", "completed", Some(conclusion))]),
+                no_statuses()
+            )
+            .assert_value(),
+            GitHubChecks::Passed
+        );
+    }
+    for conclusion in [
+        "failure",
+        "cancelled",
+        "timed_out",
+        "action_required",
+        "stale",
+        "startup_failure",
+    ] {
+        let checks = check_runs(vec![check_run("checks", "completed", Some(conclusion))]);
+        assert!(matches!(
+            classify_checks(checks.clone(), no_statuses()).assert_value(),
+            GitHubChecks::Failed { .. }
+        ));
+        assert_eq!(failed_check_job_ids(&checks).assert_value(), vec![91]);
+    }
 }
 
 #[test]
