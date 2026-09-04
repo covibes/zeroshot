@@ -47,6 +47,11 @@ struct CheckRunsWire {
     check_runs: Vec<CheckRunWire>,
 }
 
+struct CheckRunsSnapshot {
+    check_runs: Vec<CheckRunWire>,
+    complete: bool,
+}
+
 #[derive(Deserialize)]
 struct CheckRunWire {
     id: Option<u64>,
@@ -127,9 +132,12 @@ pub(super) fn classify_checks(
     let check_runs = decode_check_runs(check_runs)?;
     let statuses: CombinedStatusWire =
         serde_json::from_value(statuses).map_err(|_| GitHubAuthorityError::Rejected)?;
-    let check_runs = classify_check_runs(&check_runs.check_runs)?;
+    let mut check_runs_component = classify_check_runs(&check_runs.check_runs)?;
+    if !check_runs.complete && !matches!(check_runs_component, CheckComponent::Failed(_)) {
+        check_runs_component = CheckComponent::Pending;
+    }
     let statuses = classify_statuses(&statuses)?;
-    Ok(combine_checks(check_runs, statuses))
+    Ok(combine_checks(check_runs_component, statuses))
 }
 
 pub(super) fn failed_check_job_ids(check_runs: &Value) -> Result<Vec<u64>, GitHubAuthorityError> {
@@ -140,7 +148,14 @@ pub(super) fn failed_check_job_ids(check_runs: &Value) -> Result<Vec<u64>, GitHu
             run.status == "completed"
                 && matches!(
                     run.conclusion.as_deref(),
-                    Some("failure" | "cancelled" | "timed_out" | "action_required" | "stale")
+                    Some(
+                        "failure"
+                            | "cancelled"
+                            | "timed_out"
+                            | "action_required"
+                            | "stale"
+                            | "startup_failure"
+                    )
                 )
         })
         .filter_map(|run| run.id)
@@ -168,13 +183,34 @@ pub(super) fn include_check_logs(checks: GitHubChecks, logs: &[String]) -> GitHu
     }
 }
 
-fn decode_check_runs(check_runs: Value) -> Result<CheckRunsWire, GitHubAuthorityError> {
-    let check_runs: CheckRunsWire =
-        serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
-    if check_runs.total_count != check_runs.check_runs.len() as u64 {
-        return Err(GitHubAuthorityError::Rejected);
+fn decode_check_runs(check_runs: Value) -> Result<CheckRunsSnapshot, GitHubAuthorityError> {
+    if !check_runs.is_array() {
+        let wire: CheckRunsWire =
+            serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
+        if wire.total_count != wire.check_runs.len() as u64 {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        return Ok(CheckRunsSnapshot {
+            check_runs: wire.check_runs,
+            complete: true,
+        });
     }
-    Ok(check_runs)
+    let pages = serde_json::from_value::<Vec<CheckRunsWire>>(check_runs)
+        .map_err(|_| GitHubAuthorityError::Rejected)?;
+    let total_count = pages
+        .first()
+        .map(|page| page.total_count)
+        .ok_or(GitHubAuthorityError::Rejected)?;
+    let counts_match = pages.iter().all(|page| page.total_count == total_count);
+    let mut runs = Vec::new();
+    for page in pages {
+        runs.extend(page.check_runs);
+    }
+    let complete = counts_match && total_count == runs.len() as u64;
+    Ok(CheckRunsSnapshot {
+        check_runs: runs,
+        complete,
+    })
 }
 
 fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAuthorityError> {
@@ -182,9 +218,7 @@ fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAu
     let mut failures = Vec::new();
     for run in runs {
         if run.status != "completed" || run.conclusion.is_none() {
-            if component == CheckComponent::Absent {
-                component = CheckComponent::Pending;
-            }
+            component = CheckComponent::Pending;
             continue;
         }
         let conclusion = run.conclusion.as_deref().unwrap_or_default();
@@ -194,7 +228,7 @@ fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAu
             }
         } else if matches!(
             conclusion,
-            "failure" | "cancelled" | "timed_out" | "action_required" | "stale"
+            "failure" | "cancelled" | "timed_out" | "action_required" | "stale" | "startup_failure"
         ) {
             failures.push(failure_item(
                 &run.name,

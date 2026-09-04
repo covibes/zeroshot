@@ -157,6 +157,8 @@ impl GhCliDeliveryAuthority {
                     "GET".to_owned(),
                     "-H".to_owned(),
                     "Accept: application/vnd.github+json".to_owned(),
+                    "--paginate".to_owned(),
+                    "--slurp".to_owned(),
                     "-f".to_owned(),
                     "per_page=100".to_owned(),
                 ],
