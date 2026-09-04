@@ -191,7 +191,7 @@ fn paginated_check_runs_are_classified_as_one_complete_set() {
         classify_checks(pages, no_statuses()).assert_value(),
         GitHubChecks::Pending
     );
-    assert!(
+    assert_eq!(
         classify_checks(
             json!([{
                 "total_count": 2,
@@ -199,8 +199,37 @@ fn paginated_check_runs_are_classified_as_one_complete_set() {
             }]),
             no_statuses()
         )
-        .is_err()
+        .assert_value(),
+        GitHubChecks::Pending
     );
+    assert_eq!(
+        classify_checks(
+            json!([
+                {
+                    "total_count": 2,
+                    "check_runs": [check_run("scope", "completed", Some("success"))]
+                },
+                {
+                    "total_count": 3,
+                    "check_runs": [check_run("matrix shard", "completed", Some("success"))]
+                }
+            ]),
+            no_statuses()
+        )
+        .assert_value(),
+        GitHubChecks::Pending
+    );
+    assert!(matches!(
+        classify_checks(
+            json!([{
+                "total_count": 2,
+                "check_runs": [check_run("failed shard", "completed", Some("failure"))]
+            }]),
+            no_statuses()
+        )
+        .assert_value(),
+        GitHubChecks::Failed { .. }
+    ));
 }
 
 #[test]

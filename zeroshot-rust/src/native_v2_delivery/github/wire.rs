@@ -47,6 +47,11 @@ struct CheckRunsWire {
     check_runs: Vec<CheckRunWire>,
 }
 
+struct CheckRunsSnapshot {
+    check_runs: Vec<CheckRunWire>,
+    complete: bool,
+}
+
 #[derive(Deserialize)]
 struct CheckRunWire {
     id: Option<u64>,
@@ -127,9 +132,12 @@ pub(super) fn classify_checks(
     let check_runs = decode_check_runs(check_runs)?;
     let statuses: CombinedStatusWire =
         serde_json::from_value(statuses).map_err(|_| GitHubAuthorityError::Rejected)?;
-    let check_runs = classify_check_runs(&check_runs.check_runs)?;
+    let mut check_runs_component = classify_check_runs(&check_runs.check_runs)?;
+    if !check_runs.complete && !matches!(check_runs_component, CheckComponent::Failed(_)) {
+        check_runs_component = CheckComponent::Pending;
+    }
     let statuses = classify_statuses(&statuses)?;
-    Ok(combine_checks(check_runs, statuses))
+    Ok(combine_checks(check_runs_component, statuses))
 }
 
 pub(super) fn failed_check_job_ids(check_runs: &Value) -> Result<Vec<u64>, GitHubAuthorityError> {
@@ -175,30 +183,33 @@ pub(super) fn include_check_logs(checks: GitHubChecks, logs: &[String]) -> GitHu
     }
 }
 
-fn decode_check_runs(check_runs: Value) -> Result<CheckRunsWire, GitHubAuthorityError> {
-    let pages = if check_runs.is_array() {
-        serde_json::from_value::<Vec<CheckRunsWire>>(check_runs)
-            .map_err(|_| GitHubAuthorityError::Rejected)?
-    } else {
-        vec![serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?]
-    };
+fn decode_check_runs(check_runs: Value) -> Result<CheckRunsSnapshot, GitHubAuthorityError> {
+    if !check_runs.is_array() {
+        let wire: CheckRunsWire =
+            serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
+        if wire.total_count != wire.check_runs.len() as u64 {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        return Ok(CheckRunsSnapshot {
+            check_runs: wire.check_runs,
+            complete: true,
+        });
+    }
+    let pages = serde_json::from_value::<Vec<CheckRunsWire>>(check_runs)
+        .map_err(|_| GitHubAuthorityError::Rejected)?;
     let total_count = pages
         .first()
         .map(|page| page.total_count)
         .ok_or(GitHubAuthorityError::Rejected)?;
+    let counts_match = pages.iter().all(|page| page.total_count == total_count);
     let mut runs = Vec::new();
     for page in pages {
-        if page.total_count != total_count {
-            return Err(GitHubAuthorityError::Rejected);
-        }
         runs.extend(page.check_runs);
     }
-    if total_count != runs.len() as u64 {
-        return Err(GitHubAuthorityError::Rejected);
-    }
-    Ok(CheckRunsWire {
-        total_count,
+    let complete = counts_match && total_count == runs.len() as u64;
+    Ok(CheckRunsSnapshot {
         check_runs: runs,
+        complete,
     })
 }
 
