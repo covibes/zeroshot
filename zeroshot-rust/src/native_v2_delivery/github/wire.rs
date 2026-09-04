@@ -176,12 +176,30 @@ pub(super) fn include_check_logs(checks: GitHubChecks, logs: &[String]) -> GitHu
 }
 
 fn decode_check_runs(check_runs: Value) -> Result<CheckRunsWire, GitHubAuthorityError> {
-    let check_runs: CheckRunsWire =
-        serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
-    if check_runs.total_count != check_runs.check_runs.len() as u64 {
+    let pages = if check_runs.is_array() {
+        serde_json::from_value::<Vec<CheckRunsWire>>(check_runs)
+            .map_err(|_| GitHubAuthorityError::Rejected)?
+    } else {
+        vec![serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?]
+    };
+    let total_count = pages
+        .first()
+        .map(|page| page.total_count)
+        .ok_or(GitHubAuthorityError::Rejected)?;
+    let mut runs = Vec::new();
+    for page in pages {
+        if page.total_count != total_count {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        runs.extend(page.check_runs);
+    }
+    if total_count != runs.len() as u64 {
         return Err(GitHubAuthorityError::Rejected);
     }
-    Ok(check_runs)
+    Ok(CheckRunsWire {
+        total_count,
+        check_runs: runs,
+    })
 }
 
 fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAuthorityError> {

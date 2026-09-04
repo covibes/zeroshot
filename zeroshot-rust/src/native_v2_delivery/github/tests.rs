@@ -176,6 +176,34 @@ fn every_github_terminal_check_conclusion_is_classified() {
 }
 
 #[test]
+fn paginated_check_runs_are_classified_as_one_complete_set() {
+    let pages = json!([
+        {
+            "total_count": 2,
+            "check_runs": [check_run("scope", "completed", Some("success"))]
+        },
+        {
+            "total_count": 2,
+            "check_runs": [check_run("matrix shard", "in_progress", None)]
+        }
+    ]);
+    assert_eq!(
+        classify_checks(pages, no_statuses()).assert_value(),
+        GitHubChecks::Pending
+    );
+    assert!(
+        classify_checks(
+            json!([{
+                "total_count": 2,
+                "check_runs": [check_run("only page", "completed", Some("success"))]
+            }]),
+            no_statuses()
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn receipt_rejects_changed_authority() {
     let request = GitHubReviewRequest {
         target: DeliveryTarget::new(
