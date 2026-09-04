@@ -118,6 +118,21 @@ async fn merge_rejection_before_ci_registration_is_reobserved() {
 }
 
 #[tokio::test]
+async fn multiple_ci_registration_waves_each_allow_a_fresh_merge_attempt() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(
+        repo.remote.clone(),
+        Script::MultipleRegistrationWaves,
+    ));
+
+    let outcome = run_delivery(&repo, authority.clone(), 7, DeliveryMode::Merge).await;
+
+    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 3);
+    assert_eq!(authority.inspections.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test]
 async fn protected_branch_rejects_unsupported_direct_merge_promptly() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(
@@ -158,6 +173,66 @@ async fn accepted_merge_request_is_not_shipping_success() {
     assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
 }
 
+#[test]
+fn hosted_delivery_polling_has_no_work_duration_limit() {
+    assert!(DeliveryPollPolicy::default().has_next(usize::MAX));
+    assert!(
+        !DeliveryPollPolicy::new(3, Duration::ZERO)
+            .assert_value()
+            .has_next(3)
+    );
+}
+
+struct RefreshedDeliveryEnvironment {
+    binding: NodeRuntimeBinding,
+}
+
+#[async_trait]
+impl crate::native_v2_runner::RuntimeEnvironmentRefresh for RefreshedDeliveryEnvironment {
+    async fn refresh(
+        &self,
+    ) -> Result<ResolvedEnvironment, crate::native_v2_runner::EnvironmentRefreshUnavailable> {
+        ResolvedEnvironment::exact(
+            &self.binding,
+            BTreeMap::from([(
+                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
+                "refreshed-token".to_owned(),
+            )]),
+        )
+        .map_err(|_| crate::native_v2_runner::EnvironmentRefreshUnavailable)
+    }
+}
+
+#[tokio::test]
+async fn delivery_refreshes_an_expired_dynamic_github_credential() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(
+        repo.remote.clone(),
+        Script::CredentialExpires,
+    ));
+    let admitted = admitted(&repo, DeliveryMode::Merge).await;
+    let binding = admitted
+        .runtime
+        .nodes()
+        .get(&NodeName::new("deliver").assert_value())
+        .assert_value()
+        .clone();
+    let outcome = run_delivery_with_id(
+        DeliveryRunRequest {
+            repo: &repo,
+            attempts: 3,
+            mode: DeliveryMode::Merge,
+            run_id: "refresh-delivery-credential",
+            refresh: Some(Arc::new(RefreshedDeliveryEnvironment { binding })),
+        },
+        authority.clone(),
+    )
+    .await;
+
+    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
+    assert_eq!(authority.inspections.load(Ordering::SeqCst), 3);
+}
+
 #[tokio::test]
 async fn exact_merge_retry_rediscovers_the_same_review_and_receipt() {
     let repo = TempRepo::delivery();
@@ -168,6 +243,7 @@ async fn exact_merge_retry_rediscovers_the_same_review_and_receipt() {
             attempts: 3,
             mode: DeliveryMode::Merge,
             run_id: "stable-delivery-run",
+            refresh: None,
         },
         authority.clone(),
     )
@@ -178,6 +254,7 @@ async fn exact_merge_retry_rediscovers_the_same_review_and_receipt() {
             attempts: 3,
             mode: DeliveryMode::Merge,
             run_id: "stable-delivery-run",
+            refresh: None,
         },
         authority.clone(),
     )
@@ -246,6 +323,7 @@ async fn run_delivery(
             attempts,
             mode,
             run_id: "delivery-run",
+            refresh: None,
         },
         authority,
     )
@@ -257,6 +335,7 @@ struct DeliveryRunRequest<'a> {
     attempts: usize,
     mode: DeliveryMode,
     run_id: &'a str,
+    refresh: Option<Arc<dyn crate::native_v2_runner::RuntimeEnvironmentRefresh>>,
 }
 
 async fn run_delivery_with_id(
@@ -278,7 +357,7 @@ async fn run_delivery_with_id(
         .get(&NodeName::new("deliver").assert_value())
         .assert_value()
         .clone();
-    let environment = ResolvedEnvironment::exact(
+    let mut environment = ResolvedEnvironment::exact(
         &binding,
         BTreeMap::from([(
             EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
@@ -286,6 +365,9 @@ async fn run_delivery_with_id(
         )]),
     )
     .assert_value();
+    if let Some(refresh) = request.refresh {
+        environment = crate::native_v2_runner::with_environment_refresh(environment, refresh);
+    }
     let mut handle = runner
         .start(NodeRunRequest {
             invocation: NodeInvocation {

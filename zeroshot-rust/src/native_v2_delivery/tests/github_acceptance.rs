@@ -84,6 +84,7 @@ fn assert_production_github_capture(gh_capture: &str, home: &Path) {
     assert!(gh_capture.contains("arg=repos/acme/project/issues/208"));
     assert!(gh_capture.contains("arg=repos/acme/project/issues/208/comments"));
     assert!(gh_capture.contains("arg=page=1"));
+    assert!(gh_capture.contains("arg=filter=latest"));
     assert!(gh_capture.contains(
         "arg=body=Zeroshot opened pull request #17 for this issue.\n\n<!-- zeroshot-delivery:zeroshot/v2-test -->"
     ));

@@ -16,10 +16,12 @@ pub(super) enum Script {
     Conflict,
     ConflictAtMerge,
     RegistrationRace,
+    MultipleRegistrationWaves,
     ProtectedBranch,
     ReviewSyncRace,
     CiFailsThenMerges,
     NeverConfirmsMerge,
+    CredentialExpires,
 }
 
 pub(super) struct FakeGitHub {
@@ -49,13 +51,13 @@ impl FakeGitHub {
 
     fn review_state(&self, inspection: usize) -> GitHubReviewState {
         match self.script {
-            Script::NoCi => self.no_ci_state(),
+            Script::NoCi | Script::CredentialExpires | Script::ReviewSyncRace => self.no_ci_state(),
             Script::CiFailed => open_review(failed_checks()),
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
             Script::RegistrationRace => self.registration_race_state(inspection),
+            Script::MultipleRegistrationWaves => self.multiple_registration_waves_state(inspection),
             Script::ProtectedBranch => open_review(GitHubChecks::Passed),
-            Script::ReviewSyncRace => self.no_ci_state(),
             Script::CiFailsThenMerges => self.ci_repair_state(inspection),
             Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
         }
@@ -85,6 +87,16 @@ impl FakeGitHub {
             merged_review()
         } else if inspection == 1 {
             open_review(GitHubChecks::NotRequired)
+        } else {
+            open_review(GitHubChecks::Passed)
+        }
+    }
+
+    fn multiple_registration_waves_state(&self, inspection: usize) -> GitHubReviewState {
+        if self.merge_requested.load(Ordering::SeqCst) {
+            merged_review()
+        } else if matches!(inspection, 2 | 4) {
+            open_review(GitHubChecks::Pending)
         } else {
             open_review(GitHubChecks::Passed)
         }
@@ -160,8 +172,16 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubReviewObservation, GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
         let inspection = self.inspections.fetch_add(1, Ordering::SeqCst) + 1;
+        if matches!(self.script, Script::CredentialExpires) && credential.expose() == "test-token" {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        let expected = if matches!(self.script, Script::CredentialExpires) {
+            "refreshed-token"
+        } else {
+            "test-token"
+        };
+        assert_eq!(credential.expose(), expected);
         let state = self.review_state(inspection);
         Ok(review.observation(state))
     }
@@ -171,7 +191,12 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         _review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
+        let expected = if matches!(self.script, Script::CredentialExpires) {
+            "refreshed-token"
+        } else {
+            "test-token"
+        };
+        assert_eq!(credential.expose(), expected);
         self.merge_requests.fetch_add(1, Ordering::SeqCst);
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
@@ -179,6 +204,8 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         if matches!(self.script, Script::ProtectedBranch)
             || matches!(self.script, Script::RegistrationRace)
                 && self.merge_requests.load(Ordering::SeqCst) == 1
+            || matches!(self.script, Script::MultipleRegistrationWaves)
+                && self.merge_requests.load(Ordering::SeqCst) <= 2
         {
             return Ok(GitHubMergeRequestOutcome::Pending);
         }

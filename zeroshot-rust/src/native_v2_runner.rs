@@ -49,6 +49,21 @@ pub use plan::NodeRole;
 use plan::NodeRolePlan;
 mod workspace;
 pub use workspace::{EnvironmentResolutionError, ResolvedEnvironment, WorkspaceAccess, WorkspaceGate};
+pub(crate) use workspace::{EnvironmentRefreshUnavailable, RuntimeEnvironmentRefresh};
+
+pub(crate) fn with_environment_refresh(
+    environment: ResolvedEnvironment,
+    refresh: Arc<dyn RuntimeEnvironmentRefresh>,
+) -> ResolvedEnvironment {
+    workspace::with_refresh(environment, refresh)
+}
+
+pub(crate) async fn refresh_environment(
+    environment: &ResolvedEnvironment,
+) -> Result<ResolvedEnvironment, EnvironmentRefreshUnavailable> {
+    workspace::refreshed(environment).await
+}
+
 #[derive(Clone, Debug)]
 pub struct NodeRunRequest {
     pub invocation: NodeInvocation,

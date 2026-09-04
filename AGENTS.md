@@ -40,7 +40,9 @@ Native-v2 provider continuation is fixed and bounded: Claude continues once only
 `system/api_retry` event, Codex continues once after any terminal execution error, and both send
 the literal `Continue` in the same session (or rerun the original prompt only when no session was
 created). Agent output gets at most two correction turns before `malformed`. Direct GitHub merge
-rejection is reobserved once for CI registration races, then terminates as a policy refusal.
+rejection is reobserved once for CI registration races; each subsequently observed pending-check
+wave re-arms that single retry, while consecutive rejection without an intervening pending wave
+terminates as a policy refusal.
 
 Native-v2 Claude and Codex JSONL readers never cap cumulative stdout bytes or event counts. They
 share only a 64 MiB unfinished-record allocation guard, tolerate whitespace and a complete final
@@ -307,10 +309,15 @@ sourceful run plus any explicitly available declared environment values. Runtime
 connection keys to their exact required environment names; the runner injects only the names
 declared by that node. Local runs resolve missing values from the private user connection store,
 hosted targets may resolve them from advertised user or organization connection management, and
-direct targets still require an exact environment without advertising connection management. Run
-branch selection overrides the local target-profile default; otherwise the remote default branch is
-used. `target setup` mutates only the local named-target registry and never calls a remote setup
-route. The separate ephemeral `githubToken` remains trusted only for source checkout and Git
+direct targets still require an exact environment without advertising connection management.
+Resolved snapshots retain only an optional run- and node-scoped refresh authority, never the
+resolver token as an injected value. Refresh recomputes the same node binding, preserves that
+authority on the replacement snapshot, and cannot broaden the node's declared environment. Trusted
+GitHub delivery uses it only after an authority error so expiring installation credentials can be
+replaced during long CI without minting a token on every poll. Run branch selection overrides the
+local target-profile default; otherwise the remote default branch is used. `target setup` mutates
+only the local named-target registry and never calls a remote setup route. The separate ephemeral
+`githubToken` remains trusted only for source checkout and Git
 delivery; a provider receives `GH_TOKEN` only when the materialized runtime declares it. Admission,
 the ledger, observations, and target configuration never retain secret values. Exact
 submission retry identity covers the sourceful submission (including the resolved revision) while

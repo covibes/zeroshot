@@ -39,7 +39,17 @@ pub(super) enum WorkspacePermit {
 #[derive(Clone)]
 pub struct ResolvedEnvironment {
     values: Arc<BTreeMap<EnvironmentVariableName, String>>,
+    refresh: Option<Arc<dyn RuntimeEnvironmentRefresh>>,
 }
+
+#[async_trait]
+pub(crate) trait RuntimeEnvironmentRefresh: Send + Sync {
+    async fn refresh(&self) -> Result<ResolvedEnvironment, EnvironmentRefreshUnavailable>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("runtime environment refresh is unavailable")]
+pub(crate) struct EnvironmentRefreshUnavailable;
 
 impl ResolvedEnvironment {
     pub fn exact(
@@ -62,6 +72,7 @@ impl ResolvedEnvironment {
         }
         Ok(Self {
             values: Arc::new(values),
+            refresh: None,
         })
     }
 
@@ -74,6 +85,23 @@ impl ResolvedEnvironment {
         self.values
             .iter()
             .map(|(name, value)| (name, value.as_str()))
+    }
+}
+
+pub(super) fn with_refresh(
+    mut environment: ResolvedEnvironment,
+    refresh: Arc<dyn RuntimeEnvironmentRefresh>,
+) -> ResolvedEnvironment {
+    environment.refresh = Some(refresh);
+    environment
+}
+
+pub(super) async fn refreshed(
+    environment: &ResolvedEnvironment,
+) -> Result<ResolvedEnvironment, EnvironmentRefreshUnavailable> {
+    match &environment.refresh {
+        Some(refresh) => refresh.refresh().await,
+        None => Ok(environment.clone()),
     }
 }
 
