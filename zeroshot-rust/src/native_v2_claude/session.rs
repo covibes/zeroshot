@@ -16,7 +16,10 @@ use crate::native_v2_runner::{
     NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
 };
 
-use super::{ClaudeAdapter, ClaudeTurn, ClaudeTurnAdvance, observe_session, prompt};
+use super::{ClaudeAdapter, ClaudeAttempt, ClaudeTurn, ClaudeTurnAdvance, prompt};
+
+const MISSING_REUSABLE_SESSION: &str =
+    "Claude output did not provide a session identifier for reusable session";
 
 pub(super) struct ClaudeSession {
     pub(super) core: ProviderSessionCore,
@@ -92,16 +95,25 @@ impl ClaudeAdapter {
             )
             .await
         {
-            Ok(ClaudeTurnAdvance::Response(response)) => state.accept_response(control, response),
+            Ok(ClaudeTurnAdvance::Response(response)) => {
+                if requires_session(&turn.invocation.node) && state.resume_id.is_none() {
+                    state
+                        .retry_provider_failure(turn, false, MISSING_REUSABLE_SESSION)
+                        .await?;
+                }
+                state.accept_response(control, response).await
+            }
             Ok(ClaudeTurnAdvance::ProviderFailure {
                 retryable,
                 diagnostic,
             }) => {
-                state.retry_provider_failure(turn, retryable, &diagnostic)?;
+                state
+                    .retry_provider_failure(turn, retryable, &diagnostic)
+                    .await?;
                 Ok(None)
             }
             Err(error) => {
-                state.emit_terminal_error(control, &error)?;
+                state.emit_terminal_error(control, &error).await?;
                 Err(error)
             }
         }
@@ -128,39 +140,42 @@ impl ClaudeRunState {
         })
     }
 
-    fn accept_response(
+    async fn accept_response(
         &mut self,
         control: &DriverControl,
         response: AgentResponse,
     ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
-        self.response.accept("Claude", control, response)
+        self.response.accept("Claude", control, response).await
     }
 
-    fn retry_provider_failure(
+    async fn retry_provider_failure(
         &mut self,
         turn: &ClaudeTurn<'_>,
         retryable: bool,
         detail: &str,
     ) -> Result<(), NodeRunnerError> {
-        let prompt = self.retry.after_failure(
-            turn.control,
-            ProviderFailure {
-                detail: Some(detail),
-                retryable,
-                has_session: self.resume_id.is_some(),
-                deadline: turn.deadline,
-            },
-        )?;
+        let prompt = self
+            .retry
+            .after_failure(
+                turn.control,
+                ProviderFailure {
+                    detail: Some(detail),
+                    retryable,
+                    has_session: self.resume_id.is_some(),
+                    deadline: turn.deadline,
+                },
+            )
+            .await?;
         self.response.replace_prompt(prompt);
         Ok(())
     }
 
-    fn emit_terminal_error(
+    async fn emit_terminal_error(
         &self,
         control: &DriverControl,
         error: &NodeRunnerError,
     ) -> Result<(), NodeRunnerError> {
-        self.retry.report_terminal(control, error)
+        self.retry.report_terminal(control, error).await
     }
 }
 
@@ -169,16 +184,46 @@ async fn retain_session(
     session: &ClaudeSession,
     observed: Option<&str>,
 ) -> Result<(), NodeRunnerError> {
-    if !matches!(
+    if !requires_session(invocation) {
+        return Ok(());
+    }
+    let observed = observed.ok_or(NodeRunnerError::Driver)?;
+    let mut retained = session.resume_id.lock().await;
+    observe_session(&mut retained, Some(observed)).map_err(|_| NodeRunnerError::Driver)
+}
+
+fn requires_session(invocation: &NodeInvocation) -> bool {
+    matches!(
         invocation.binding,
         NodeRuntimeBinding::Agent {
             session_scope: SessionScope::NodeInstance,
             ..
         }
-    ) {
-        return Ok(());
+    )
+}
+
+pub(super) fn attempt_session_id(attempt: &ClaudeAttempt) -> Option<&str> {
+    match attempt {
+        ClaudeAttempt::Complete(result) => result.session_id.as_deref(),
+        ClaudeAttempt::Failed(failure) => failure.session_id.as_deref(),
     }
-    let observed = observed.ok_or(NodeRunnerError::Driver)?;
-    let mut retained = session.resume_id.lock().await;
-    observe_session(&mut retained, Some(observed))
+}
+
+pub(super) fn observe_session(
+    retained: &mut Option<String>,
+    observed: Option<&str>,
+) -> Result<(), &'static str> {
+    let Some(observed) = observed else {
+        return Ok(());
+    };
+    match retained.as_deref() {
+        Some(existing) if existing != observed => {
+            Err("Claude output changed session identifier across turns")
+        }
+        Some(_) => Ok(()),
+        None => {
+            *retained = Some(observed.to_owned());
+            Ok(())
+        }
+    }
 }

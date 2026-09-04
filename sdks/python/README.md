@@ -94,7 +94,8 @@ starts or a direct target is contacted.
 `Run.watch(after=...)` and `Run.logs(after=..., execution=...)` resume strictly after opaque native
 cursors. A `wait_timeout` expiry raises `RunWaitTimeout` carrying the still-active `Run`; cancelling
 the Python await also detaches without stopping it. `Run.force_stop()` is the only operation that
-changes run lifetime.
+changes run lifetime. Each `LogEvent.timestamp` is the positive, JavaScript-safe Unix epoch
+millisecond captured at the producer and preserved unchanged by durable replay.
 
 ## Environment values
 

@@ -20,7 +20,7 @@ impl DurableOutput {
     pub(crate) async fn recv_output(&mut self) -> Result<LiveOutput, AttachReceiveError> {
         loop {
             match self.recv().await? {
-                DurableNodeEvent::Output(output) => return Ok(output),
+                DurableNodeEvent::Output { output, .. } => return Ok(output),
                 DurableNodeEvent::TokenUsage(_) => {}
             }
         }
@@ -31,7 +31,7 @@ impl DurableOutput {
     ) -> Result<Option<TokenUsageDelta>, AttachReceiveError> {
         loop {
             match self.recv().await? {
-                DurableNodeEvent::Output(_) => {}
+                DurableNodeEvent::Output { .. } => {}
                 DurableNodeEvent::TokenUsage(usage) => return Ok(usage),
             }
         }
@@ -292,10 +292,12 @@ impl NodeDriver for BurstDriver {
         control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
         for index in 0..(LIVE_OUTPUT_CAPACITY + 44) {
-            control.emit(LiveOutput::new(
-                LiveOutputStream::Output,
-                index.to_string(),
-            )?)?;
+            control
+                .emit(LiveOutput::new(
+                    LiveOutputStream::Output,
+                    index.to_string(),
+                )?)
+                .await?;
         }
         Ok(WorkerOutcome::Verified {
             output: Value::Null,
@@ -334,7 +336,9 @@ impl NodeDriver for FakeDriver {
             concurrency: &self.concurrency,
             reader,
         };
-        control.emit(LiveOutput::new(LiveOutputStream::Output, "working").assert_value())?;
+        control
+            .emit(LiveOutput::new(LiveOutputStream::Output, "working").assert_value())
+            .await?;
         let mut cancellation = control.cancellation();
         tokio::select! {
             _ = cancellation.cancelled() => Err(NodeRunnerError::Cancelled),

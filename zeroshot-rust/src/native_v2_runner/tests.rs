@@ -9,6 +9,9 @@ use openengine_cluster_protocol::{
 use serde_json::Value;
 use tokio::sync::watch;
 
+#[path = "tests/backpressure.rs"]
+mod backpressure;
+
 use super::*;
 use super::test_support::{
     admitted, binding, request, runner, BurstDriver, FakeDriver, FakeFactory,

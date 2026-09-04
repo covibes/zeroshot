@@ -10,7 +10,7 @@ use std::fmt;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     Cursor, IdempotencyKey, Phase, PositiveInteger, RunId, RunSize, RunTitle, Sha256Digest,
-    ResolvedSource, TerminalResult, TokenUsage, WorkerOutcome,
+    ResolvedSource, TerminalResult, TokenUsage, UnixTimestampMillis, WorkerOutcome,
 };
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -198,6 +198,7 @@ pub enum RunEvent {
     },
     SafeLog {
         execution: Option<ExecutionId>,
+        timestamp: UnixTimestampMillis,
         stream: SafeLogStream,
         line: SafeLogLine,
     },

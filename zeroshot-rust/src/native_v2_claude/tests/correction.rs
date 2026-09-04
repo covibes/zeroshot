@@ -44,10 +44,10 @@ async fn invalid_output_is_corrected_in_the_same_claude_session() {
         completion.outcome,
         WorkerOutcome::Verified { output, .. } if output == json!("done")
     ));
-    let resumed = workspace.read("resumed.args");
-    assert_resumed_session(&resumed);
-    assert!(resumed.contains("Your previous final response was rejected mechanically"));
-    assert!(resumed.contains("provider response must be exactly an object containing response"));
+    assert_resumed_session(&workspace.read("resumed.args"));
+    let prompt = workspace.read("resumed.prompt");
+    assert!(prompt.contains("Your previous final response was rejected mechanically"));
+    assert!(prompt.contains("provider response must be exactly an object containing response"));
 }
 
 #[tokio::test]
@@ -57,6 +57,7 @@ async fn malformed_output_stops_after_two_claude_correction_turns() {
         &workspace,
         r#"
 set -eu
+cat >/dev/null
 printf '%s\n' "$@" >> attempts.args
 printf '%s\n' '---' >> attempts.args
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"malformed-session"}'

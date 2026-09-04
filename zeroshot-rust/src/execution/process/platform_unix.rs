@@ -41,22 +41,43 @@ pub(super) fn kill_process_tree(
     process_group_id: Option<i32>,
     worker_uid: Option<u32>,
     child: &mut tokio::process::Child,
-) {
+) -> Vec<String> {
+    let mut errors = Vec::new();
     #[cfg(target_os = "linux")]
     if let Some(worker_uid) = worker_uid {
-        let _ = kill_linux_uid_processes(worker_uid);
+        if let Err(error) = kill_linux_uid_processes(worker_uid) {
+            errors.push(super::io_error_detail(
+                "worker process termination failed",
+                &error,
+            ));
+        }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = worker_uid;
     let Some(process_group_id) = process_group_id else {
-        let _ = child.start_kill();
-        return;
+        if let Err(error) = child.start_kill() {
+            errors.push(super::io_error_detail(
+                "root process termination failed",
+                &error,
+            ));
+        }
+        return errors;
     };
     if let Err(error) = kill_process_group(process_group_id) {
         if error.raw_os_error() != Some(libc::ESRCH) {
-            let _ = child.start_kill();
+            errors.push(super::io_error_detail(
+                "process group termination failed",
+                &error,
+            ));
+            if let Err(error) = child.start_kill() {
+                errors.push(super::io_error_detail(
+                    "root process termination fallback failed",
+                    &error,
+                ));
+            }
         }
     }
+    errors
 }
 
 fn kill_process_group(process_group_id: i32) -> Result<(), io::Error> {

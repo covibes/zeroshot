@@ -1,7 +1,9 @@
 use super::*;
 
 mod input;
+mod review;
 use input::source_issue;
+use review::{crash_outcome, rejected_merge_step, review_completion, ReviewProgress, ReviewStep};
 
 #[derive(Clone)]
 pub struct NativeV2DeliveryAdapter {
@@ -202,7 +204,8 @@ impl NativeV2DeliveryAdapter {
         emit(
             preparation.control,
             "delivery: review created or rediscovered",
-        )?;
+        )
+        .await?;
         Ok(review)
     }
 
@@ -220,7 +223,7 @@ impl NativeV2DeliveryAdapter {
             {
                 Ok(review) => return Ok(review),
                 Err(_) if attempt + 1 < REVIEW_SYNC_ATTEMPTS => {
-                    emit(control, "delivery: waiting for pushed review head")?;
+                    emit(control, "delivery: waiting for pushed review head").await?;
                     tokio::time::sleep(REVIEW_SYNC_INTERVAL).await;
                 }
                 Err(_) => return Err(crash_outcome()),
@@ -234,7 +237,7 @@ impl NativeV2DeliveryAdapter {
         session: &DeliverySession,
         control: &DriverControl,
     ) -> Result<String, DeliveryStop> {
-        emit(control, "delivery: preparing workspace revision")?;
+        emit(control, "delivery: preparing workspace revision").await?;
         match self
             .git
             .prepare_revision(&session.workspace, &self.config.target.base_revision)
@@ -242,13 +245,13 @@ impl NativeV2DeliveryAdapter {
         {
             Ok(revision) => Ok(revision),
             Err(GitError::NoMutation) => {
-                emit(control, "delivery: workspace has no deliverable mutation")?;
+                emit(control, "delivery: workspace has no deliverable mutation").await?;
                 Err(DeliveryStop::Outcome(WorkerOutcome::declared_failure(
                     WorkerErrorCode::Malformed,
                 )))
             }
             Err(GitError::Command) => {
-                emit(control, "delivery: local Git preparation failed")?;
+                emit(control, "delivery: local Git preparation failed").await?;
                 Err(crash_outcome())
             }
         }
@@ -265,7 +268,7 @@ impl NativeV2DeliveryAdapter {
             head_branch: review.head_branch.clone(),
             head_revision: review.head_revision.clone(),
         };
-        emit(preparation.control, "delivery: pushing run branch")?;
+        emit(preparation.control, "delivery: pushing run branch").await?;
         self.authority
             .push_branch(&push, preparation.credential)
             .await
@@ -298,7 +301,8 @@ impl NativeV2DeliveryAdapter {
         emit(
             drive.control,
             "delivery: authoritative confirmation timed out",
-        )?;
+        )
+        .await?;
         Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Timeout))
     }
 
@@ -308,12 +312,12 @@ impl NativeV2DeliveryAdapter {
         progress: ReviewProgress,
     ) -> Result<ReviewStep, DeliveryStop> {
         match drive.mode {
-            DeliveryMode::PullRequest => self.advance_pull_request(drive, progress),
+            DeliveryMode::PullRequest => self.advance_pull_request(drive, progress).await,
             DeliveryMode::Merge => self.advance_merge(drive, progress).await,
         }
     }
 
-    fn advance_pull_request(
+    async fn advance_pull_request(
         &self,
         drive: &ReviewDrive<'_>,
         progress: ReviewProgress,
@@ -322,11 +326,14 @@ impl NativeV2DeliveryAdapter {
             ReviewProgress::CiFailed(_)
             | ReviewProgress::Mergeable
             | ReviewProgress::Pending
-            | ReviewProgress::Conflict => review_completion(
-                drive,
-                DELIVERY_OPENED_LABEL,
-                "GitHub authoritatively confirmed the pull request is open",
-            ),
+            | ReviewProgress::Conflict => {
+                review_completion(
+                    drive,
+                    DELIVERY_OPENED_LABEL,
+                    "GitHub authoritatively confirmed the pull request is open",
+                )
+                .await
+            }
             ReviewProgress::Merged | ReviewProgress::Closed => Err(crash_outcome()),
         }
     }
@@ -337,22 +344,28 @@ impl NativeV2DeliveryAdapter {
         progress: ReviewProgress,
     ) -> Result<ReviewStep, DeliveryStop> {
         match progress {
-            ReviewProgress::Merged => review_completion(
-                drive,
-                DELIVERY_MERGED_LABEL,
-                "GitHub authoritatively confirmed merge",
-            ),
-            ReviewProgress::Conflict => review_completion(
-                drive,
-                DELIVERY_CONFLICT_LABEL,
-                "GitHub authoritatively reported a merge conflict",
-            ),
+            ReviewProgress::Merged => {
+                review_completion(
+                    drive,
+                    DELIVERY_MERGED_LABEL,
+                    "GitHub authoritatively confirmed merge",
+                )
+                .await
+            }
+            ReviewProgress::Conflict => {
+                review_completion(
+                    drive,
+                    DELIVERY_CONFLICT_LABEL,
+                    "GitHub authoritatively reported a merge conflict",
+                )
+                .await
+            }
             ReviewProgress::CiFailed(diagnostic) => {
-                review_completion(drive, DELIVERY_CI_FAILED_LABEL, &diagnostic)
+                review_completion(drive, DELIVERY_CI_FAILED_LABEL, &diagnostic).await
             }
             ReviewProgress::Mergeable => self.advance_mergeable(drive).await,
             ReviewProgress::Pending => {
-                emit(drive.control, "delivery: waiting for required CI checks")?;
+                emit(drive.control, "delivery: waiting for required CI checks").await?;
                 Ok(ReviewStep::Continue)
             }
             ReviewProgress::Closed => Err(crash_outcome()),
@@ -367,7 +380,8 @@ impl NativeV2DeliveryAdapter {
             emit(
                 drive.control,
                 "delivery: waiting for authoritative merge confirmation",
-            )?;
+            )
+            .await?;
         } else {
             match self
                 .request_merge(drive.review, drive.credential, drive.control)
@@ -375,7 +389,7 @@ impl NativeV2DeliveryAdapter {
             {
                 GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
                 GitHubMergeRequestOutcome::Pending => {
-                    if let Some(completion) = rejected_merge_step(drive)? {
+                    if let Some(completion) = rejected_merge_step(drive).await? {
                         return Ok(completion);
                     }
                 }
@@ -384,7 +398,8 @@ impl NativeV2DeliveryAdapter {
                         drive,
                         DELIVERY_CONFLICT_LABEL,
                         "GitHub authoritatively rejected merge due to conflict",
-                    );
+                    )
+                    .await;
                 }
             }
         }
@@ -413,77 +428,10 @@ impl NativeV2DeliveryAdapter {
         credential: GitHubCredential<'_>,
         control: &DriverControl,
     ) -> Result<GitHubMergeRequestOutcome, DeliveryStop> {
-        emit(control, "delivery: requesting merge")?;
+        emit(control, "delivery: requesting merge").await?;
         self.authority
             .request_merge(review, credential)
             .await
             .map_err(|_| crash_outcome())
     }
-}
-
-fn rejected_merge_step(drive: &mut ReviewDrive<'_>) -> Result<Option<ReviewStep>, DeliveryStop> {
-    if !drive.merge_rejection_reobserved {
-        drive.merge_rejection_reobserved = true;
-        emit(drive.control, "delivery: merge request is not yet accepted")?;
-        return Ok(None);
-    }
-    emit(
-        drive.control,
-        "delivery: target policy rejected direct merge",
-    )?;
-    Ok(Some(ReviewStep::Complete(WorkerOutcome::policy_refusal())))
-}
-
-enum ReviewProgress {
-    Merged,
-    CiFailed(String),
-    Mergeable,
-    Pending,
-    Conflict,
-    Closed,
-}
-
-enum ReviewStep {
-    Continue,
-    Complete(WorkerOutcome),
-}
-
-impl ReviewProgress {
-    fn from_state(state: GitHubReviewState) -> Result<Self, DeliveryStop> {
-        match state {
-            GitHubReviewState::Merged { merge_revision } if valid_revision(&merge_revision) => {
-                Ok(Self::Merged)
-            }
-            GitHubReviewState::Merged { .. } => {
-                Err(DeliveryStop::Outcome(WorkerOutcome::malformed()))
-            }
-            GitHubReviewState::Open {
-                checks: GitHubChecks::Failed { diagnostic },
-            } => Ok(Self::CiFailed(diagnostic)),
-            GitHubReviewState::Open {
-                checks: GitHubChecks::Pending,
-            } => Ok(Self::Pending),
-            GitHubReviewState::Open {
-                checks: GitHubChecks::NotRequired | GitHubChecks::Passed,
-            } => Ok(Self::Mergeable),
-            GitHubReviewState::Conflict => Ok(Self::Conflict),
-            GitHubReviewState::Closed => Ok(Self::Closed),
-        }
-    }
-}
-
-fn crash_outcome() -> DeliveryStop {
-    DeliveryStop::Outcome(WorkerOutcome::declared_failure(WorkerErrorCode::Crash))
-}
-
-fn review_completion(
-    drive: &ReviewDrive<'_>,
-    label: &'static str,
-    diagnostic: &str,
-) -> Result<ReviewStep, DeliveryStop> {
-    emit(drive.control, diagnostic)?;
-    validate_delivery_contract(drive.mode, drive.response).map_err(DeliveryStop::Runner)?;
-    delivery_outcome(drive.mode, label, drive.review, diagnostic)
-        .map(ReviewStep::Complete)
-        .map_err(DeliveryStop::Runner)
 }

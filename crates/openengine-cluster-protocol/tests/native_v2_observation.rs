@@ -10,7 +10,7 @@ use openengine_cluster_protocol::{
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunMetadata,
     RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
     RunWatchParams, ResolvedSource, SubscriptionId, TerminalResult, TokenCount, TokenUsage,
-    MAX_SAFE_GENERATION,
+    UnixTimestampMillis, MAX_SAFE_GENERATION,
 };
 use serde_json::json;
 
@@ -151,6 +151,16 @@ fn token_usage_rejects_counters_that_javascript_cannot_represent_exactly() {
 }
 
 #[test]
+fn log_timestamps_are_positive_javascript_safe_unix_milliseconds() {
+    assert!(UnixTimestampMillis::new(1).is_ok());
+    assert!(UnixTimestampMillis::new(MAX_SAFE_GENERATION).is_ok());
+    assert!(UnixTimestampMillis::new(0).is_err());
+    assert!(UnixTimestampMillis::new(MAX_SAFE_GENERATION + 1).is_err());
+    assert!(serde_json::from_value::<UnixTimestampMillis>(json!(0)).is_err());
+    assert!(serde_json::from_value::<UnixTimestampMillis>(json!(MAX_SAFE_GENERATION + 1)).is_err());
+}
+
+#[test]
 fn durable_events_carry_run_and_stable_cursor() {
     let terminal_output = json!({
         "kind": "verification_receipt",
@@ -203,6 +213,7 @@ fn durable_events_carry_run_and_stable_cursor() {
         "subscriptionId": "logs-1",
         "runId": "run-1",
         "cursor": "v2:9",
+        "timestamp": 1725000000123_u64,
         "execution": "opaque-verifier-b",
         "record": {
             "level": "info",
@@ -214,6 +225,10 @@ fn durable_events_carry_run_and_stable_cursor() {
     assert_eq!(serde_json::to_value(log).assert_value(), value);
     assert_eq!(json_read::json_at(&value, "/runId"), &json!("run-1"));
     assert_eq!(json_read::json_at(&value, "/cursor"), &json!("v2:9"));
+    assert_eq!(
+        json_read::json_at(&value, "/timestamp"),
+        &json!(1_725_000_000_123_u64)
+    );
     assert_eq!(
         json_read::json_at(&value, "/execution"),
         &json!("opaque-verifier-b")

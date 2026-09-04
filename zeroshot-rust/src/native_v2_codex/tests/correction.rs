@@ -87,3 +87,34 @@ async fn openrouter_correction_scopes_configuration_to_the_resume_command() {
     assert!(resumed.contains("arg=--model\narg=openai/gpt-5.6-sol\n"));
     assert!(resumed.contains("arg=thread-123\narg=-\n"));
 }
+
+#[tokio::test]
+async fn malformed_output_stops_after_two_correction_turns() {
+    let directory = TestDirectory::new("codex-malformed-limit");
+    let capture = directory.child("capture");
+    let (admitted, runtime) = openai_runtime(
+        &directory,
+        SessionScope::Execution,
+        &["ALWAYS_MALFORMED", "CAPTURE_PATH", "OPENAI_API_KEY"],
+    )
+    .await;
+    let mut handle = start(
+        &runtime,
+        &admitted,
+        1,
+        &[
+            ("ALWAYS_MALFORMED", "true".to_owned()),
+            ("CAPTURE_PATH", capture.display().to_string()),
+            ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        handle.completion().await.assert_value().outcome,
+        WorkerOutcome::malformed()
+    );
+    let capture = fs::read_to_string(capture).assert_value();
+    assert_eq!(capture.matches("prompt=").count(), 3);
+    assert_eq!(capture.matches("arg=resume").count(), 2);
+}

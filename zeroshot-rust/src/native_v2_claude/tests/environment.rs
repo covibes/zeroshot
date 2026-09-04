@@ -6,12 +6,27 @@ use openengine_cluster_testkit::assertions::AssertValue;
 use super::super::ClaudeProcessEnvironment;
 
 #[test]
-fn base_environment_is_explicit_bounded_and_non_secret_by_name() {
+fn base_environment_is_explicit_non_secret_and_allows_large_values() {
     assert!(ClaudeProcessEnvironment::new(BTreeMap::new()).is_ok());
     assert!(
         ClaudeProcessEnvironment::new(BTreeMap::from([(
             "OPENAI_API_KEY".to_owned(),
             "not-allowed".to_owned(),
+        )]))
+        .is_err()
+    );
+    let long_locale = "x".repeat(20 * 1024);
+    let environment =
+        ClaudeProcessEnvironment::new(BTreeMap::from([("LANG".to_owned(), long_locale.clone())]))
+            .assert_value();
+    assert_eq!(
+        environment.clone_values().get("LANG").map(String::as_str),
+        Some(long_locale.as_str())
+    );
+    assert!(
+        ClaudeProcessEnvironment::new(BTreeMap::from([(
+            "LANG".to_owned(),
+            "invalid\0value".to_owned(),
         )]))
         .is_err()
     );

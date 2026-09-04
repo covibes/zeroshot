@@ -1,8 +1,7 @@
 //! Native-v2 node execution boundary.
 //!
-//! The runner owns only three cross-cutting runtime rules: one shared-workspace gate, exact
-//! session lifetime, and a read-only live output stream. Provider processes remain behind
-//! [`NodeDriver`], while durable observation remains in the run ledger.
+//! The runner owns workspace gates, session lifetimes, live output, and durable handoff while
+//! provider processes remain behind [`NodeDriver`].
 
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,10 +11,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    GraphNode, NodeInstructions, NodeName, RunId, WorkerOutcome, WorkerRef,
+    GraphNode, NodeInstructions, NodeName, RunId, UnixTimestampMillis, WorkerOutcome, WorkerRef,
 };
 use tokio::sync::{
-    broadcast, mpsc, oneshot, watch, Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
+    broadcast, oneshot, watch, Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
 };
 
 use crate::execution::driver::DriverCancellation;
@@ -28,13 +27,16 @@ use crate::native_v2_contract::{
 
 const LIVE_OUTPUT_CAPACITY: usize = 256;
 const MAX_LIVE_OUTPUT_BYTES: usize = 16 * 1024;
+pub(crate) const DURABLE_OUTPUT_CAPACITY: usize = 1024;
 
+mod handle;
 mod output;
 mod remote;
 mod response;
 
+pub use handle::NodeHandle;
 pub use output::{AttachReceiveError, DurableOutput, LiveOutputSource, ReadOnlyAttach};
-use output::closed_live_attach;
+use output::{DurableEventSender, durable_event_channel, durable_output_event};
 pub use response::{render_agent_prompt, NodeResponseContract};
 pub(crate) use response::ProviderSchemaDialect;
 pub(crate) use response::{
@@ -78,7 +80,10 @@ impl LiveOutput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DurableNodeEvent {
-    Output(LiveOutput),
+    Output {
+        output: LiveOutput,
+        timestamp: UnixTimestampMillis,
+    },
     TokenUsage(Option<TokenUsageDelta>),
 }
 
@@ -92,6 +97,8 @@ pub enum NodeRunnerError {
     SessionLost,
     #[error("node execution failed")]
     Driver,
+    #[error("node execution failed: {0}")]
+    DriverDetail(String),
     #[error("the remote node runtime connection was lost")]
     ConnectionLost,
     #[error("node execution was cancelled")]
@@ -149,7 +156,7 @@ impl DriverInvocation {
 pub struct DriverControl {
     cancellation: watch::Receiver<bool>,
     live_output: broadcast::Sender<LiveOutput>,
-    durable_output: mpsc::UnboundedSender<DurableNodeEvent>,
+    durable_output: DurableEventSender,
 }
 
 impl DriverControl {
@@ -171,21 +178,29 @@ impl DriverControl {
         DriverCancellation::new(self.cancellation.clone())
     }
 
-    pub fn emit(&self, output: LiveOutput) -> Result<(), NodeRunnerError> {
-        self.durable_output
-            .send(DurableNodeEvent::Output(output.clone()))
-            .map_err(|_| NodeRunnerError::DurableOutputClosed)?;
+    pub async fn emit(&self, output: LiveOutput) -> Result<(), NodeRunnerError> {
+        self.send_durable(durable_output_event(output.clone()))
+            .await?;
         let _ = self.live_output.send(output);
         Ok(())
     }
 
-    pub fn record_token_usage(
+    pub async fn record_token_usage(
         &self,
         usage: Option<TokenUsageDelta>,
     ) -> Result<(), NodeRunnerError> {
         self.durable_output
-            .send(DurableNodeEvent::TokenUsage(usage))
-            .map_err(|_| NodeRunnerError::DurableOutputClosed)
+            .send_terminal(
+                DurableNodeEvent::TokenUsage(usage),
+                self.cancellation.clone(),
+            )
+            .await
+    }
+
+    async fn send_durable(&self, event: DurableNodeEvent) -> Result<(), NodeRunnerError> {
+        self.durable_output
+            .send(event, self.cancellation.clone())
+            .await
     }
 }
 
@@ -237,7 +252,7 @@ impl NodeRunner for NativeNodeRunner {
         let reference = request.invocation.reference.clone();
         let (cancel_sender, cancel_receiver) = watch::channel(false);
         let (output_sender, _) = broadcast::channel(LIVE_OUTPUT_CAPACITY);
-        let (durable_output_sender, durable_output_receiver) = mpsc::unbounded_channel();
+        let (durable_output_sender, durable_output) = durable_event_channel();
         let (completion_sender, completion_receiver) = oneshot::channel();
         let activity = self
             .activity
@@ -269,9 +284,7 @@ impl NodeRunner for NativeNodeRunner {
             reference,
             cancel: cancel_sender,
             output: Some(output_sender),
-            initial_output: Some(DurableOutput {
-                receiver: durable_output_receiver,
-            }),
+            initial_output: Some(durable_output),
             completion: Some(completion_receiver),
             cancel_on_drop: true,
         })
@@ -302,7 +315,7 @@ struct RunnerTask<'a> {
     response: NodeResponseContract,
     cancellation: watch::Receiver<bool>,
     output: broadcast::Sender<LiveOutput>,
-    durable_output: mpsc::UnboundedSender<DurableNodeEvent>,
+    durable_output: DurableEventSender,
     activity: &'a ActivityToken,
 }
 
@@ -383,70 +396,6 @@ fn session_scope(binding: &NodeRuntimeBinding) -> Result<SessionScope, NodeRunne
     match binding {
         NodeRuntimeBinding::Agent { session_scope, .. } => Ok(*session_scope),
         NodeRuntimeBinding::GitDelivery { .. } => Ok(SessionScope::Execution),
-    }
-}
-
-pub struct NodeHandle {
-    reference: ExecutionRef,
-    cancel: watch::Sender<bool>,
-    output: Option<broadcast::Sender<LiveOutput>>,
-    initial_output: Option<DurableOutput>,
-    completion: Option<oneshot::Receiver<Result<NodeCompletion, NodeRunnerError>>>,
-    cancel_on_drop: bool,
-}
-
-impl NodeHandle {
-    #[must_use]
-    pub fn reference(&self) -> &ExecutionRef {
-        &self.reference
-    }
-
-    pub fn cancel(&self) {
-        let _ = self.cancel.send(true);
-    }
-
-    #[must_use]
-    pub fn attach(&self) -> ReadOnlyAttach {
-        self.live_output_source()
-            .map_or_else(closed_live_attach, |source| source.subscribe())
-    }
-
-    /// Returns read-only subscription authority for an active execution.
-    #[must_use]
-    pub fn live_output_source(&self) -> Option<LiveOutputSource> {
-        self.output.as_ref().map(|output| LiveOutputSource {
-            output: output.clone(),
-        })
-    }
-
-    /// Takes the receiver established before execution starts for durable log bridging.
-    pub fn take_initial_output(&mut self) -> Option<DurableOutput> {
-        self.initial_output.take()
-    }
-
-    /// Waits for completion without consuming the handle.
-    ///
-    /// Cancelling this wait leaves the receiver intact so a supervisor can signal cancellation
-    /// and then wait again for the driver's cleanup acknowledgement.
-    pub async fn completion(&mut self) -> Result<NodeCompletion, NodeRunnerError> {
-        let result = self
-            .completion
-            .as_mut()
-            .ok_or(NodeRunnerError::CompletionClosed)?
-            .await
-            .map_err(|_| NodeRunnerError::CompletionClosed)?;
-        self.completion.take();
-        self.output.take();
-        self.cancel_on_drop = false;
-        result
-    }
-}
-
-impl Drop for NodeHandle {
-    fn drop(&mut self) {
-        if self.cancel_on_drop {
-            let _ = self.cancel.send(true);
-        }
     }
 }
 

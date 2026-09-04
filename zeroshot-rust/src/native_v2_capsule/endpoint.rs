@@ -1,17 +1,31 @@
 use super::*;
 
+#[path = "endpoint/execution.rs"]
+mod execution;
+use execution::{LocalExecutionTask, remove_endpoint_execution, serve_local_execution};
+
 #[derive(Clone)]
 pub struct NativeCapsuleNodeEndpoint {
     runner: Arc<dyn NodeRunner>,
     loss: watch::Sender<bool>,
-    active: Arc<Mutex<Vec<EndpointExecution>>>,
+    state: Arc<Mutex<EndpointState>>,
+    #[cfg(test)]
+    start_readiness_pause: Option<StartReadinessPause>,
+}
+
+#[derive(Default)]
+struct EndpointState {
+    active: Vec<EndpointExecution>,
+    closed_runs: std::collections::BTreeSet<RunId>,
 }
 
 struct EndpointExecution {
     reference: ExecutionRef,
-    cancel: mpsc::UnboundedSender<()>,
+    cancel: watch::Sender<bool>,
     done: watch::Receiver<bool>,
 }
+
+type LocalStartAcceptance = oneshot::Sender<()>;
 
 impl NativeCapsuleNodeEndpoint {
     #[must_use]
@@ -20,7 +34,9 @@ impl NativeCapsuleNodeEndpoint {
         Self {
             runner,
             loss,
-            active: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::default(),
+            #[cfg(test)]
+            start_readiness_pause: None,
         }
     }
 
@@ -28,8 +44,9 @@ impl NativeCapsuleNodeEndpoint {
     pub async fn disconnect(&self) {
         let _ = self.loss.send(true);
         let run_ids = {
-            let entries = self.active.lock().await;
-            entries
+            let state = self.state.lock().await;
+            state
+                .active
                 .iter()
                 .map(|entry| entry.reference.run_id.clone())
                 .collect::<std::collections::BTreeSet<_>>()
@@ -39,16 +56,129 @@ impl NativeCapsuleNodeEndpoint {
         }
     }
 
+    async fn settle_unusable_handle(&self, mut handle: NodeHandle) -> bool {
+        let mut durable = handle.take_initial_output();
+        handle.cancel();
+        let settled = tokio::time::timeout(CLOSE_RPC_TIMEOUT, async {
+            let completion = handle.completion();
+            let drain = async {
+                if let Some(output) = durable.as_mut() {
+                    while output.recv().await.is_ok() {}
+                }
+            };
+            let _ = tokio::join!(completion, drain);
+        })
+        .await
+        .is_ok();
+        if !settled {
+            self.loss.send_replace(true);
+        }
+        settled
+    }
+
+    async fn finish_reservation(&self, reference: &ExecutionRef, done: &watch::Sender<bool>) {
+        remove_endpoint_execution(&self.state, reference, done).await;
+        done.send_replace(true);
+    }
+
+    fn ensure_run_open(
+        &self,
+        state: &EndpointState,
+        run_id: &RunId,
+    ) -> Result<(), CapsuleConnectionError> {
+        if *self.loss.borrow() {
+            return Err(CapsuleConnectionError::Lost);
+        }
+        if state.closed_runs.contains(run_id) {
+            return Err(CapsuleConnectionError::Rejected(
+                CapsuleNodeFailure::RunClosed,
+            ));
+        }
+        Ok(())
+    }
+
+    async fn start_reserved(self, request: NodeRunRequest, reserved: ReservedLocalStart) {
+        let mut handle = match self.runner.start(request).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.finish_reservation(&reserved.reference, &reserved.done)
+                    .await;
+                let _ = reserved.ready.send(Err(CapsuleConnectionError::Rejected(
+                    CapsuleNodeFailure::from_runner(&error),
+                )));
+                #[cfg(test)]
+                mark_start_readiness_sent(self.start_readiness_pause.as_ref());
+                return;
+            }
+        };
+        let Some(durable) = handle.take_initial_output() else {
+            let settled = self.settle_unusable_handle(handle).await;
+            self.finish_reservation(&reserved.reference, &reserved.done)
+                .await;
+            let error = if settled {
+                CapsuleConnectionError::Rejected(CapsuleNodeFailure::ExecutionFailed)
+            } else {
+                CapsuleConnectionError::Lost
+            };
+            let _ = reserved.ready.send(Err(error));
+            #[cfg(test)]
+            mark_start_readiness_sent(self.start_readiness_pause.as_ref());
+            return;
+        };
+        let (accept, acceptance) = oneshot::channel();
+        let _ = reserved.ready.send(Ok(accept));
+        #[cfg(test)]
+        mark_start_readiness_sent(self.start_readiness_pause.as_ref());
+        serve_local_execution(LocalExecutionTask {
+            handle,
+            durable,
+            commands: reserved.commands,
+            events: reserved.events,
+            terminal: reserved.terminal,
+            state: self.state.clone(),
+            reference: reserved.reference,
+            done: reserved.done,
+            acceptance: Some(acceptance),
+        })
+        .await;
+    }
+
+    async fn accept_local_start(
+        &self,
+        reference: &ExecutionRef,
+        done: &watch::Sender<bool>,
+        acceptance: LocalStartAcceptance,
+    ) -> Result<(), CapsuleConnectionError> {
+        let expected = done.subscribe();
+        let state = self.state.lock().await;
+        self.ensure_run_open(&state, &reference.run_id)?;
+        if !state
+            .active
+            .iter()
+            .any(|entry| entry.reference == *reference && entry.done.same_channel(&expected))
+        {
+            return Err(CapsuleConnectionError::Rejected(
+                CapsuleNodeFailure::Cancelled,
+            ));
+        }
+        acceptance
+            .send(())
+            .map_err(|_| CapsuleConnectionError::Rejected(CapsuleNodeFailure::Cancelled))
+    }
+
     async fn close_local_run(&self, run_id: &RunId) {
         let mut completions = {
-            let entries = self.active.lock().await;
-            for entry in entries
+            let mut state = self.state.lock().await;
+            state.closed_runs.insert(run_id.clone());
+            for entry in state
+                .active
                 .iter()
                 .filter(|entry| &entry.reference.run_id == run_id)
             {
-                let _ = entry.cancel.send(());
+                entry.cancel.send_replace(true);
             }
-            entries
+            state
+                .active
                 .iter()
                 .filter(|entry| &entry.reference.run_id == run_id)
                 .map(|entry| entry.done.clone())
@@ -74,56 +204,68 @@ impl CapsuleNodeChannel for NativeCapsuleNodeEndpoint {
         if *self.loss.borrow() {
             return Err(CapsuleConnectionError::Lost);
         }
-        let mut handle = self.runner.start(request).await.map_err(|error| {
-            CapsuleConnectionError::Rejected(CapsuleNodeFailure::from_runner(&error))
-        })?;
-        let reference = handle.reference().clone();
-        let Some(durable) = handle.take_initial_output() else {
-            handle.cancel();
-            let _ = handle.completion().await;
-            return Err(CapsuleConnectionError::Rejected(
-                CapsuleNodeFailure::ExecutionFailed,
-            ));
-        };
-        // Provider output is capped by the harness, so this lossless queue is bounded by that
-        // cap while keeping cancellation and cleanup independent of a slow controller reader.
-        let (events, receiver) = mpsc::unbounded_channel();
-        let (cancel, commands) = mpsc::unbounded_channel();
+        let reference = request.invocation.reference.clone();
+        let (events, receiver) = mpsc::channel(DURABLE_OUTPUT_CAPACITY);
+        let (terminal, terminal_receiver) = oneshot::channel();
+        let (cancel, commands) = watch::channel(false);
         let (done_sender, done) = watch::channel(false);
+        let done_identity = done_sender.clone();
         {
-            let mut active = self.active.lock().await;
-            if *self.loss.borrow() {
-                handle.cancel();
-                drop(active);
-                let _ = handle.completion().await;
-                return Err(CapsuleConnectionError::Lost);
+            let mut state = self.state.lock().await;
+            self.ensure_run_open(&state, &reference.run_id)?;
+            if state
+                .active
+                .iter()
+                .any(|entry| entry.reference == reference)
+            {
+                return Err(CapsuleConnectionError::Rejected(
+                    CapsuleNodeFailure::ExecutionActive,
+                ));
             }
-            active.push(EndpointExecution {
+            state.active.push(EndpointExecution {
                 reference: reference.clone(),
                 cancel,
                 done,
             });
         }
-        let active = self.active.clone();
-        tokio::spawn(serve_local_execution(LocalExecutionTask {
-            handle,
-            durable,
-            commands,
-            events,
-            active,
-            reference,
-            done: done_sender,
-        }));
-        Ok(CapsuleExecutionStream::from_receiver(receiver))
+        let (ready, readiness) = oneshot::channel();
+        let endpoint = self.clone();
+        let reserved_reference = reference.clone();
+        tokio::spawn(endpoint.start_reserved(
+            request,
+            ReservedLocalStart {
+                reference: reserved_reference,
+                done: done_sender,
+                ready,
+                commands,
+                events,
+                terminal,
+            },
+        ));
+        #[cfg(test)]
+        pause_before_start_readiness(self.start_readiness_pause.as_ref()).await;
+        let acceptance = readiness
+            .await
+            .unwrap_or(Err(CapsuleConnectionError::Lost))?;
+        self.accept_local_start(&reference, &done_identity, acceptance)
+            .await?;
+        Ok(CapsuleExecutionStream::from_bounded_receiver(
+            receiver,
+            terminal_receiver,
+        ))
     }
 
     async fn cancel(&self, reference: &ExecutionRef) -> Result<(), CapsuleConnectionError> {
         if *self.loss.borrow() {
             return Err(CapsuleConnectionError::Lost);
         }
-        let entries = self.active.lock().await;
-        if let Some(entry) = entries.iter().find(|entry| &entry.reference == reference) {
-            let _ = entry.cancel.send(());
+        let state = self.state.lock().await;
+        if let Some(entry) = state
+            .active
+            .iter()
+            .find(|entry| &entry.reference == reference)
+        {
+            entry.cancel.send_replace(true);
         }
         Ok(())
     }
@@ -141,148 +283,18 @@ impl CapsuleNodeChannel for NativeCapsuleNodeEndpoint {
     }
 }
 
-struct LocalExecutionTask {
-    handle: NodeHandle,
-    durable: crate::native_v2_runner::DurableOutput,
-    commands: mpsc::UnboundedReceiver<()>,
-    events: mpsc::UnboundedSender<CapsuleNodeEvent>,
-    active: Arc<Mutex<Vec<EndpointExecution>>>,
+#[cfg(test)]
+impl WithStartReadinessPause for NativeCapsuleNodeEndpoint {
+    fn start_readiness_pause(&mut self) -> &mut Option<StartReadinessPause> {
+        &mut self.start_readiness_pause
+    }
+}
+
+struct ReservedLocalStart {
     reference: ExecutionRef,
     done: watch::Sender<bool>,
-}
-
-enum LocalInput {
-    Completion(Result<NodeCompletion, NodeRunnerError>),
-    Output(Result<DurableNodeEvent, crate::native_v2_runner::AttachReceiveError>),
-    Cancel,
-}
-
-struct LocalAwait {
-    completion: bool,
-    output: bool,
-    command: bool,
-}
-
-struct LocalOutputContext<'a> {
-    events: &'a mpsc::UnboundedSender<CapsuleNodeEvent>,
-    handle: &'a mut NodeHandle,
-    output_closed: &'a mut bool,
-    consumer_gone: &'a mut bool,
-}
-
-async fn serve_local_execution(task: LocalExecutionTask) {
-    let LocalExecutionTask {
-        mut handle,
-        mut durable,
-        mut commands,
-        events,
-        active,
-        reference,
-        done,
-    } = task;
-    let mut completion = None;
-    let mut output_closed = false;
-    let mut consumer_gone = false;
-    while local_execution_pending(&completion, output_closed) {
-        let next = next_local_input(
-            &mut handle,
-            &mut durable,
-            &mut commands,
-            LocalAwait {
-                completion: completion.is_none(),
-                output: !output_closed,
-                command: !consumer_gone,
-            },
-        )
-        .await;
-        match next {
-            LocalInput::Completion(result) => completion = Some(result),
-            LocalInput::Output(output) => apply_local_output(
-                output,
-                LocalOutputContext {
-                    events: &events,
-                    handle: &mut handle,
-                    output_closed: &mut output_closed,
-                    consumer_gone: &mut consumer_gone,
-                },
-            ),
-            LocalInput::Cancel => handle.cancel(),
-        }
-    }
-    send_local_completion(&events, completion, consumer_gone);
-    remove_endpoint_execution(&active, &reference).await;
-    let _ = done.send(true);
-}
-
-fn local_execution_pending(
-    completion: &Option<Result<NodeCompletion, NodeRunnerError>>,
-    output_closed: bool,
-) -> bool {
-    completion.is_none() || !output_closed
-}
-
-async fn next_local_input(
-    handle: &mut NodeHandle,
-    durable: &mut crate::native_v2_runner::DurableOutput,
-    commands: &mut mpsc::UnboundedReceiver<()>,
-    awaiting: LocalAwait,
-) -> LocalInput {
-    tokio::select! {
-        result = handle.completion(), if awaiting.completion => LocalInput::Completion(result),
-        output = durable.recv(), if awaiting.output => LocalInput::Output(output),
-        _ = commands.recv(), if awaiting.command => LocalInput::Cancel,
-    }
-}
-
-fn apply_local_output(
-    output: Result<DurableNodeEvent, crate::native_v2_runner::AttachReceiveError>,
-    context: LocalOutputContext<'_>,
-) {
-    let Ok(output) = output else {
-        *context.output_closed = true;
-        return;
-    };
-    let event = match output {
-        DurableNodeEvent::Output(output) => CapsuleNodeEvent::Output {
-            output: output.into(),
-        },
-        DurableNodeEvent::TokenUsage(usage) => CapsuleNodeEvent::TokenUsage { usage },
-    };
-    if context.events.send(event).is_err() {
-        *context.consumer_gone = true;
-        context.handle.cancel();
-    }
-}
-
-fn send_local_completion(
-    events: &mpsc::UnboundedSender<CapsuleNodeEvent>,
-    completion: Option<Result<NodeCompletion, NodeRunnerError>>,
-    consumer_gone: bool,
-) {
-    if consumer_gone {
-        return;
-    }
-    let Some(completion) = completion else {
-        return;
-    };
-    let event = match completion {
-        Ok(completion) => CapsuleNodeEvent::Completed { completion },
-        Err(error) => CapsuleNodeEvent::Failed {
-            failure: CapsuleNodeFailure::from_runner(&error),
-        },
-    };
-    let _ = events.send(event);
-}
-
-async fn remove_endpoint_execution(
-    active: &Mutex<Vec<EndpointExecution>>,
-    reference: &ExecutionRef,
-) {
-    let mut entries = active.lock().await;
-    if let Some(index) = entries
-        .iter()
-        .position(|entry| &entry.reference == reference)
-    {
-        entries.swap_remove(index);
-    }
+    ready: oneshot::Sender<Result<LocalStartAcceptance, CapsuleConnectionError>>,
+    commands: watch::Receiver<bool>,
+    events: mpsc::Sender<CapsuleNodeEvent>,
+    terminal: oneshot::Sender<Vec<CapsuleNodeEvent>>,
 }

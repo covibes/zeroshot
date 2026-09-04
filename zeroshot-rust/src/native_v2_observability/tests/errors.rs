@@ -93,6 +93,8 @@ pub(super) async fn persist_output(
             run_id,
             vec![RunEvent::SafeLog {
                 execution: Some(execution),
+                timestamp: openengine_cluster_protocol::UnixTimestampMillis::new(1_725_000_000_123)
+                    .assert_value(),
                 stream,
                 line: SafeLogLine::new(output.text).assert_value(),
             }],

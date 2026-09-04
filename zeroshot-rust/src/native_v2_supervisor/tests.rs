@@ -144,7 +144,9 @@ impl NodeDriver for FakeDriver {
                     outcome: success_for(invocation.role),
                 })
         };
-        control.emit(LiveOutput::new(LiveOutputStream::Output, node.clone())?)?;
+        control
+            .emit(LiveOutput::new(LiveOutputStream::Output, node.clone())?)
+            .await?;
         self.state().emissions.push(node.clone());
         let result = match behavior {
             Behavior::Complete { delay, outcome } => {

@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use openengine_cluster_protocol::{
     ArtifactRef, CompiledGraphIr, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
     RunSize, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, ResolvedSource,
-    TerminalResult, TokenCount, TokenUsage, WorkerOutcome,
+    TerminalResult, TokenCount, TokenUsage, UnixTimestampMillis, WorkerOutcome,
 };
 use serde_json::{Value, json};
 
@@ -207,6 +207,7 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
                 started(second.clone()),
                 RunEvent::SafeLog {
                     execution: Some(first.execution),
+                    timestamp: UnixTimestampMillis::new(1_725_000_000_123).assert_value(),
                     stream: SafeLogStream::Output,
                     line: SafeLogLine::new("working").assert_value(),
                 },
@@ -257,10 +258,10 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
     assert_eq!(observation.snapshot.cursor, cursor_for(7));
     assert_eq!(observation.events.len(), 4);
     assert_eq!(observation.events.assert_at(0).cursor, cursor_for(4));
-    assert!(matches!(
-        observation.events.assert_at(0).event,
-        RunEvent::SafeLog { .. }
-    ));
+    assert_eq!(
+        safe_log_timestamp(&observation.events.assert_at(0).event),
+        Some(1_725_000_000_123)
+    );
 
     assert_eq!(
         ledger
@@ -269,6 +270,13 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
             .assert_error(),
         RunLedgerError::InvalidEvent("run is already terminal")
     );
+}
+
+fn safe_log_timestamp(event: &RunEvent) -> Option<u64> {
+    match event {
+        RunEvent::SafeLog { timestamp, .. } => Some(timestamp.get()),
+        _ => None,
+    }
 }
 
 #[tokio::test]
@@ -421,6 +429,12 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
                 vec![
                     RunEvent::RunStarted,
                     started(reference(&run_id, 1)),
+                    RunEvent::SafeLog {
+                        execution: Some(ExecutionId::new(1).assert_value()),
+                        timestamp: UnixTimestampMillis::new(1_725_000_000_123).assert_value(),
+                        stream: SafeLogStream::System,
+                        line: SafeLogLine::new("persisted timestamp").assert_value(),
+                    },
                     RunEvent::TokenUsageObserved {
                         execution: ExecutionId::new(1).assert_value(),
                         usage: Some(usage(5, 1, None, None)),
@@ -434,7 +448,7 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
 
     let reopened = SqliteRunLedger::open(&path).assert_value();
     let stored = reopened.get(&run_id).await.assert_value().assert_value();
-    assert_eq!(stored.snapshot.cursor, cursor_for(4));
+    assert_eq!(stored.snapshot.cursor, cursor_for(5));
     let persisted_usage = stored.snapshot.token_usage.assert_value();
     assert_eq!(persisted_usage.input_tokens.get(), 5);
     assert_eq!(persisted_usage.output_tokens.get(), 1);
@@ -447,8 +461,20 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
         .snapshot_and_tail(&run_id, Some(&cursor_for(1)))
         .await
         .assert_value();
-    assert_eq!(observation.events.len(), 3);
+    assert_eq!(observation.events.len(), 4);
     assert_eq!(observation.events.assert_at(0).cursor, cursor_for(2));
+    let persisted_log = observation
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RunEvent::SafeLog {
+                timestamp, line, ..
+            } => Some((*timestamp, line)),
+            _ => None,
+        })
+        .assert_value();
+    assert_eq!(persisted_log.0.get(), 1_725_000_000_123);
+    assert_eq!(persisted_log.1.as_str(), "persisted timestamp");
 
     drop(reopened);
     std::fs::remove_file(&path).assert_value();

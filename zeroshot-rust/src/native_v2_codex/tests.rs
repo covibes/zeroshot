@@ -6,10 +6,18 @@ mod cancellation;
 mod correction;
 #[path = "tests/environment.rs"]
 mod environment;
+#[path = "tests/large_output.rs"]
+mod large_output;
+#[path = "tests/large_prompt.rs"]
+mod large_prompt;
 #[path = "tests/local_identity.rs"]
 mod local_identity;
+#[path = "tests/process_start.rs"]
+mod process_start;
 #[path = "tests/retry.rs"]
 mod retry;
+#[path = "tests/session_id.rs"]
+mod session_id;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -62,13 +70,14 @@ test -n "$schema_path"
 /usr/bin/printf 'schema=%s\n' "$(/usr/bin/cat "$schema_path")" >> "$CAPTURE_PATH"
 
 resumed=false
+thread_id=${THREAD_ID-thread-123}
 for argument in "$@"; do
   if [ "$argument" = "resume" ]; then
     resumed=true
   fi
 done
 
-/usr/bin/printf '%s\n' '{"type":"thread.started","thread_id":"thread-123"}'
+/usr/bin/printf '{"type":"thread.started","thread_id":"%s"}\n' "$thread_id"
 /usr/bin/printf '%s\n' '{"type":"turn.started"}'
 if [ "${OPENROUTER_API_KEY-unset}" != unset ]; then
   /usr/bin/printf '%s%s\n' \
@@ -97,8 +106,24 @@ if [ "${SLOW_RUN-false}" = true ]; then
   /usr/bin/printf '%s\n' "$$" > "$PID_PATH"
   /usr/bin/sleep 30
 fi
-/usr/bin/printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,"output_tokens":2}}'
+/usr/bin/printf '%s%s\n' \
+  '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":1,' \
+  '"cache_write_input_tokens":3,"output_tokens":2}}'
 "#;
+
+const SUCCESS_OUTPUT_SCRIPT: &str = r#"
+/usr/bin/printf '%s%s\n' \
+  '{"type":"item.completed","item":{"type":"agent_message",' \
+  '"text":"{\"response\":{\"answer\":42}}"}}'
+/usr/bin/printf '%s\n' '{"type":"turn.completed"}'
+"#;
+
+fn script_with_success(prefix: &str) -> String {
+    let mut script = String::with_capacity(prefix.len() + SUCCESS_OUTPUT_SCRIPT.len());
+    script.push_str(prefix);
+    script.push_str(SUCCESS_OUTPUT_SCRIPT);
+    script
+}
 
 fn scripted_adapter(
     directory: &TestDirectory,
@@ -222,8 +247,35 @@ async fn openai_runtime(
     scope: SessionScope,
     environment: &[&str],
 ) -> (AdmittedRun, NativeNodeRunner) {
-    let adapter = scripted_adapter(directory, CodexProvider::OpenAi);
-    let admitted = admitted(binding(scope, environment), CodexProvider::OpenAi).await;
+    openai_scripted_runtime(
+        directory,
+        OpenAiScript {
+            scope,
+            environment,
+            name: "codex-script",
+            body: SCRIPT,
+        },
+    )
+    .await
+}
+
+struct OpenAiScript<'a> {
+    scope: SessionScope,
+    environment: &'a [&'a str],
+    name: &'a str,
+    body: &'a str,
+}
+
+async fn openai_scripted_runtime(
+    directory: &TestDirectory,
+    script: OpenAiScript<'_>,
+) -> (AdmittedRun, NativeNodeRunner) {
+    let adapter = scripted_adapter_with(directory, CodexProvider::OpenAi, script.name, script.body);
+    let admitted = admitted(
+        binding(script.scope, script.environment),
+        CodexProvider::OpenAi,
+    )
+    .await;
     let runtime = runner(&admitted, adapter);
     (admitted, runtime)
 }
@@ -238,6 +290,37 @@ async fn start(
         .start(request(admitted, execution, values))
         .await
         .assert_value()
+}
+
+async fn complete_with_logs(
+    mut handle: NodeHandle,
+) -> (String, Result<WorkerOutcome, NodeRunnerError>) {
+    let mut output = handle.take_initial_output().assert_value();
+    let (logs, completion) = tokio::join!(
+        async {
+            let mut logs = Vec::new();
+            while let Ok(entry) = output.recv_output().await {
+                logs.push(entry);
+            }
+            logs
+        },
+        handle.completion()
+    );
+    let logs = logs
+        .iter()
+        .map(|entry| entry.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (logs, completion.map(|completion| completion.outcome))
+}
+
+async fn complete_verified_with_logs(handle: NodeHandle) -> String {
+    let (logs, completion) = complete_with_logs(handle).await;
+    assert!(matches!(
+        completion.assert_value(),
+        WorkerOutcome::Verified { output, .. } if output == json!({"answer": 42})
+    ));
+    logs
 }
 
 fn assert_schema_capture(capture: &str) {
@@ -342,7 +425,7 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
             "inputTokens": 1,
             "outputTokens": 2,
             "cacheReadInputTokens": 1,
-            "cacheCreationInputTokens": null
+            "cacheCreationInputTokens": 3
         })
     );
     assert_eq!(attach.recv().await, Err(AttachReceiveError::Closed));
@@ -404,35 +487,4 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
             .iter()
             .all(|home| home.ends_with("writer-node-instance-1"))
     );
-}
-
-#[tokio::test]
-async fn malformed_output_stops_after_two_correction_turns() {
-    let directory = TestDirectory::new("codex-malformed-limit");
-    let capture = directory.child("capture");
-    let (admitted, runtime) = openai_runtime(
-        &directory,
-        SessionScope::Execution,
-        &["ALWAYS_MALFORMED", "CAPTURE_PATH", "OPENAI_API_KEY"],
-    )
-    .await;
-    let mut handle = start(
-        &runtime,
-        &admitted,
-        1,
-        &[
-            ("ALWAYS_MALFORMED", "true".to_owned()),
-            ("CAPTURE_PATH", capture.display().to_string()),
-            ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
-        ],
-    )
-    .await;
-
-    assert_eq!(
-        handle.completion().await.assert_value().outcome,
-        WorkerOutcome::malformed()
-    );
-    let capture = fs::read_to_string(capture).assert_value();
-    assert_eq!(capture.matches("prompt=").count(), 3);
-    assert_eq!(capture.matches("arg=resume").count(), 2);
 }

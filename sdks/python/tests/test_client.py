@@ -87,6 +87,7 @@ def test_direct_target_uses_the_same_client_and_durable_run_surface(fake_native:
             assert summaries[0].phase == "admitted"
             logs = [event async for event in run.logs(after="v2:2", execution="worker-1")]
             assert [(event.execution, event.message) for event in logs] == [("worker-1", "done")]
+            assert logs[0].timestamp == 1_725_000_000_123
             result = await run.force_stop()
             assert not result.succeeded
             assert result.failure == "force_stopped"

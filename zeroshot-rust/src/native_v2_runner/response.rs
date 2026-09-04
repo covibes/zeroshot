@@ -222,7 +222,7 @@ impl AgentResponseState {
         self.prompt = prompt;
     }
 
-    pub(crate) fn accept(
+    pub(crate) async fn accept(
         &mut self,
         provider: &str,
         control: &DriverControl,
@@ -231,10 +231,12 @@ impl AgentResponseState {
         match response {
             AgentResponse::Complete(outcome) => Ok(Some(outcome)),
             AgentResponse::Correction(_) if self.corrections == MAX_OUTPUT_CORRECTIONS => {
-                control.emit(LiveOutput::new(
-                    LiveOutputStream::System,
-                    format!("{provider} final output remained malformed after two corrections"),
-                )?)?;
+                control
+                    .emit(LiveOutput::new(
+                        LiveOutputStream::System,
+                        format!("{provider} final output remained malformed after two corrections"),
+                    )?)
+                    .await?;
                 Ok(Some(WorkerOutcome::malformed()))
             }
             AgentResponse::Correction(correction) => {

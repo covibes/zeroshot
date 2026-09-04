@@ -74,7 +74,11 @@ impl NodeRunner for TestRunner {
             match result {
                 Result::Complete => {
                     bridge
-                        .emit(LiveOutput::new(LiveOutputStream::Output, "working").assert_value())
+                        .emit_at(
+                            LiveOutput::new(LiveOutputStream::Output, "working").assert_value(),
+                            UnixTimestampMillis::new(1_234_567).assert_value(),
+                        )
+                        .await
                         .assert_value();
                     bridge
                         .record_token_usage(Some(TokenUsageDelta {
@@ -83,6 +87,7 @@ impl NodeRunner for TestRunner {
                             cache_read_input_tokens: Some(TokenCount::new(20).assert_value()),
                             cache_creation_input_tokens: None,
                         }))
+                        .await
                         .assert_value();
                     bridge.finish(Ok(NodeCompletion {
                         reference,
@@ -114,10 +119,14 @@ async fn proxy_preserves_durable_live_and_normalized_completion() {
     let mut live = handle.attach();
     local.proceed.notify_one();
 
-    let durable_output = durable.recv_output().await.assert_value();
+    let (durable_output, timestamp) = match durable.recv().await.assert_value() {
+        DurableNodeEvent::Output { output, timestamp } => (output, timestamp),
+        DurableNodeEvent::TokenUsage(_) => None.assert_value(),
+    };
     let live_output = live.recv().await.assert_value();
     assert_eq!(durable_output.text, "working");
     assert_eq!(live_output, durable_output);
+    assert_eq!(timestamp.get(), 1_234_567);
     let usage = durable.recv_usage().await.assert_value().assert_value();
     assert_eq!(usage.input_tokens.get(), 31);
     assert_eq!(usage.output_tokens.get(), 7);
@@ -193,7 +202,7 @@ impl CapsuleNodeChannel for BrokenChannel {
         &self,
         _request: NodeRunRequest,
     ) -> Result<CapsuleExecutionStream, CapsuleConnectionError> {
-        let (events, receiver) = mpsc::unbounded_channel();
+        let (events, receiver) = mpsc::channel(1);
         drop(events);
         Ok(CapsuleExecutionStream::from_receiver(receiver))
     }
@@ -274,7 +283,7 @@ async fn start_loss_promotes_the_runner_loss_signal() {
 #[derive(Clone)]
 struct HangingControlChannel {
     loss: watch::Sender<bool>,
-    streams: Arc<StdMutex<Vec<mpsc::UnboundedSender<CapsuleNodeEvent>>>>,
+    streams: Arc<StdMutex<Vec<mpsc::Sender<CapsuleNodeEvent>>>>,
 }
 
 impl HangingControlChannel {
@@ -293,7 +302,7 @@ impl CapsuleNodeChannel for HangingControlChannel {
         &self,
         _request: NodeRunRequest,
     ) -> Result<CapsuleExecutionStream, CapsuleConnectionError> {
-        let (events, receiver) = mpsc::unbounded_channel();
+        let (events, receiver) = mpsc::channel(1);
         self.streams.lock().assert_value().push(events);
         Ok(CapsuleExecutionStream::from_receiver(receiver))
     }
@@ -314,6 +323,7 @@ impl CapsuleNodeChannel for HangingControlChannel {
 fn hanging_proxy() -> RemoteCapsuleNodeRunner {
     RemoteCapsuleNodeRunner::new(Arc::new(HangingControlChannel::new()))
         .with_control_timeout(Duration::from_millis(20))
+        .with_close_timeout(Duration::from_millis(20))
 }
 
 #[tokio::test]
@@ -353,7 +363,11 @@ async fn hanging_close_is_bounded_and_promotes_loss() {
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
+#[path = "tests/backpressure.rs"]
+mod backpressure;
 #[path = "tests/filesystem.rs"]
 mod filesystem;
+#[path = "tests/start_close.rs"]
+mod start_close;
 
 use openengine_cluster_testkit::assertions::{AssertValue, AssertError};

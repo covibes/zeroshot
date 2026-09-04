@@ -94,12 +94,7 @@ async fn stdout_queue_applies_capacity_sixty_four_backpressure() {
         .assert_value_with("release must not depend on stdout capacity")
         .assert_value();
     assert_eq!(released.cleanup, ProcessCleanupEvidence::Reaped);
-    assert!(
-        released
-            .post_launch_error
-            .as_deref()
-            .is_some_and(|error| error.contains("drain timed out"))
-    );
+    assert_eq!(released.post_launch_error, None);
     let _ = fs::remove_file(marker);
 }
 
@@ -152,7 +147,7 @@ async fn cancellation_and_child_exit_races_settle_once() {
             .assert_value_with("child-exit race must settle")
             .assert_value();
         if completion.cancelled {
-            assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
+            assert!(completion.cleanup.proves_tree_empty());
         } else {
             assert_eq!(completion.exit_code, Some(0));
         }
@@ -331,6 +326,7 @@ async fn stderr_keeps_only_the_bounded_diagnostic_tail() {
         .assert_value();
     assert_eq!(completion.stderr_tail.len(), MAX_PROCESS_DIAGNOSTIC_BYTES);
     assert!(completion.stderr_tail.ends_with(b"TAIL"));
+    assert!(completion.stderr_tail_truncated);
     assert_eq!(completion.post_launch_error, None);
 }
 
