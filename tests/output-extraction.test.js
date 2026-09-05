@@ -337,6 +337,18 @@ function defineDirectJsonExtractionTests() {
       const result = extractDirectJson(text);
       assert.deepStrictEqual(result, { summary: 'Fixed bugs', errors: [] });
     });
+
+    it('should reject CLI metadata and not fall through to nested usage object', function () {
+      const text = '{"duration_ms":100,"session_id":"test","usage":{"input_tokens":50}}';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
+
+    it('should reject provider protocol event records', function () {
+      const text = '{"type":"item.completed","index":0,"payload":"data"}';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
   });
 }
 

@@ -162,13 +162,83 @@ const CLI_METADATA_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 function isCliMetadata(value: JsonRecord): boolean {
-  if (value.type === 'result') return true;
+  if (typeof value.type === 'string') {
+    if (
+      value.type === 'result' ||
+      value.type.startsWith('item.') ||
+      value.type.startsWith('turn.') ||
+      value.type.startsWith('thread.') ||
+      value.type.startsWith('assistant.') ||
+      value.type.startsWith('tool.')
+    ) {
+      return true;
+    }
+  }
 
   let metadataFieldCount = 0;
   for (const key of Object.keys(value)) {
     if (CLI_METADATA_FIELDS.has(key)) metadataFieldCount++;
   }
   return metadataFieldCount >= 2;
+}
+
+function parseBalancedCandidate(text: string, start: number, end: number): JsonRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, end));
+    if (isObjectRecord(parsed) && !isCliMetadata(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Not a valid JSON object
+  }
+  return null;
+}
+
+function braceDepthDelta(ch: string | undefined): number {
+  if (ch === '{') return 1;
+  if (ch === '}') return -1;
+  return 0;
+}
+
+function findBalancedCandidateEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let j = start; j < text.length; j++) {
+    const ch = text[j];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else {
+      depth += braceDepthDelta(ch);
+      if (depth === 0) return j + 1;
+    }
+  }
+  return -1;
+}
+
+function scanBalancedJsonObject(text: string): JsonRecord | null {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    const end = findBalancedCandidateEnd(text, i);
+    if (end !== -1) {
+      const candidate = parseBalancedCandidate(text, i, end);
+      if (candidate) return candidate;
+    }
+  }
+  return null;
 }
 
 function extractDirectJson(text: unknown): JsonRecord | null {
@@ -179,55 +249,11 @@ function extractDirectJson(text: unknown): JsonRecord | null {
 
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    if (isObjectRecord(parsed) && !isCliMetadata(parsed)) return parsed;
+    if (!isObjectRecord(parsed) || isCliMetadata(parsed)) return null;
+    return parsed;
   } catch {
-    // Proceed to scanning embedded objects
+    return scanBalancedJsonObject(trimmed);
   }
-
-  // Scan for balanced JSON object candidates in surrounding text
-  for (let i = 0; i < trimmed.length; i++) {
-    if (trimmed[i] !== '{') continue;
-
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-
-    for (let j = i; j < trimmed.length; j++) {
-      const ch = trimmed[j];
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (ch === '\\' && inString) {
-        escape = true;
-        continue;
-      }
-      if (ch === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (!inString) {
-        if (ch === '{') {
-          depth++;
-        } else if (ch === '}') {
-          depth--;
-          if (depth === 0) {
-            try {
-              const candidate = trimmed.slice(i, j + 1);
-              const parsed: unknown = JSON.parse(candidate);
-              if (isObjectRecord(parsed) && !isCliMetadata(parsed)) {
-                return parsed;
-              }
-            } catch {
-              // Not a valid JSON object, continue search
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return null;
 }
 
 function hasFatalStandaloneOutput(output: unknown): boolean {
