@@ -2,8 +2,10 @@ import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { StringDecoder } from 'string_decoder';
 import {
+  classifyProviderError,
   detectProviderFatalError,
   detectProviderStreamingModeError,
+  redactObject,
   recoverProviderStructuredOutput,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
@@ -21,6 +23,304 @@ export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitializ
 
 const MAX_CODEX_CONTROL_RECORD_BYTES = 64 * 1024;
 const MAX_WATCHER_CONTROL_RECORD_BYTES = 1024 * 1024;
+const MAX_PROVIDER_DIAGNOSTIC_BYTES = 2048;
+const MAX_PERSISTED_PROVIDER_ERROR_BYTES = 4096;
+const PROVIDER_DIAGNOSTIC_TRUNCATION_SUFFIX = '… [truncated; complete output in task log]';
+
+const ACTIONABLE_PROVIDER_FAILURE_PATTERNS = [
+  /(?:^|[^a-z])(?:error|failed|failure|fatal|exception)(?:[^a-z]|$)/i,
+  /\b(?:unauthorized|forbidden|denied|refused|unavailable|timeout|timed out)\b/i,
+  /\b(?:too many requests|try again|no capacity available|quota exceeded)\b/i,
+  /\b(?:command|model) not found\b/i,
+  /\b(?:econnreset|econnrefused|etimedout|eai_again)\b/i,
+  /\b(?:http|status(?: code)?)\s*[:=]?\s*[45]\d\d\b/i,
+  /\b(?:missing|no)\s+(?:key|api\s+key)\b/i,
+  /\b(?:login|authentication)\s+(?:required|failed|failure|denied)\b/i,
+  /invalid[_ -]?(?:api[_ -]?key|argument|request)/i,
+  /(?:unsupported[_ -]?client|ineligible[_ -]?tier|resource[_ -]?exhausted)/i,
+  /(?:rate[_ -]?limit|insufficient[_ -]?quota|context[_ -]?length[_ -]?exceeded)/i,
+];
+
+function truncateUtf8(value, maxBytes, suffix = PROVIDER_DIAGNOSTIC_TRUNCATION_SUFFIX) {
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+
+  const suffixBytes = Buffer.byteLength(suffix);
+  const contentBudget = Math.max(0, maxBytes - suffixBytes);
+  let bytes = 0;
+  let prefix = '';
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > contentBudget) break;
+    prefix += character;
+    bytes += characterBytes;
+  }
+  return `${prefix}${suffix}`;
+}
+
+const SENSITIVE_ASSIGNMENT_KEYS = new Set([
+  'access_token',
+  'api_key',
+  'auth',
+  'authorization',
+  'aws_secret_access_key',
+  'cookie',
+  'password',
+  'secret',
+  'session',
+  'session_id',
+  'session_key',
+  'sessionid',
+  'signature',
+  'set_cookie',
+  'token',
+]);
+
+function isSensitiveAssignmentKey(key) {
+  const normalized = key.toLowerCase().replace(/[ -]+/g, '_');
+  if (SENSITIVE_ASSIGNMENT_KEYS.has(normalized)) return true;
+  return [...SENSITIVE_ASSIGNMENT_KEYS].some((suffix) => normalized.endsWith(`_${suffix}`));
+}
+
+function unquotedAssignmentValueEnd(value, offset) {
+  let index = offset;
+  while (index < value.length && !/[\s,;&#]/.test(value[index])) index += 1;
+  return index;
+}
+
+function assignmentValueEnd(value, offset) {
+  const quote = value[offset];
+  if (quote !== '"' && quote !== "'") return unquotedAssignmentValueEnd(value, offset);
+  let cursor = offset + 1;
+  while (cursor < value.length) {
+    if (value[cursor] === quote) return cursor + 1;
+    cursor += value[cursor] === '\\' ? 2 : 1;
+  }
+  return value.length;
+}
+
+function sensitiveAssignmentValueEnd(value, offset) {
+  const authenticationScheme = /^(?:basic|bearer)\s+/i.exec(value.slice(offset));
+  if (!authenticationScheme) return assignmentValueEnd(value, offset);
+  return assignmentValueEnd(value, offset + authenticationScheme[0].length);
+}
+
+function redactStandaloneBearerCredentials(value) {
+  const bearerPattern = /\bBearer\s+/gi;
+  let redacted = '';
+  let retainedOffset = 0;
+  while (bearerPattern.exec(value) !== null) {
+    const valueOffset = bearerPattern.lastIndex;
+    const valueEnd = assignmentValueEnd(value, valueOffset);
+    if (valueEnd === valueOffset) continue;
+    redacted += `${value.slice(retainedOffset, valueOffset)}[REDACTED]`;
+    retainedOffset = valueEnd;
+    bearerPattern.lastIndex = valueEnd;
+  }
+  return `${redacted}${value.slice(retainedOffset)}`;
+}
+
+function redactCookieHeaders(value) {
+  const header = /\b(?:set-cookie|cookie)\s*:\s*/i.exec(value);
+  if (!header) return value;
+  return `${value.slice(0, header.index + header[0].length)}[REDACTED]`;
+}
+
+function redactSensitiveAssignments(value) {
+  const assignmentPattern = /\b(api key|access token|[a-z][a-z0-9_-]*)\s*[:=]\s*/gi;
+  let redacted = '';
+  let retainedOffset = 0;
+  let match;
+  while ((match = assignmentPattern.exec(value)) !== null) {
+    if (!isSensitiveAssignmentKey(match[1])) continue;
+    const valueOffset = assignmentPattern.lastIndex;
+    const valueEnd = sensitiveAssignmentValueEnd(value, valueOffset);
+    if (valueEnd === valueOffset) continue;
+    redacted += `${value.slice(retainedOffset, valueOffset)}[REDACTED]`;
+    retainedOffset = valueEnd;
+    assignmentPattern.lastIndex = valueEnd;
+  }
+  return `${redacted}${value.slice(retainedOffset)}`;
+}
+
+function redactProviderDiagnostic(value) {
+  const providerRedacted = redactObject({ diagnostic: value }).value;
+  const knownSecretRedacted =
+    typeof providerRedacted?.diagnostic === 'string' ? providerRedacted.diagnostic : value;
+  return redactCookieHeaders(
+    redactStandaloneBearerCredentials(redactSensitiveAssignments(knownSecretRedacted))
+  )
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, '[REDACTED]')
+    .replace(/([?&](?:token|api[_-]?key|key|signature|x-amz-signature)=)[^&#\s]*/gi, '$1[REDACTED]')
+    .replace(/:\/\/[^\s/:@]+:[^\s/@]+@/g, '://[REDACTED]@');
+}
+
+function skipAnsiCsi(value, offset) {
+  let index = offset;
+  while (
+    index < value.length &&
+    value.charCodeAt(index) >= 0x30 &&
+    value.charCodeAt(index) <= 0x3f
+  ) {
+    index += 1;
+  }
+  while (
+    index < value.length &&
+    value.charCodeAt(index) >= 0x20 &&
+    value.charCodeAt(index) <= 0x2f
+  ) {
+    index += 1;
+  }
+  if (index < value.length && value.charCodeAt(index) >= 0x40 && value.charCodeAt(index) <= 0x7e) {
+    index += 1;
+  }
+  return index;
+}
+
+function skipAnsiOsc(value, offset) {
+  let index = offset;
+  while (index < value.length) {
+    const code = value.charCodeAt(index);
+    if (code === 0x07 || code === 0x9c) return index + 1;
+    if (code === 0x1b && value.charCodeAt(index + 1) === 0x5c) return index + 2;
+    index += 1;
+  }
+  return index;
+}
+
+function diagnosticCharacter(value, index) {
+  const code = value.charCodeAt(index);
+  if (code === 9) return ' ';
+  if (code >= 32 && !(code >= 127 && code <= 159)) return value[index];
+  return '';
+}
+
+function stripAnsiAndControlCharacters(value) {
+  let stripped = '';
+  for (let index = 0; index < value.length; ) {
+    const code = value.charCodeAt(index);
+    if (code === 0x1b && value.charCodeAt(index + 1) === 0x5b) {
+      index = skipAnsiCsi(value, index + 2);
+      continue;
+    }
+    if (code === 0x9b) {
+      index = skipAnsiCsi(value, index + 1);
+      continue;
+    }
+    if (code === 0x1b && value.charCodeAt(index + 1) === 0x5d) {
+      index = skipAnsiOsc(value, index + 2);
+      continue;
+    }
+    if (code === 0x9d) {
+      index = skipAnsiOsc(value, index + 1);
+      continue;
+    }
+    stripped += diagnosticCharacter(value, index);
+    index += 1;
+  }
+  return stripped;
+}
+
+export function sanitizeProviderDiagnostic(value) {
+  const redactedRecords = String(value)
+    .split(/\r\n|\n|\r/)
+    .map((record) => redactProviderDiagnostic(stripAnsiAndControlCharacters(record)))
+    .join(' ');
+  return truncateUtf8(redactedRecords.replace(/\s+/g, ' ').trim(), MAX_PROVIDER_DIAGNOSTIC_BYTES);
+}
+
+function providerFailureSignalScore(diagnostic) {
+  return ACTIONABLE_PROVIDER_FAILURE_PATTERNS.reduce(
+    (score, pattern) => score + (pattern.test(diagnostic) ? 1 : 0),
+    0
+  );
+}
+
+function fallbackProviderErrorClassification() {
+  return { retryable: true, kind: 'unknown-retryable' };
+}
+
+function classifyWatcherProviderError(providerName, diagnostic) {
+  try {
+    return classifyProviderError(providerName, diagnostic);
+  } catch {
+    return fallbackProviderErrorClassification();
+  }
+}
+
+function createProviderDiagnosticCapture() {
+  let latest = null;
+  let best = null;
+  let sequence = 0;
+
+  function capture(line) {
+    const diagnostic = sanitizeProviderDiagnostic(line);
+    if (!diagnostic) return;
+    sequence += 1;
+    const candidate = {
+      diagnostic,
+      failureScore: providerFailureSignalScore(diagnostic),
+      sequence,
+    };
+    latest = candidate;
+    if (
+      best === null ||
+      candidate.failureScore > best.failureScore ||
+      (candidate.failureScore === best.failureScore && candidate.sequence > best.sequence)
+    ) {
+      best = candidate;
+    }
+  }
+
+  function select() {
+    if (best?.failureScore > 0) return best;
+    return latest;
+  }
+
+  return { capture, select };
+}
+
+function formatProviderExitError(
+  providerName,
+  resolvedCode,
+  capturedDiagnostic,
+  persistProviderDiagnostic
+) {
+  const diagnostic = capturedDiagnostic?.diagnostic || 'No provider diagnostic was captured';
+  const providerClassification = classifyWatcherProviderError(providerName, diagnostic);
+  const classification =
+    capturedDiagnostic?.failureScore > 0
+      ? providerClassification
+      : fallbackProviderErrorClassification();
+  const disposition = classification.retryable ? 'retryable' : 'permanent';
+  const exitCode = resolvedCode === null || resolvedCode === undefined ? 'unknown' : resolvedCode;
+  const diagnosticSuffix = persistProviderDiagnostic ? `: ${diagnostic}` : '';
+  return truncateUtf8(
+    `Provider ${providerName} exited with code ${exitCode} ` +
+      `(${disposition}; ${classification.kind})${diagnosticSuffix}`,
+    MAX_PERSISTED_PROVIDER_ERROR_BYTES
+  );
+}
+
+function resolveWatcherCompletionError({
+  fatalError,
+  sessionIdentityError,
+  resolvedCode,
+  signal,
+  providerName,
+  providerDiagnostics,
+  persistProviderDiagnostic,
+}) {
+  if (fatalError) return fatalError;
+  if (sessionIdentityError) return sessionIdentityError;
+  if (resolvedCode === 0) return null;
+  if (signal) return `Killed by ${signal}`;
+  return formatProviderExitError(
+    providerName,
+    resolvedCode,
+    providerDiagnostics.select(),
+    persistProviderDiagnostic
+  );
+}
 
 export function spawnWatcherProvider(command, finalArgs, options) {
   return spawn(command, finalArgs, {
@@ -45,7 +345,7 @@ export async function terminateWatcherProvider(providerProcess, options = {}) {
   return result.terminated;
 }
 
-function createCodexOutputPassthrough({ log, captureProviderSession }) {
+function createCodexOutputPassthrough({ log, captureProviderSession, captureDiagnostic }) {
   const decoder = new StringDecoder('utf8');
   let atLineStart = true;
   let inspectable = true;
@@ -64,7 +364,11 @@ function createCodexOutputPassthrough({ log, captureProviderSession }) {
   }
 
   function finishLine() {
-    if (inspectable) captureProviderSession(inspectionParts.join(''));
+    if (inspectable) {
+      const line = inspectionParts.join('');
+      captureProviderSession(line);
+      captureDiagnostic(line);
+    }
     atLineStart = true;
     inspectable = true;
     inspectionBytes = 0;
@@ -360,10 +664,17 @@ export function createWatcherOutputRuntime({
   let finalResultJson = null;
   let streamingModeError = null;
   let fatalError = null;
+  const providerDiagnostics = createProviderDiagnosticCapture();
   log(formatTaskLogMarker(Date.now()));
   const captureProviderSession = providerSessionCapture?.captureLine || (() => {});
   const codexOutputPassthrough =
-    providerName === 'codex' ? createCodexOutputPassthrough({ log, captureProviderSession }) : null;
+    providerName === 'codex'
+      ? createCodexOutputPassthrough({
+          log,
+          captureProviderSession,
+          captureDiagnostic: providerDiagnostics.capture,
+        })
+      : null;
   const outputPassthrough = codexOutputPassthrough
     ? null
     : createBoundedLinePassthrough({
@@ -381,7 +692,10 @@ export function createWatcherOutputRuntime({
     // Stderr must never be mistaken for provider protocol output. Fatal detection still receives
     // the raw line through handleLine; only the persisted task-log representation is tagged.
     linePrefix: '[ZEROSHOT][PROVIDER_STDERR] ',
-    handleLine: (line, timestamp) => maybeHandleFatalError(line, timestamp, true),
+    handleLine: (line, timestamp) => {
+      providerDiagnostics.capture(line);
+      maybeHandleFatalError(line, timestamp, true);
+    },
   });
 
   function maybeHandleFatalError(line, timestamp, rawPersisted = false) {
@@ -423,6 +737,7 @@ export function createWatcherOutputRuntime({
       return;
     }
     captureProviderSession(line);
+    providerDiagnostics.capture(line);
     if (silentJsonMode && !line.trim()) return;
     // Pi reserves stdout for JSON lifecycle events. Error text inside an assistant message may be
     // followed by an automatic retry, so only Pi stderr can prove a pre-agent startup failure.
@@ -493,10 +808,15 @@ export function createWatcherOutputRuntime({
     return {
       resolvedCode,
       status: resolvedCode === 0 ? 'completed' : 'failed',
-      error:
-        fatalError ||
-        sessionIdentityError ||
-        (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      error: resolveWatcherCompletionError({
+        fatalError,
+        sessionIdentityError,
+        resolvedCode,
+        signal,
+        providerName,
+        providerDiagnostics,
+        persistProviderDiagnostic: config.persistProviderDiagnostic !== false,
+      }),
       terminalUpdates: providerSessionCapture?.getCompletionUpdate(resolvedCode) || {},
     };
   }

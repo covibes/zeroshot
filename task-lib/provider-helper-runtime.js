@@ -3,14 +3,18 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 let helper;
+let redactObject;
 try {
   helper = require('../lib/agent-cli-provider');
+  ({ redactObject } = require('../lib/agent-cli-provider/redaction.js'));
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   throw new Error(
     `Provider helper build missing. Run npm run build:agent-cli-provider. ${message}`
   );
 }
+
+export { redactObject };
 
 export const {
   ABORT_GRACE_MS,

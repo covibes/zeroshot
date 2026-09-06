@@ -621,6 +621,12 @@ function buildWatcherConfig(
     jsonSchema,
     silentJsonOutput: options.silentJsonOutput || false,
     structuredOutputRecovery: options.structuredOutputRecovery === true,
+    // Cluster agents already project provider failures through the bounded receipt/error envelope.
+    // Keep their task-row error free of raw diagnostic semantics; standalone task status/inspect
+    // retain the sanitized diagnostic requested by issue #873.
+    persistProviderDiagnostic: !(
+      process.env.ZEROSHOT_CLUSTER_ID?.trim() && process.env.ZEROSHOT_AGENT_ID?.trim()
+    ),
     provider: providerName,
     command: commandSpec.binary,
     env: commandSpec.env || {},
