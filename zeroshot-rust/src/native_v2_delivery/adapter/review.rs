@@ -49,7 +49,7 @@ pub(super) async fn review_completion(
 ) -> Result<ReviewStep, DeliveryStop> {
     emit(drive.control, diagnostic).await?;
     validate_delivery_contract(drive.mode, drive.response).map_err(DeliveryStop::Runner)?;
-    delivery_outcome(drive.mode, label, drive.review, diagnostic)
+    delivery_outcome(drive.mode, label, &drive.review, diagnostic)
         .map(ReviewStep::Complete)
         .map_err(DeliveryStop::Runner)
 }

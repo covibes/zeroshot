@@ -16,6 +16,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     squashMergeAllowed
     rebaseMergeAllowed
     pullRequest(number: $number) {
+      id
       number
       state
       merged
@@ -68,7 +69,11 @@ pub(super) struct PolicySnapshot {
     pub(super) state: GitHubReviewState,
     pub(super) failed_job_ids: Vec<u64>,
     pub(super) merge_method: Option<MergeMethod>,
+    pub(super) head_update: Option<HeadUpdate>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HeadUpdate(pub(super) String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MergeMethod {
@@ -81,6 +86,7 @@ pub(super) enum MergeMethod {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct PullRequestPolicyWire {
+    id: String,
     number: u64,
     state: String,
     merged: bool,
@@ -323,7 +329,8 @@ fn require_identity<'a>(
 }
 
 fn same_policy(left: &PullRequestPolicyWire, right: &PullRequestPolicyWire) -> bool {
-    left.number == right.number
+    left.id == right.id
+        && left.number == right.number
         && left.state == right.state
         && left.merged == right.merged
         && left.merge_commit == right.merge_commit
@@ -372,6 +379,7 @@ fn classify_snapshot(
             },
             failed_job_ids: evidence.failed_job_ids,
             merge_method: merge_method(repository, pull_request),
+            head_update: head_update(pull_request),
         });
     }
     let checks = match (merge_gate_ready(pull_request), evidence.checks) {
@@ -383,7 +391,17 @@ fn classify_snapshot(
         state: GitHubReviewState::Open { checks },
         failed_job_ids: Vec::new(),
         merge_method: merge_method(repository, pull_request),
+        head_update: head_update(pull_request),
     })
+}
+
+fn head_update(pull_request: &PullRequestPolicyWire) -> Option<HeadUpdate> {
+    (!pull_request.is_merge_queue_enabled
+        && !pull_request.is_draft
+        && !pull_request.is_in_merge_queue
+        && pull_request.mergeable == "MERGEABLE"
+        && pull_request.merge_state_status == "BEHIND")
+        .then(|| HeadUpdate(pull_request.id.clone()))
 }
 
 fn merge_method(
@@ -420,6 +438,7 @@ fn terminal_snapshot(
         state,
         failed_job_ids: Vec::new(),
         merge_method: None,
+        head_update: None,
     }))
 }
 
@@ -437,6 +456,7 @@ fn merged_snapshot(
             state: GitHubReviewState::Merged { merge_revision },
             failed_job_ids: Vec::new(),
             merge_method: None,
+            head_update: None,
         })
         .ok_or(GitHubAuthorityError::Rejected)
 }
@@ -459,6 +479,7 @@ fn waiting_snapshot() -> PolicySnapshot {
         },
         failed_job_ids: Vec::new(),
         merge_method: None,
+        head_update: None,
     }
 }
 

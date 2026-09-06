@@ -64,6 +64,7 @@ fn policy_page(
                 "squashMergeAllowed": true,
                 "rebaseMergeAllowed": true,
                 "pullRequest": {
+                    "id": "PR_node_17",
                     "number": 17,
                     "state": "OPEN",
                     "merged": false,
@@ -314,6 +315,7 @@ fn clean_repository_without_required_checks_is_ready() {
                 checks: GitHubChecks::NotRequired
             }
         );
+        assert_eq!(snapshot.head_update.is_some(), merge_state == "BEHIND");
     }
 }
 
@@ -348,6 +350,7 @@ fn merge_queue_policy_reaches_native_submission_without_ci_special_cases() {
             }
         );
         assert_eq!(snapshot.merge_method, Some(MergeMethod::Queue));
+        assert!(snapshot.head_update.is_none());
     }
 }
 

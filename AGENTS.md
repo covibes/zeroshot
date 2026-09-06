@@ -43,7 +43,9 @@ created). Agent output gets at most two correction turns before `malformed`. Git
 GitHub's aggregate pull-request merge policy and required-context declarations as authority. It
 waits through non-terminal policy states and merge deferrals without a work-duration limit, uses
 the provider-native merge operation so merge queues remain transparent, and declares success only
-after an exact merged observation.
+after an exact merged observation. Outside merge queues, strict branch freshness advances only by
+a provider-authorized compare-and-swap response; the exact returned head is adopted in the local
+workspace before delivery continues, and any untrusted head change is rejected.
 
 Native-v2 Claude and Codex JSONL readers never cap cumulative stdout bytes or event counts. They
 share only a 64 MiB unfinished-record allocation guard, tolerate whitespace and a complete final

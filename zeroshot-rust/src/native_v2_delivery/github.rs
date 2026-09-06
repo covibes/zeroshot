@@ -12,8 +12,8 @@ use crate::native_v2_delivery::git_auth::encode_basic_credential;
 
 use super::{
     GitHubAuthorityError, GitHubChecks, GitHubCredential, GitHubDeliveryAuthority,
-    GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt,
-    GitHubReviewRequest, GitHubReviewState, valid_revision,
+    GitHubHeadUpdateOutcome, GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation,
+    GitHubReviewReceipt, GitHubReviewRequest, GitHubReviewState, valid_head_update, valid_revision,
 };
 
 // A GitHub page may contain 100 checks or comments, including bounded user/check
@@ -201,9 +201,13 @@ impl GhCliDeliveryAuthority {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
-        match self.policy_snapshot(review, credential).await?.state {
+        let snapshot = self.policy_snapshot(review, credential).await?;
+        match snapshot.state {
             GitHubReviewState::Merged { .. } => Ok(GitHubMergeRequestOutcome::Accepted),
             GitHubReviewState::Conflict => Ok(GitHubMergeRequestOutcome::Conflict),
+            GitHubReviewState::Open { .. } if snapshot.head_update.is_some() => {
+                Ok(GitHubMergeRequestOutcome::HeadUpdateRequired)
+            }
             GitHubReviewState::Open { .. } => Ok(GitHubMergeRequestOutcome::Pending),
             GitHubReviewState::Closed => Err(GitHubAuthorityError::Rejected),
         }
@@ -217,26 +221,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         request: &GitHubPushRequest,
         credential: GitHubCredential<'_>,
     ) -> Result<(), GitHubAuthorityError> {
-        let mut command = clean_command(&self.config, &self.config.git_program, credential);
-        let authorization = format!(
-            "AUTHORIZATION: basic {}",
-            encode_basic_credential(credential.expose())
-        );
+        let mut command = authenticated_git_command(&self.config, &request.workspace, credential);
         command
-            .env("GIT_CONFIG_COUNT", "2")
-            .env("GIT_CONFIG_KEY_0", "credential.helper")
-            .env("GIT_CONFIG_VALUE_0", "")
-            .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
-            .env("GIT_CONFIG_VALUE_1", authorization)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .arg("-c")
-            .arg("core.hooksPath=/dev/null")
-            .arg("-c")
-            .arg(format!("safe.directory={}", request.workspace.display()))
-            .arg("-C")
-            .arg(&request.workspace)
             .arg("push")
             .arg("--porcelain")
             .arg("--no-verify")
@@ -301,6 +287,34 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
             Err(error) => Err(error),
         }
     }
+
+    async fn update_review_head(
+        &self,
+        workspace: &std::path::Path,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubHeadUpdateOutcome, GitHubAuthorityError> {
+        let snapshot = self.policy_snapshot(review, credential).await?;
+        match snapshot.state {
+            GitHubReviewState::Conflict => Ok(GitHubHeadUpdateOutcome::Conflict),
+            GitHubReviewState::Open { .. } => match snapshot.head_update {
+                Some(update) => head::update_review_head(
+                    self,
+                    head::HeadUpdateRequest {
+                        workspace,
+                        review,
+                        pull_request_id: &update.0,
+                    },
+                    credential,
+                )
+                .await
+                .map(GitHubHeadUpdateOutcome::Updated),
+                None => Ok(GitHubHeadUpdateOutcome::Pending),
+            },
+            GitHubReviewState::Merged { .. } => Ok(GitHubHeadUpdateOutcome::Pending),
+            GitHubReviewState::Closed => Err(GitHubAuthorityError::Rejected),
+        }
+    }
 }
 
 enum MergeAction {
@@ -340,6 +354,7 @@ const fn merge_method_argument(method: policy::MergeMethod) -> Option<&'static s
     }
 }
 
+mod head;
 mod policy;
 mod source_issue;
 mod wire;
@@ -363,6 +378,44 @@ fn clean_command(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    command
+}
+
+fn git_command(
+    config: &GhCliAuthorityConfig,
+    workspace: &std::path::Path,
+    credential: GitHubCredential<'_>,
+) -> Command {
+    let mut command = clean_command(config, &config.git_program, credential);
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .arg("-c")
+        .arg(format!("safe.directory={}", workspace.display()))
+        .arg("-C")
+        .arg(workspace);
+    command
+}
+
+fn authenticated_git_command(
+    config: &GhCliAuthorityConfig,
+    workspace: &std::path::Path,
+    credential: GitHubCredential<'_>,
+) -> Command {
+    let mut command = git_command(config, workspace, credential);
+    let authorization = format!(
+        "AUTHORIZATION: basic {}",
+        encode_basic_credential(credential.expose())
+    );
+    command
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "credential.helper")
+        .env("GIT_CONFIG_VALUE_0", "")
+        .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
+        .env("GIT_CONFIG_VALUE_1", authorization);
     command
 }
 

@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -18,6 +18,8 @@ pub(super) enum Script {
     RegistrationRace,
     MultipleRegistrationWaves,
     DeferredMerge,
+    StrictBehind,
+    RepeatedBehind,
     ProtectedBranch,
     ReviewSyncRace,
     CiFailsThenMerges,
@@ -31,6 +33,7 @@ pub(super) struct FakeGitHub {
     pub(super) pushed: AtomicBool,
     merge_requested: AtomicBool,
     pub(super) merge_requests: AtomicUsize,
+    pub(super) head_updates: AtomicUsize,
     pub(super) inspections: AtomicUsize,
     pub(super) reviews: Mutex<Vec<GitHubReviewRequest>>,
     pub(super) review_sync_attempts: AtomicUsize,
@@ -44,6 +47,7 @@ impl FakeGitHub {
             pushed: AtomicBool::new(false),
             merge_requested: AtomicBool::new(false),
             merge_requests: AtomicUsize::new(0),
+            head_updates: AtomicUsize::new(0),
             inspections: AtomicUsize::new(0),
             reviews: Mutex::new(Vec::new()),
             review_sync_attempts: AtomicUsize::new(0),
@@ -66,6 +70,7 @@ impl FakeGitHub {
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
             Script::DeferredMerge => self.no_ci_state(),
+            Script::StrictBehind | Script::RepeatedBehind => self.no_ci_state(),
             Script::ProtectedBranch | Script::NeverConfirmsMerge => {
                 open_review(GitHubChecks::Passed)
             }
@@ -122,6 +127,12 @@ impl FakeGitHub {
             _ => false,
         }
     }
+}
+
+pub(super) fn delivery_harness(script: Script) -> (TempRepo, Arc<FakeGitHub>) {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), script));
+    (repo, authority)
 }
 
 fn merged_review() -> GitHubReviewState {
@@ -222,11 +233,76 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
         }
+        let updates = self.head_updates.load(Ordering::SeqCst);
+        if (matches!(self.script, Script::StrictBehind) && updates == 0)
+            || (matches!(self.script, Script::RepeatedBehind) && updates < 2)
+        {
+            return Ok(GitHubMergeRequestOutcome::HeadUpdateRequired);
+        }
         if self.merge_is_pending() {
             return Ok(GitHubMergeRequestOutcome::Pending);
         }
         self.merge_requested.store(true, Ordering::SeqCst);
         Ok(GitHubMergeRequestOutcome::Accepted)
+    }
+
+    async fn update_review_head(
+        &self,
+        workspace: &Path,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubHeadUpdateOutcome, GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        if !matches!(self.script, Script::StrictBehind | Script::RepeatedBehind) {
+            return Ok(GitHubHeadUpdateOutcome::Pending);
+        }
+        let status = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .args([
+                "-c",
+                "user.name=GitHub",
+                "-c",
+                "user.email=noreply@github.com",
+                "commit",
+                "--allow-empty",
+                "--no-verify",
+                "--message",
+                "Merge branch 'main' into delivery branch",
+            ])
+            .status()
+            .await
+            .assert_value();
+        if !status.success() {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        let output = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .assert_value();
+        let head_revision = String::from_utf8(output.stdout)
+            .assert_value()
+            .trim()
+            .to_owned();
+        let status = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .arg("push")
+            .arg(&self.remote)
+            .arg(format!("HEAD:refs/heads/{}", review.head_branch))
+            .status()
+            .await
+            .assert_value();
+        if !status.success() {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        self.head_updates.fetch_add(1, Ordering::SeqCst);
+        let mut updated = review.clone();
+        updated.head_revision = head_revision;
+        Ok(GitHubHeadUpdateOutcome::Updated(updated))
     }
 }
 
@@ -304,7 +380,7 @@ case "$endpoint:$method" in
     /usr/bin/printf '%s%s%s%s%s%s\n' \
       '[{"data":{"repository":{"nameWithOwner":"acme/project","mergeCommitAllowed":true,' \
       '"squashMergeAllowed":true,"rebaseMergeAllowed":true,"pullRequest":{' \
-      '"number":17,"state":"OPEN","merged":false,"mergeCommit":null,' \
+      '"id":"PR_node_17","number":17,"state":"OPEN","merged":false,"mergeCommit":null,' \
       '"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,' \
       '"isInMergeQueue":false,"isMergeQueueEnabled":false,"baseRefName":"main",' \
       '"headRefName":"zeroshot/v2-test",' \

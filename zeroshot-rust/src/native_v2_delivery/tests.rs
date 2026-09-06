@@ -35,11 +35,14 @@ use crate::v2_run_ledger::{CreateRun, RunLedger};
 
 #[path = "tests/github_fixture.rs"]
 mod github_fixture;
+#[path = "tests/head_update.rs"]
+mod head_update;
 #[path = "tests/routing.rs"]
 mod routing;
 
 use github_fixture::{
-    FakeGitHub, GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT, Script, argument_lines, write_executable,
+    FakeGitHub, GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT, Script, argument_lines,
+    delivery_harness, write_executable,
 };
 use routing::assert_ci_failure_routes_an_authored_worker_loop;
 
@@ -133,8 +136,7 @@ async fn assert_eventual_merge(
     expected_requests: usize,
     expected_inspections: usize,
 ) {
-    let repo = TempRepo::delivery();
-    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), script));
+    let (repo, authority) = delivery_harness(script);
 
     let outcome = run_delivery(&repo, authority.clone(), attempts, DeliveryMode::Merge).await;
 
