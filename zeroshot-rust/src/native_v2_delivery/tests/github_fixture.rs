@@ -1,7 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
@@ -17,6 +17,9 @@ pub(super) enum Script {
     ConflictAtMerge,
     RegistrationRace,
     MultipleRegistrationWaves,
+    DeferredMerge,
+    StrictBehind,
+    RepeatedBehind,
     ProtectedBranch,
     ReviewSyncRace,
     CiFailsThenMerges,
@@ -30,6 +33,7 @@ pub(super) struct FakeGitHub {
     pub(super) pushed: AtomicBool,
     merge_requested: AtomicBool,
     pub(super) merge_requests: AtomicUsize,
+    pub(super) head_updates: AtomicUsize,
     pub(super) inspections: AtomicUsize,
     pub(super) reviews: Mutex<Vec<GitHubReviewRequest>>,
     pub(super) review_sync_attempts: AtomicUsize,
@@ -43,6 +47,7 @@ impl FakeGitHub {
             pushed: AtomicBool::new(false),
             merge_requested: AtomicBool::new(false),
             merge_requests: AtomicUsize::new(0),
+            head_updates: AtomicUsize::new(0),
             inspections: AtomicUsize::new(0),
             reviews: Mutex::new(Vec::new()),
             review_sync_attempts: AtomicUsize::new(0),
@@ -52,14 +57,24 @@ impl FakeGitHub {
     fn review_state(&self, inspection: usize) -> GitHubReviewState {
         match self.script {
             Script::NoCi | Script::CredentialExpires | Script::ReviewSyncRace => self.no_ci_state(),
+            Script::RegistrationRace => self.registration_race_state(inspection),
+            Script::MultipleRegistrationWaves => self.multiple_registration_waves_state(inspection),
+            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
+            _ => self.static_review_state(),
+        }
+    }
+
+    fn static_review_state(&self) -> GitHubReviewState {
+        match self.script {
             Script::CiFailed => open_review(failed_checks()),
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
-            Script::RegistrationRace => self.registration_race_state(inspection),
-            Script::MultipleRegistrationWaves => self.multiple_registration_waves_state(inspection),
-            Script::ProtectedBranch => open_review(GitHubChecks::Passed),
-            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
-            Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
+            Script::DeferredMerge => self.no_ci_state(),
+            Script::StrictBehind | Script::RepeatedBehind => self.no_ci_state(),
+            Script::ProtectedBranch | Script::NeverConfirmsMerge => {
+                open_review(GitHubChecks::Passed)
+            }
+            _ => open_review(GitHubChecks::Pending),
         }
     }
 
@@ -101,6 +116,23 @@ impl FakeGitHub {
             open_review(GitHubChecks::Passed)
         }
     }
+
+    fn merge_is_pending(&self) -> bool {
+        let requests = self.merge_requests.load(Ordering::SeqCst);
+        match self.script {
+            Script::ProtectedBranch => true,
+            Script::DeferredMerge => requests <= 4,
+            Script::RegistrationRace => requests == 1,
+            Script::MultipleRegistrationWaves => requests <= 2,
+            _ => false,
+        }
+    }
+}
+
+pub(super) fn delivery_harness(script: Script) -> (TempRepo, Arc<FakeGitHub>) {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), script));
+    (repo, authority)
 }
 
 fn merged_review() -> GitHubReviewState {
@@ -201,16 +233,76 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
         }
-        if matches!(self.script, Script::ProtectedBranch)
-            || matches!(self.script, Script::RegistrationRace)
-                && self.merge_requests.load(Ordering::SeqCst) == 1
-            || matches!(self.script, Script::MultipleRegistrationWaves)
-                && self.merge_requests.load(Ordering::SeqCst) <= 2
+        let updates = self.head_updates.load(Ordering::SeqCst);
+        if (matches!(self.script, Script::StrictBehind) && updates == 0)
+            || (matches!(self.script, Script::RepeatedBehind) && updates < 2)
         {
+            return Ok(GitHubMergeRequestOutcome::HeadUpdateRequired);
+        }
+        if self.merge_is_pending() {
             return Ok(GitHubMergeRequestOutcome::Pending);
         }
         self.merge_requested.store(true, Ordering::SeqCst);
         Ok(GitHubMergeRequestOutcome::Accepted)
+    }
+
+    async fn update_review_head(
+        &self,
+        workspace: &Path,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubHeadUpdateOutcome, GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        if !matches!(self.script, Script::StrictBehind | Script::RepeatedBehind) {
+            return Ok(GitHubHeadUpdateOutcome::Pending);
+        }
+        let status = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .args([
+                "-c",
+                "user.name=GitHub",
+                "-c",
+                "user.email=noreply@github.com",
+                "commit",
+                "--allow-empty",
+                "--no-verify",
+                "--message",
+                "Merge branch 'main' into delivery branch",
+            ])
+            .status()
+            .await
+            .assert_value();
+        if !status.success() {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        let output = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .await
+            .assert_value();
+        let head_revision = String::from_utf8(output.stdout)
+            .assert_value()
+            .trim()
+            .to_owned();
+        let status = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(workspace)
+            .arg("push")
+            .arg(&self.remote)
+            .arg(format!("HEAD:refs/heads/{}", review.head_branch))
+            .status()
+            .await
+            .assert_value();
+        if !status.success() {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        self.head_updates.fetch_add(1, Ordering::SeqCst);
+        let mut updated = review.clone();
+        updated.head_revision = head_revision;
+        Ok(GitHubHeadUpdateOutcome::Updated(updated))
     }
 }
 
@@ -284,6 +376,17 @@ case "$endpoint:$method" in
   repos/acme/project/issues/208/comments:POST)
     /usr/bin/printf '%s\n' '{"id":71}'
     ;;
+  graphql:GET)
+    /usr/bin/printf '%s%s%s%s%s%s\n' \
+      '[{"data":{"repository":{"nameWithOwner":"acme/project","mergeCommitAllowed":true,' \
+      '"squashMergeAllowed":true,"rebaseMergeAllowed":true,"pullRequest":{' \
+      '"id":"PR_node_17","number":17,"state":"OPEN","merged":false,"mergeCommit":null,' \
+      '"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,' \
+      '"isInMergeQueue":false,"isMergeQueueEnabled":false,"baseRefName":"main",' \
+      '"headRefName":"zeroshot/v2-test",' \
+      '"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commits":{"nodes":[{' \
+      '"commit":{"statusCheckRollup":null}}]}}}}}]'
+    ;;
   repos/acme/project/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/check-runs:GET)
     /usr/bin/printf '%s\n' '{"total_count":0,"check_runs":[]}'
     ;;
@@ -292,6 +395,8 @@ case "$endpoint:$method" in
     ;;
   repos/acme/project/pulls/17/merge:PUT)
     /usr/bin/printf '%s\n' '{"merged":true,"sha":"cccccccccccccccccccccccccccccccccccccccc"}'
+    ;;
+  merge:GET)
     ;;
   *) exit 19 ;;
 esac
@@ -319,3 +424,13 @@ pub(super) const GH_MISMATCH_SCRIPT: &str = r#"#!/bin/sh
   '"head":{"ref":"zeroshot/v2-test","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",' \
   '"repo":{"full_name":"acme/project"}}}]'
 "#;
+
+#[test]
+fn hosted_delivery_polling_has_no_work_duration_limit() {
+    assert!(DeliveryPollPolicy::default().has_next(usize::MAX));
+    assert!(
+        !DeliveryPollPolicy::new(3, Duration::ZERO)
+            .assert_value()
+            .has_next(3)
+    );
+}

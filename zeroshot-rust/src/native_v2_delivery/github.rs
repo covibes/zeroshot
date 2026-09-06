@@ -3,7 +3,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -13,15 +12,13 @@ use crate::native_v2_delivery::git_auth::encode_basic_credential;
 
 use super::{
     GitHubAuthorityError, GitHubChecks, GitHubCredential, GitHubDeliveryAuthority,
-    GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt,
-    GitHubReviewRequest, GitHubReviewState, valid_revision,
+    GitHubHeadUpdateOutcome, GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation,
+    GitHubReviewReceipt, GitHubReviewRequest, GitHubReviewState, valid_head_update, valid_revision,
 };
 
-// A single GitHub list page may contain 100 check runs or comments, including
-// bounded user/check output fields. Keep the subprocess output bounded while
-// leaving enough room for several paginated CI pages.
+// A GitHub page may contain 100 checks or comments, including bounded user/check
+// output fields. Keep subprocess output bounded while allowing many pages.
 const MAX_API_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-const MAX_FAILED_CHECK_LOGS: usize = 3;
 const MAX_CHECK_LOG_TAIL_BYTES: usize = 64 * 1024;
 const DEFAULT_API_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const DEFAULT_PUSH_DEADLINE: Duration = Duration::from_secs(10 * 60);
@@ -146,49 +143,23 @@ impl GhCliDeliveryAuthority {
         review_receipt(review, request)
     }
 
-    async fn checks(
+    async fn policy_snapshot(
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
-    ) -> Result<GitHubChecks, GitHubAuthorityError> {
-        let check_runs = self
-            .api(
-                &[
-                    format!(
-                        "repos/{}/commits/{}/check-runs",
-                        review.repository, review.head_revision
-                    ),
-                    "--method".to_owned(),
-                    "GET".to_owned(),
-                    "-H".to_owned(),
-                    "Accept: application/vnd.github+json".to_owned(),
-                    "--paginate".to_owned(),
-                    "--slurp".to_owned(),
-                    "-f".to_owned(),
-                    "per_page=100".to_owned(),
-                    "-f".to_owned(),
-                    "filter=latest".to_owned(),
-                ],
-                credential,
-            )
-            .await?;
-        let statuses = self
-            .api(
-                &[
-                    format!(
-                        "repos/{}/commits/{}/status",
-                        review.repository, review.head_revision
-                    ),
-                    "--method".to_owned(),
-                    "GET".to_owned(),
-                ],
-                credential,
-            )
-            .await?;
-        let failed_jobs = failed_check_job_ids(&check_runs)?;
-        let checks = classify_checks(check_runs, statuses)?;
+    ) -> Result<PolicySnapshot, GitHubAuthorityError> {
+        let value = self.api(&query_arguments(review)?, credential).await?;
+        classify_policy(value, review)
+    }
+
+    async fn policy_snapshot_with_logs(
+        &self,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<PolicySnapshot, GitHubAuthorityError> {
+        let mut snapshot = self.policy_snapshot(review, credential).await?;
         let mut logs = Vec::new();
-        for job in failed_jobs.into_iter().take(MAX_FAILED_CHECK_LOGS) {
+        for job in &snapshot.failed_job_ids {
             let output = self
                 .api_output(
                     &[
@@ -203,7 +174,8 @@ impl GhCliDeliveryAuthority {
                 logs.push(check_log_tail(&output));
             }
         }
-        Ok(include_check_logs(checks, &logs))
+        include_check_logs(&mut snapshot, &logs);
+        Ok(snapshot)
     }
 
     async fn pull_request(
@@ -229,14 +201,15 @@ impl GhCliDeliveryAuthority {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
-        let wire = self.pull_request(review, credential).await?;
-        require_review_identity(&wire, review)?;
-        if wire.state != "open" || wire.merged == Some(true) {
-            return Err(GitHubAuthorityError::Rejected);
-        }
-        match wire.mergeable {
-            Some(false) => Ok(GitHubMergeRequestOutcome::Conflict),
-            Some(true) | None => Ok(GitHubMergeRequestOutcome::Pending),
+        let snapshot = self.policy_snapshot(review, credential).await?;
+        match snapshot.state {
+            GitHubReviewState::Merged { .. } => Ok(GitHubMergeRequestOutcome::Accepted),
+            GitHubReviewState::Conflict => Ok(GitHubMergeRequestOutcome::Conflict),
+            GitHubReviewState::Open { .. } if snapshot.head_update.is_some() => {
+                Ok(GitHubMergeRequestOutcome::HeadUpdateRequired)
+            }
+            GitHubReviewState::Open { .. } => Ok(GitHubMergeRequestOutcome::Pending),
+            GitHubReviewState::Closed => Err(GitHubAuthorityError::Rejected),
         }
     }
 }
@@ -248,26 +221,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         request: &GitHubPushRequest,
         credential: GitHubCredential<'_>,
     ) -> Result<(), GitHubAuthorityError> {
-        let mut command = clean_command(&self.config, &self.config.git_program, credential);
-        let authorization = format!(
-            "AUTHORIZATION: basic {}",
-            encode_basic_credential(credential.expose())
-        );
+        let mut command = authenticated_git_command(&self.config, &request.workspace, credential);
         command
-            .env("GIT_CONFIG_COUNT", "2")
-            .env("GIT_CONFIG_KEY_0", "credential.helper")
-            .env("GIT_CONFIG_VALUE_0", "")
-            .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
-            .env("GIT_CONFIG_VALUE_1", authorization)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .arg("-c")
-            .arg("core.hooksPath=/dev/null")
-            .arg("-c")
-            .arg(format!("safe.directory={}", request.workspace.display()))
-            .arg("-C")
-            .arg(&request.workspace)
             .arg("push")
             .arg("--porcelain")
             .arg("--no-verify")
@@ -297,19 +252,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubReviewObservation, GitHubAuthorityError> {
-        let wire = self.pull_request(review, credential).await?;
-        require_review_identity(&wire, review)?;
-        let state = match classify_review(&wire)? {
-            ReviewClassification::Merged(merge_revision) => {
-                GitHubReviewState::Merged { merge_revision }
-            }
-            ReviewClassification::Closed => GitHubReviewState::Closed,
-            ReviewClassification::Conflict => GitHubReviewState::Conflict,
-            ReviewClassification::Open => GitHubReviewState::Open {
-                checks: self.checks(review, credential).await?,
-            },
-        };
-        Ok(review.observation(state))
+        let snapshot = self.policy_snapshot_with_logs(review, credential).await?;
+        Ok(review.observation(snapshot.state))
     }
 
     async fn request_merge(
@@ -317,82 +261,106 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
-        let response = self
-            .api(
-                &[
-                    format!(
-                        "repos/{}/pulls/{}/merge",
-                        review.repository, review.review_id
-                    ),
-                    "--method".to_owned(),
-                    "PUT".to_owned(),
-                    "-f".to_owned(),
-                    format!("sha={}", review.head_revision),
-                    "-f".to_owned(),
-                    "merge_method=merge".to_owned(),
-                    "-f".to_owned(),
-                    format!("commit_title={PULL_REQUEST_TITLE}"),
-                ],
-                credential,
-            )
-            .await;
-        match response {
-            Ok(value) => {
-                if confirmed_merge(value).is_ok() {
-                    Ok(GitHubMergeRequestOutcome::Accepted)
-                } else {
-                    self.classify_rejected_merge(review, credential).await
-                }
-            }
+        let snapshot = self.policy_snapshot(review, credential).await?;
+        let merge_method = match merge_action(snapshot)? {
+            MergeAction::Complete(outcome) => return Ok(outcome),
+            MergeAction::Submit(method) => method,
+        };
+        let mut command = clean_command(&self.config, &self.config.gh_program, credential);
+        command.args([
+            "pr",
+            "merge",
+            &review.review_id,
+            "--repo",
+            &review.repository,
+            "--match-head-commit",
+            &review.head_revision,
+        ]);
+        if let Some(argument) = merge_method_argument(merge_method) {
+            command.arg(argument);
+        }
+        match bounded_status(command, self.config.api_deadline).await {
+            Ok(()) => Ok(GitHubMergeRequestOutcome::Accepted),
             Err(GitHubAuthorityError::Rejected) => {
                 self.classify_rejected_merge(review, credential).await
             }
             Err(error) => Err(error),
         }
     }
+
+    async fn update_review_head(
+        &self,
+        workspace: &std::path::Path,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubHeadUpdateOutcome, GitHubAuthorityError> {
+        let snapshot = self.policy_snapshot(review, credential).await?;
+        match snapshot.state {
+            GitHubReviewState::Conflict => Ok(GitHubHeadUpdateOutcome::Conflict),
+            GitHubReviewState::Open { .. } => match snapshot.head_update {
+                Some(update) => head::update_review_head(
+                    self,
+                    head::HeadUpdateRequest {
+                        workspace,
+                        review,
+                        pull_request_id: &update.0,
+                    },
+                    credential,
+                )
+                .await
+                .map(GitHubHeadUpdateOutcome::Updated),
+                None => Ok(GitHubHeadUpdateOutcome::Pending),
+            },
+            GitHubReviewState::Merged { .. } => Ok(GitHubHeadUpdateOutcome::Pending),
+            GitHubReviewState::Closed => Err(GitHubAuthorityError::Rejected),
+        }
+    }
 }
 
-fn confirmed_merge(value: Value) -> Result<(), GitHubAuthorityError> {
-    let response: MergeWire =
-        serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
-    (response.merged && valid_revision(&response.sha))
-        .then_some(())
-        .ok_or(GitHubAuthorityError::Rejected)
+enum MergeAction {
+    Complete(GitHubMergeRequestOutcome),
+    Submit(policy::MergeMethod),
 }
 
+fn merge_action(snapshot: PolicySnapshot) -> Result<MergeAction, GitHubAuthorityError> {
+    match snapshot.state {
+        GitHubReviewState::Merged { .. } => {
+            Ok(MergeAction::Complete(GitHubMergeRequestOutcome::Accepted))
+        }
+        GitHubReviewState::Conflict => {
+            Ok(MergeAction::Complete(GitHubMergeRequestOutcome::Conflict))
+        }
+        GitHubReviewState::Open {
+            checks:
+                crate::native_v2_delivery::GitHubChecks::NotRequired
+                | crate::native_v2_delivery::GitHubChecks::Passed,
+        } => snapshot
+            .merge_method
+            .map(MergeAction::Submit)
+            .ok_or(GitHubAuthorityError::Rejected),
+        GitHubReviewState::Open { .. } => {
+            Ok(MergeAction::Complete(GitHubMergeRequestOutcome::Pending))
+        }
+        GitHubReviewState::Closed => Err(GitHubAuthorityError::Rejected),
+    }
+}
+
+const fn merge_method_argument(method: policy::MergeMethod) -> Option<&'static str> {
+    match method {
+        policy::MergeMethod::Queue => None,
+        policy::MergeMethod::Merge => Some("--merge"),
+        policy::MergeMethod::Squash => Some("--squash"),
+        policy::MergeMethod::Rebase => Some("--rebase"),
+    }
+}
+
+mod head;
+mod policy;
 mod source_issue;
 mod wire;
+use policy::{PolicySnapshot, classify_policy, include_check_logs, query_arguments};
 use source_issue::{connect_source_issue, pull_request_body};
-use wire::{
-    MergeWire, PullRequestWire, classify_checks, failed_check_job_ids, include_check_logs,
-    require_review_identity, review_receipt,
-};
-
-enum ReviewClassification {
-    Open,
-    Merged(String),
-    Conflict,
-    Closed,
-}
-
-fn classify_review(wire: &PullRequestWire) -> Result<ReviewClassification, GitHubAuthorityError> {
-    if wire.merged == Some(true) {
-        let merge_revision = wire
-            .merge_commit_sha
-            .clone()
-            .filter(|revision| valid_revision(revision))
-            .ok_or(GitHubAuthorityError::Rejected)?;
-        return (wire.state == "closed")
-            .then_some(ReviewClassification::Merged(merge_revision))
-            .ok_or(GitHubAuthorityError::Rejected);
-    }
-    match (wire.state.as_str(), wire.mergeable) {
-        ("closed", _) => Ok(ReviewClassification::Closed),
-        ("open", Some(false)) => Ok(ReviewClassification::Conflict),
-        ("open", _) => Ok(ReviewClassification::Open),
-        _ => Err(GitHubAuthorityError::Rejected),
-    }
-}
+use wire::{PullRequestWire, review_receipt};
 
 fn clean_command(
     config: &GhCliAuthorityConfig,
@@ -410,6 +378,44 @@ fn clean_command(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    command
+}
+
+fn git_command(
+    config: &GhCliAuthorityConfig,
+    workspace: &std::path::Path,
+    credential: GitHubCredential<'_>,
+) -> Command {
+    let mut command = clean_command(config, &config.git_program, credential);
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("-c")
+        .arg("core.hooksPath=/dev/null")
+        .arg("-c")
+        .arg(format!("safe.directory={}", workspace.display()))
+        .arg("-C")
+        .arg(workspace);
+    command
+}
+
+fn authenticated_git_command(
+    config: &GhCliAuthorityConfig,
+    workspace: &std::path::Path,
+    credential: GitHubCredential<'_>,
+) -> Command {
+    let mut command = git_command(config, workspace, credential);
+    let authorization = format!(
+        "AUTHORIZATION: basic {}",
+        encode_basic_credential(credential.expose())
+    );
+    command
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "credential.helper")
+        .env("GIT_CONFIG_VALUE_0", "")
+        .env("GIT_CONFIG_KEY_1", "http.https://github.com/.extraheader")
+        .env("GIT_CONFIG_VALUE_1", authorization);
     command
 }
 

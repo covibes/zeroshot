@@ -39,10 +39,13 @@ Worker git operations are allowed only with isolation (`--worktree`, `--docker`,
 Native-v2 provider continuation is fixed and bounded: Claude continues once only after a
 `system/api_retry` event, Codex continues once after any terminal execution error, and both send
 the literal `Continue` in the same session (or rerun the original prompt only when no session was
-created). Agent output gets at most two correction turns before `malformed`. Direct GitHub merge
-rejection is reobserved once for CI registration races; each subsequently observed pending-check
-wave re-arms that single retry, while consecutive rejection without an intervening pending wave
-terminates as a policy refusal.
+created). Agent output gets at most two correction turns before `malformed`. GitHub delivery uses
+GitHub's aggregate pull-request merge policy and required-context declarations as authority. It
+waits through non-terminal policy states and merge deferrals without a work-duration limit, uses
+the provider-native merge operation so merge queues remain transparent, and declares success only
+after an exact merged observation. Outside merge queues, strict branch freshness advances only by
+a provider-authorized compare-and-swap response; the exact returned head is adopted in the local
+workspace before delivery continues, and any untrusted head change is rejected.
 
 Native-v2 Claude and Codex JSONL readers never cap cumulative stdout bytes or event counts. They
 share only a 64 MiB unfinished-record allocation guard, tolerate whitespace and a complete final

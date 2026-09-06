@@ -11,11 +11,12 @@ mod git;
 #[doc(hidden)]
 pub mod git_auth;
 mod github;
-
+mod review_head;
 #[cfg(test)]
 mod tests;
 
 pub use github::{GhCliAuthorityConfig, GhCliDeliveryAuthority};
+pub use review_head::{GitHubHeadUpdateOutcome, GitHubMergeRequestOutcome};
 pub use contract::{is_matching_success_receipt, validate_delivery_contract};
 #[cfg(test)]
 pub(crate) use contract::{delivery_diagnostic_schema, delivery_result_schema, delivery_signal_labels};
@@ -43,6 +44,7 @@ use crate::native_v2_runner::{
 };
 
 use self::git::{GitError, SystemGit};
+use self::review_head::valid_head_update;
 
 pub const GITHUB_TOKEN_ENV: &str = "GH_TOKEN";
 pub const DELIVERY_SIGNAL_FIELD: &str = "delivery";
@@ -261,13 +263,6 @@ pub enum GitHubReviewState {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitHubMergeRequestOutcome {
-    Accepted,
-    Pending,
-    Conflict,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitHubReviewObservation {
     pub review_id: String,
@@ -321,12 +316,25 @@ pub trait GitHubDeliveryAuthority: Send + Sync {
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubReviewObservation, GitHubAuthorityError>;
 
-    /// Requests an immediate merge after checks are absent or satisfied. Acceptance is not proof.
+    /// Requests provider-native integration after GitHub reports its merge policy ready.
+    /// Acceptance is not proof; only a later merged observation confirms success.
     async fn request_merge(
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError>;
+
+    /// Advances a stale non-queue review head through one provider-authorized CAS transition.
+    /// The returned receipt is authoritative only after the implementation has adopted the same
+    /// exact revision in `workspace`.
+    async fn update_review_head(
+        &self,
+        _workspace: &std::path::Path,
+        _review: &GitHubReviewReceipt,
+        _credential: GitHubCredential<'_>,
+    ) -> Result<GitHubHeadUpdateOutcome, GitHubAuthorityError> {
+        Ok(GitHubHeadUpdateOutcome::Pending)
+    }
 }
 
 pub use adapter::NativeV2DeliveryAdapter;

@@ -1,9 +1,10 @@
 use super::*;
 
+mod head;
 mod input;
 mod review;
 use input::source_issue;
-use review::{crash_outcome, rejected_merge_step, review_completion, ReviewProgress, ReviewStep};
+use review::{crash_outcome, review_completion, ReviewProgress, ReviewStep};
 
 #[derive(Clone)]
 pub struct NativeV2DeliveryAdapter {
@@ -104,11 +105,9 @@ impl NodeDriver for NativeV2DeliveryAdapter {
         self.drive_review(ReviewDrive {
             mode,
             response: &invocation.response,
-            review: &review,
+            review,
             credentials,
             control: &mut control,
-            merge_requested: false,
-            merge_rejection_reobserved: false,
         })
         .await
     }
@@ -144,11 +143,9 @@ impl From<NodeRunnerError> for DeliveryStop {
 struct ReviewDrive<'a> {
     mode: DeliveryMode,
     response: &'a NodeResponseContract,
-    review: &'a GitHubReviewReceipt,
+    review: GitHubReviewReceipt,
     credentials: DeliveryCredentials<'a>,
     control: &'a mut DriverControl,
-    merge_requested: bool,
-    merge_rejection_reobserved: bool,
 }
 
 struct DeliveryCredentials<'a> {
@@ -399,8 +396,7 @@ impl NativeV2DeliveryAdapter {
             }
             ReviewProgress::Mergeable => self.advance_mergeable(drive).await,
             ReviewProgress::Pending => {
-                drive.merge_rejection_reobserved = false;
-                emit(drive.control, "delivery: waiting for required CI checks").await?;
+                emit(drive.control, "delivery: waiting for GitHub merge policy").await?;
                 Ok(ReviewStep::Continue)
             }
             ReviewProgress::Closed => Err(crash_outcome()),
@@ -411,28 +407,27 @@ impl NativeV2DeliveryAdapter {
         &self,
         drive: &mut ReviewDrive<'_>,
     ) -> Result<ReviewStep, DeliveryStop> {
-        if drive.merge_requested {
-            emit(
-                drive.control,
-                "delivery: waiting for authoritative merge confirmation",
-            )
-            .await?;
-        } else {
-            match self.request_merge(drive).await? {
-                GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
-                GitHubMergeRequestOutcome::Pending => {
-                    if let Some(completion) = rejected_merge_step(drive).await? {
-                        return Ok(completion);
-                    }
-                }
-                GitHubMergeRequestOutcome::Conflict => {
-                    return review_completion(
-                        drive,
-                        DELIVERY_CONFLICT_LABEL,
-                        "GitHub authoritatively rejected merge due to conflict",
-                    )
-                    .await;
-                }
+        match self.request_merge(drive).await? {
+            GitHubMergeRequestOutcome::Accepted => {
+                emit(
+                    drive.control,
+                    "delivery: waiting for authoritative merge confirmation",
+                )
+                .await?;
+            }
+            GitHubMergeRequestOutcome::Pending => {
+                emit(drive.control, "delivery: merge request is not yet accepted").await?;
+            }
+            GitHubMergeRequestOutcome::HeadUpdateRequired => {
+                return self.advance_review_head(drive).await;
+            }
+            GitHubMergeRequestOutcome::Conflict => {
+                return review_completion(
+                    drive,
+                    DELIVERY_CONFLICT_LABEL,
+                    "GitHub authoritatively rejected merge due to conflict",
+                )
+                .await;
             }
         }
         Ok(ReviewStep::Continue)
@@ -444,7 +439,7 @@ impl NativeV2DeliveryAdapter {
     ) -> Result<ReviewProgress, DeliveryStop> {
         let observation = match self
             .authority
-            .inspect_review(drive.review, drive.credentials.current())
+            .inspect_review(&drive.review, drive.credentials.current())
             .await
         {
             Ok(observation) => observation,
@@ -452,12 +447,12 @@ impl NativeV2DeliveryAdapter {
                 emit(drive.control, "delivery: refreshing GitHub credential").await?;
                 drive.credentials.refresh().await?;
                 self.authority
-                    .inspect_review(drive.review, drive.credentials.current())
+                    .inspect_review(&drive.review, drive.credentials.current())
                     .await
                     .map_err(|_| crash_outcome())?
             }
         };
-        if !valid_observation(drive.review, &observation) {
+        if !valid_observation(&drive.review, &observation) {
             return Err(DeliveryStop::Outcome(WorkerOutcome::malformed()));
         }
         ReviewProgress::from_state(observation.state)
@@ -470,7 +465,7 @@ impl NativeV2DeliveryAdapter {
         emit(drive.control, "delivery: requesting merge").await?;
         match self
             .authority
-            .request_merge(drive.review, drive.credentials.current())
+            .request_merge(&drive.review, drive.credentials.current())
             .await
         {
             Ok(outcome) => Ok(outcome),
@@ -478,7 +473,7 @@ impl NativeV2DeliveryAdapter {
                 emit(drive.control, "delivery: refreshing GitHub credential").await?;
                 drive.credentials.refresh().await?;
                 self.authority
-                    .request_merge(drive.review, drive.credentials.current())
+                    .request_merge(&drive.review, drive.credentials.current())
                     .await
                     .map_err(|_| crash_outcome())
             }

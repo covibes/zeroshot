@@ -35,11 +35,14 @@ use crate::v2_run_ledger::{CreateRun, RunLedger};
 
 #[path = "tests/github_fixture.rs"]
 mod github_fixture;
+#[path = "tests/head_update.rs"]
+mod head_update;
 #[path = "tests/routing.rs"]
 mod routing;
 
 use github_fixture::{
-    FakeGitHub, GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT, Script, argument_lines, write_executable,
+    FakeGitHub, GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT, Script, argument_lines,
+    delivery_harness, write_executable,
 };
 use routing::assert_ci_failure_routes_an_authored_worker_loop;
 
@@ -119,21 +122,37 @@ async fn merge_rejection_before_ci_registration_is_reobserved() {
 
 #[tokio::test]
 async fn multiple_ci_registration_waves_each_allow_a_fresh_merge_attempt() {
-    let repo = TempRepo::delivery();
-    let authority = Arc::new(FakeGitHub::new(
-        repo.remote.clone(),
-        Script::MultipleRegistrationWaves,
-    ));
-
-    let outcome = run_delivery(&repo, authority.clone(), 7, DeliveryMode::Merge).await;
-
-    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
-    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 3);
-    assert_eq!(authority.inspections.load(Ordering::SeqCst), 6);
+    assert_eventual_merge(Script::MultipleRegistrationWaves, 7, 3, 6).await;
 }
 
 #[tokio::test]
-async fn protected_branch_rejects_unsupported_direct_merge_promptly() {
+async fn repeated_merge_deferrals_can_eventually_merge_without_a_check_state_change() {
+    assert_eventual_merge(Script::DeferredMerge, 7, 5, 6).await;
+}
+
+async fn assert_eventual_merge(
+    script: Script,
+    attempts: usize,
+    expected_requests: usize,
+    expected_inspections: usize,
+) {
+    let (repo, authority) = delivery_harness(script);
+
+    let outcome = run_delivery(&repo, authority.clone(), attempts, DeliveryMode::Merge).await;
+
+    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
+    assert_eq!(
+        authority.merge_requests.load(Ordering::SeqCst),
+        expected_requests
+    );
+    assert_eq!(
+        authority.inspections.load(Ordering::SeqCst),
+        expected_inspections
+    );
+}
+
+#[tokio::test]
+async fn repeated_merge_deferral_is_not_misclassified_as_policy_refusal() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(
         repo.remote.clone(),
@@ -142,9 +161,12 @@ async fn protected_branch_rejects_unsupported_direct_merge_promptly() {
 
     let outcome = run_delivery(&repo, authority.clone(), 20, DeliveryMode::Merge).await;
 
-    assert_eq!(outcome, WorkerOutcome::policy_refusal());
-    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 2);
-    assert_eq!(authority.inspections.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        outcome,
+        WorkerOutcome::declared_failure(WorkerErrorCode::Timeout)
+    );
+    assert!(authority.merge_requests.load(Ordering::SeqCst) > 2);
+    assert!(authority.inspections.load(Ordering::SeqCst) > 2);
 }
 
 #[tokio::test]
@@ -159,7 +181,7 @@ async fn pushed_review_head_is_retried_during_github_visibility_lag() {
 }
 
 #[tokio::test]
-async fn accepted_merge_request_is_not_shipping_success() {
+async fn accepted_merge_request_is_reasserted_until_authoritative_success() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(
         repo.remote.clone(),
@@ -170,17 +192,7 @@ async fn accepted_merge_request_is_not_shipping_success() {
         outcome,
         WorkerOutcome::declared_failure(WorkerErrorCode::Timeout)
     );
-    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn hosted_delivery_polling_has_no_work_duration_limit() {
-    assert!(DeliveryPollPolicy::default().has_next(usize::MAX));
-    assert!(
-        !DeliveryPollPolicy::new(3, Duration::ZERO)
-            .assert_value()
-            .has_next(3)
-    );
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 2);
 }
 
 struct RefreshedDeliveryEnvironment {
