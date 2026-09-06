@@ -14,9 +14,9 @@ use super::super::{
 #[path = "hosted_authority/connections.rs"]
 mod connections;
 pub(super) use connections::test_authority;
-#[path = "hosted_authority/rejection.rs"]
-mod rejection;
-pub(super) use rejection::spawn_rejecting_direct_target_authority;
+#[path = "hosted_authority/direct.rs"]
+mod direct;
+pub(super) use direct::{spawn_direct_target_authority, spawn_rejecting_direct_target_authority};
 
 pub(super) struct RotatingCredentialStore {
     state: Mutex<RotatingCredentialState>,
@@ -55,44 +55,6 @@ pub(super) async fn spawn_target_authority(
         server_origin,
         address,
     ));
-    (origin, server)
-}
-
-pub(super) async fn spawn_direct_target_authority(
-    request_count: usize,
-) -> (String, tokio::task::JoinHandle<Vec<CapturedHttpRequest>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
-    let address = listener.local_addr().assert_value();
-    let origin = format!("http://{address}");
-    let server = tokio::spawn(async move {
-        let mut captured = Vec::new();
-        for _ in 0..request_count {
-            let (mut stream, _) = listener.accept().await.assert_value();
-            let request = read_http_request(&mut stream).await;
-            let body = match (request.method.as_str(), request.path.as_str()) {
-                ("GET", "/.well-known/zeroshot-native-v2") => json!({
-                    "kind": "zeroshot.native-v2-target/v2",
-                    "authentication": "none",
-                    "runPath": "/native-v2/run",
-                    "sessionPath": "/native-v2/oecp-session",
-                    "oecpPath": "/native-v2/oecp",
-                    "audience": "controller",
-                })
-                .to_string(),
-                ("POST", "/native-v2/run") => {
-                    r#"{"runId":"018f5e78-7f95-7c22-8d98-3f15af20c991"}"#.to_owned()
-                }
-                ("POST", "/native-v2/oecp-session") => {
-                    format!(r#"{{"endpoint":"ws://{address}/native-v2/oecp"}}"#)
-                }
-                unexpected => None::<String>
-                    .assert_value_with(&format!("unexpected direct request: {unexpected:?}")),
-            };
-            write_http_response(&mut stream, &body).await;
-            captured.push(request);
-        }
-        captured
-    });
     (origin, server)
 }
 
