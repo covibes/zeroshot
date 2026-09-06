@@ -186,6 +186,16 @@ pub(super) fn authority_error_response(error: TargetAuthorityError) -> HttpRespo
     }
 }
 
+pub(super) fn run_error_response(error: TargetAuthorityError) -> HttpResponse {
+    if error.kind() != TargetAuthorityErrorKind::Invalid {
+        return authority_error_response(error);
+    }
+    match super::super::TargetRunRejection::new(error.message()) {
+        Ok(rejection) => HttpResponse::private_json(400, &rejection),
+        Err(_) => HttpResponse::empty(400),
+    }
+}
+
 pub(super) async fn write_and_close(
     mut stream: TcpStream,
     response: HttpResponse,

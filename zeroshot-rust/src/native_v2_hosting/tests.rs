@@ -7,8 +7,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    ConnectionKey, NodeName, RunId, RunSize, RuntimePlan, StaticConnectionValues, WorkerRef,
+    ConnectionKey, DiagnosticSeverity, GraphDiagnostic, GraphDiagnosticCode, NodeName, RunId,
+    RunSize, RuntimePlan, StaticConnectionValues, WorkerRef,
 };
+use openengine_cluster_server::admission::VerificationError;
 use serde_json::Value;
 
 use super::*;
@@ -67,6 +69,30 @@ fn run_environment_is_exact_and_request_debug_is_redacted() {
     assert!(!debug.contains("openai-secret"));
     assert!(!debug.contains("unused-secret"));
     assert!(!debug.contains("github-secret"));
+}
+
+#[test]
+fn graph_rejection_projects_its_first_safe_diagnostic() {
+    let projected = project_cloud_error(NativeV2CloudError::Admission(
+        crate::native_v2_admission::NativeV2AdmissionError::GraphVerification(
+            VerificationError::Rejected {
+                diagnostics: vec![GraphDiagnostic {
+                    severity: DiagnosticSeverity::Error,
+                    code: GraphDiagnosticCode::UndefinedRead,
+                    message: "required payload target issueNumber is not defined by a binding"
+                        .to_owned(),
+                    path: Vec::new(),
+                    related_nodes: Vec::new(),
+                }],
+            },
+        ),
+    ));
+
+    assert_eq!(projected.kind(), TargetAuthorityErrorKind::Invalid);
+    assert_eq!(
+        projected.message(),
+        "graph verification rejected the graph: required payload target issueNumber is not defined by a binding"
+    );
 }
 
 #[tokio::test]

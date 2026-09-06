@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use openengine_cluster_protocol::{
     TargetAuthentication, TargetDiscoveryDocument, TargetOecpSession, TargetOecpSessionRequest,
-    TargetRunReceipt, TargetRunRequest,
+    TargetRunReceipt, TargetRunRejection, TargetRunRequest,
 };
 pub use openengine_cluster_protocol::{
     TARGET_CONTROLLER_AUDIENCE as CONTROLLER_AUDIENCE, TARGET_DISCOVERY_KIND as DISCOVERY_KIND,
@@ -74,6 +74,11 @@ impl TargetAuthorityError {
     #[must_use]
     pub const fn kind(&self) -> TargetAuthorityErrorKind {
         self.kind
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 

@@ -66,6 +66,13 @@ impl CapsuleAllocator for NoAllocation {
     }
 }
 
+async fn test_controller() -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+    NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), Arc::new(NoAllocation))
+        .await
+        .map(Arc::new)
+        .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+}
+
 #[derive(Default)]
 struct FakeFactory {
     controllers: AtomicUsize,
@@ -78,10 +85,7 @@ struct FakeFactory {
 impl TargetControllerFactory for FakeFactory {
     async fn create(&self) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
         self.controllers.fetch_add(1, Ordering::SeqCst);
-        NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), Arc::new(NoAllocation))
-            .await
-            .map(Arc::new)
-            .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+        test_controller().await
     }
 
     async fn submit(
@@ -102,6 +106,25 @@ impl TargetControllerFactory for FakeFactory {
 }
 
 struct FakeSessions;
+
+struct RejectingFactory;
+
+#[async_trait]
+impl TargetControllerFactory for RejectingFactory {
+    async fn create(&self) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+        test_controller().await
+    }
+
+    async fn submit(
+        &self,
+        _controller: &NativeV2CloudController,
+        _request: TargetRunRequest,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        Err(TargetAuthorityError::invalid(
+            "graph verification rejected the graph: required payload target issueNumber is not defined by a binding",
+        ))
+    }
+}
 
 #[async_trait]
 impl TargetSessionAuthority for FakeSessions {
@@ -253,6 +276,35 @@ async fn hosted_sessions_are_authenticated_and_run_scoped() {
     assert_eq!(session.endpoint, endpoint);
     connect_and_list(&session.endpoint, Some("oecp-token")).await;
 
+    task.abort();
+}
+
+#[tokio::test]
+async fn run_rejection_returns_a_bounded_public_diagnostic() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let server = Arc::new(
+        NativeV2TargetServer::new_direct(
+            Arc::new(NativeV2TargetAuthority::new(Arc::new(RejectingFactory))),
+            identity(),
+            format!("ws://{address}{OECP_PATH}"),
+        )
+        .assert_value(),
+    );
+    let task = tokio::spawn(server.serve(listener));
+    let encoded = serde_json::to_vec(&request()).assert_value();
+    let rejected = http(
+        address,
+        TestHttpRequest::body("POST", RUN_PATH, None, &encoded),
+    )
+    .await;
+
+    assert_eq!(rejected.status, 400);
+    let detail = serde_json::from_slice::<TargetRunRejection>(&rejected.body).assert_value();
+    assert_eq!(
+        detail.message(),
+        "graph verification rejected the graph: required payload target issueNumber is not defined by a binding"
+    );
     task.abort();
 }
 

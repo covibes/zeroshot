@@ -33,7 +33,7 @@ use super::private_access::{PrivateTargetAccess, TargetBootstrapKey};
 mod http;
 use http::{
     HttpRequest, HttpResponse, RequestHead, authority_error_response, peek_request_head,
-    read_http_request, write_and_close, write_http_response,
+    run_error_response, read_http_request, write_and_close, write_http_response,
 };
 
 const MAX_HEADER_BYTES: usize = 32 * 1024;
@@ -213,7 +213,7 @@ impl NativeV2TargetServer {
         }
         match self.target.submit(submission).await {
             Ok(receipt) => HttpResponse::private_json(200, &receipt),
-            Err(error) => authority_error_response(error),
+            Err(error) => run_error_response(error),
         }
     }
 
