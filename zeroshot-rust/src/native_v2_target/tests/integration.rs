@@ -248,6 +248,26 @@ async fn direct_authority_skips_hosted_auth_and_all_authorization_headers() {
 }
 
 #[tokio::test]
+async fn direct_authority_surfaces_bounded_run_rejection_feedback() {
+    let root = temp_root();
+    let (origin, server) = spawn_rejecting_direct_target_authority().await;
+    let authority = TargetHttpControlAuthority::with_dependencies(
+        Arc::new(MemoryCredentialStore::default()),
+        Arc::new(MemoryDeviceCodeNotifier::default()),
+        root.path("refresh-locks"),
+    );
+    let error = authority
+        .submit(&direct_target(origin), &exact_run_request())
+        .await
+        .assert_error();
+    assert_eq!(
+        error.to_string(),
+        "target run request was rejected: required payload target issueNumber is not defined by a binding"
+    );
+    server.await.assert_value();
+}
+
+#[tokio::test]
 async fn direct_target_rejects_hosted_controller_discovery() {
     let root = temp_root();
     let (origin, server) = spawn_target_authority(1).await;

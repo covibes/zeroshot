@@ -20,7 +20,7 @@ use zeroshot_engine::native_v2_cli::{
     CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
 };
 use zeroshot_engine::native_v2_target_authority::{
-    TargetOecpSession, TargetRunReceipt, TargetRunRequest,
+    TargetOecpSession, TargetRunReceipt, TargetRunRejection, TargetRunRequest,
 };
 
 use super::contract::{authority_error, read_json, require_response_route};
@@ -71,6 +71,9 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
             .await
             .map_err(|_| TargetAuthorityError::disconnected("target run request failed"))?;
         require_response_route(&response, &controller.run_url)?;
+        if response.status() == reqwest::StatusCode::BAD_REQUEST {
+            return Err(target_run_rejection(response).await);
+        }
         if !response.status().is_success() {
             return Err(authority_error(format!(
                 "target run request failed with status {}",
@@ -223,5 +226,15 @@ impl TargetControlAuthority for TargetHttpControlAuthority {
         params: RunForceParams,
     ) -> Result<CliRunForceResult, TargetAuthorityError> {
         TargetHttpControlAuthority::hosted_run_force(self, target, params).await
+    }
+}
+
+async fn target_run_rejection(response: reqwest::Response) -> TargetAuthorityError {
+    match read_json::<TargetRunRejection>(response, "target run rejection").await {
+        Ok(rejection) => authority_error(format!(
+            "target run request was rejected: {}",
+            rejection.message()
+        )),
+        Err(_) => authority_error("target run request failed with status 400"),
     }
 }
