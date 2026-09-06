@@ -162,13 +162,83 @@ const CLI_METADATA_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 function isCliMetadata(value: JsonRecord): boolean {
-  if (value.type === 'result') return true;
+  if (typeof value.type === 'string') {
+    if (
+      value.type === 'result' ||
+      value.type.startsWith('item.') ||
+      value.type.startsWith('turn.') ||
+      value.type.startsWith('thread.') ||
+      value.type.startsWith('assistant.') ||
+      value.type.startsWith('tool.')
+    ) {
+      return true;
+    }
+  }
 
   let metadataFieldCount = 0;
   for (const key of Object.keys(value)) {
     if (CLI_METADATA_FIELDS.has(key)) metadataFieldCount++;
   }
   return metadataFieldCount >= 2;
+}
+
+function braceDepthDelta(ch: string | undefined): number {
+  if (ch === '{') return 1;
+  if (ch === '}') return -1;
+  return 0;
+}
+
+function findBalancedCandidateEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let j = start; j < text.length; j++) {
+    const ch = text[j];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else {
+      depth += braceDepthDelta(ch);
+      if (depth === 0) return j + 1;
+    }
+  }
+  return -1;
+}
+
+function scanBalancedJsonObject(text: string): JsonRecord | null {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    const end = findBalancedCandidateEnd(text, i);
+    if (end === -1) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.slice(i, end));
+    } catch {
+      // Not valid JSON; keep scanning for an embedded candidate.
+      continue;
+    }
+    if (!isObjectRecord(parsed)) continue;
+    if (isCliMetadata(parsed)) {
+      // Rejected metadata envelope: skip its interior so nested objects
+      // (e.g. usage) are not misclassified as agent output.
+      i = end - 1;
+      continue;
+    }
+    return parsed;
+  }
+  return null;
 }
 
 function extractDirectJson(text: unknown): JsonRecord | null {
@@ -182,7 +252,7 @@ function extractDirectJson(text: unknown): JsonRecord | null {
     if (!isObjectRecord(parsed) || isCliMetadata(parsed)) return null;
     return parsed;
   } catch {
-    return null;
+    return scanBalancedJsonObject(trimmed);
   }
 }
 

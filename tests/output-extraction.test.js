@@ -259,6 +259,24 @@ function defineDirectJsonExtractionTests() {
       assert.deepStrictEqual(result, { foo: 'bar' });
     });
 
+    it('should extract JSON embedded in conversational filler', function () {
+      const text = 'Here is the JSON you requested:\n{"foo":"bar"}\nHope this helps!';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { foo: 'bar' });
+    });
+
+    it('should extract JSON embedded in conversational filler containing additional braces', function () {
+      const text = 'Note: {var_placeholder} was replaced. Result: {"foo":"bar"} and {extra_unrelated}.';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { foo: 'bar' });
+    });
+
+    it('should extract JSON containing string with nested braces', function () {
+      const text = 'Result: {"template":"Hello {name}, welcome {home}"} complete.';
+      const result = extractDirectJson(text);
+      assert.deepStrictEqual(result, { template: 'Hello {name}, welcome {home}' });
+    });
+
     it('should return null for arrays', function () {
       const text = '[1, 2, 3]';
       const result = extractDirectJson(text);
@@ -318,6 +336,31 @@ function defineDirectJsonExtractionTests() {
       const text = '{"summary":"Fixed bugs","errors":[]}';
       const result = extractDirectJson(text);
       assert.deepStrictEqual(result, { summary: 'Fixed bugs', errors: [] });
+    });
+
+    it('should reject CLI metadata and not fall through to nested usage object', function () {
+      const text = '{"duration_ms":100,"session_id":"test","usage":{"input_tokens":50}}';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
+
+    it('should reject provider protocol event records', function () {
+      const text = '{"type":"item.completed","index":0,"payload":"data"}';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
+
+    it('should reject filler-wrapped CLI metadata without returning nested objects', function () {
+      const text =
+        'Here is output: {"duration_ms":100,"session_id":"test","usage":{"input_tokens":50}} done.';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
+
+    it('should reject filler-wrapped protocol events without returning nested payload', function () {
+      const text = 'Result: {"type":"item.completed","index":0,"payload":{"foo":1}} end.';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
     });
   });
 }
