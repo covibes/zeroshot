@@ -6,9 +6,9 @@
  */
 
 import fs from 'node:fs';
-import net from 'node:net';
 
 import protocol from './protocol';
+import { connectToEndpoint } from './socket-endpoint';
 
 const DEFAULT_TIMEOUT_MS = 1500;
 
@@ -46,7 +46,7 @@ function sendInput(options: SendInputOptions = {}): Promise<SendInputResult> | S
   return new Promise((resolve) => {
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
-    const socket = net.createConnection(socketPath);
+    const socket = connectToEndpoint(socketPath);
 
     const finish = (result: SendInputResult): void => {
       if (settled) return;

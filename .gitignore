@@ -238,6 +238,7 @@ src/attach/ring-buffer.js
 src/attach/protocol.js
 src/attach/send-input.js
 src/attach/socket-discovery.js
+src/attach/socket-endpoint.js
 src/attach/attach-client.js
 src/attach/attach-server.js
 src/attach/attach-server-types.js
