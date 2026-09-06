@@ -444,7 +444,7 @@ fn merged_snapshot(
 fn merge_gate_ready(pull_request: &PullRequestPolicyWire) -> bool {
     let state_ready = matches!(
         pull_request.merge_state_status.as_str(),
-        "CLEAN" | "HAS_HOOKS" | "UNSTABLE"
+        "BEHIND" | "CLEAN" | "HAS_HOOKS" | "UNSTABLE"
     );
     !pull_request.is_draft
         && !pull_request.is_in_merge_queue

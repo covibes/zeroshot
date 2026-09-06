@@ -274,7 +274,6 @@ fn unknown_or_nonterminal_provider_states_fail_closed_as_pending() {
     for (mergeable, merge_state) in [
         ("UNKNOWN", "UNKNOWN"),
         ("MERGEABLE", "BLOCKED"),
-        ("MERGEABLE", "BEHIND"),
         ("MERGEABLE", "DRAFT"),
         ("MERGEABLE", "UNKNOWN"),
     ] {
@@ -307,7 +306,7 @@ fn unknown_or_nonterminal_provider_states_fail_closed_as_pending() {
 
 #[test]
 fn clean_repository_without_required_checks_is_ready() {
-    for merge_state in ["CLEAN", "HAS_HOOKS", "UNSTABLE"] {
+    for merge_state in ["BEHIND", "CLEAN", "HAS_HOOKS", "UNSTABLE"] {
         let snapshot = classify(policy_page("MERGEABLE", merge_state, None, (false, None)));
         assert_eq!(
             snapshot.state,
