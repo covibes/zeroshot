@@ -349,6 +349,19 @@ function defineDirectJsonExtractionTests() {
       const result = extractDirectJson(text);
       assert.strictEqual(result, null);
     });
+
+    it('should reject filler-wrapped CLI metadata without returning nested objects', function () {
+      const text =
+        'Here is output: {"duration_ms":100,"session_id":"test","usage":{"input_tokens":50}} done.';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
+
+    it('should reject filler-wrapped protocol events without returning nested payload', function () {
+      const text = 'Result: {"type":"item.completed","index":0,"payload":{"foo":1}} end.';
+      const result = extractDirectJson(text);
+      assert.strictEqual(result, null);
+    });
   });
 }
 

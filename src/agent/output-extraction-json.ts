@@ -182,18 +182,6 @@ function isCliMetadata(value: JsonRecord): boolean {
   return metadataFieldCount >= 2;
 }
 
-function parseBalancedCandidate(text: string, start: number, end: number): JsonRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(text.slice(start, end));
-    if (isObjectRecord(parsed) && !isCliMetadata(parsed)) {
-      return parsed;
-    }
-  } catch {
-    // Not a valid JSON object
-  }
-  return null;
-}
-
 function braceDepthDelta(ch: string | undefined): number {
   if (ch === '{') return 1;
   if (ch === '}') return -1;
@@ -233,10 +221,22 @@ function scanBalancedJsonObject(text: string): JsonRecord | null {
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '{') continue;
     const end = findBalancedCandidateEnd(text, i);
-    if (end !== -1) {
-      const candidate = parseBalancedCandidate(text, i, end);
-      if (candidate) return candidate;
+    if (end === -1) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text.slice(i, end));
+    } catch {
+      // Not valid JSON; keep scanning for an embedded candidate.
+      continue;
     }
+    if (!isObjectRecord(parsed)) continue;
+    if (isCliMetadata(parsed)) {
+      // Rejected metadata envelope: skip its interior so nested objects
+      // (e.g. usage) are not misclassified as agent output.
+      i = end - 1;
+      continue;
+    }
+    return parsed;
   }
   return null;
 }
