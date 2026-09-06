@@ -1,13 +1,13 @@
 const assert = require('node:assert');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const sinon = require('sinon');
 
-const Ledger = require('../../src/ledger');
-const MessageBus = require('../../src/message-bus');
-const Orchestrator = require('../../src/orchestrator');
+const {
+  closeSqliteOrchestrator,
+  createSqliteOrchestrator,
+  createTempDirectory,
+  removeTempDirectory,
+} = require('../helpers/orchestrator-sqlite-harness');
 
 function publishAgentError(messageBus, clusterId, sender, data) {
   messageBus.publish({
@@ -32,23 +32,24 @@ function settleHandlers() {
 }
 
 let tempDir;
-let ledger;
 let messageBus;
 let orchestrator;
+let harness;
 
 function setupHarness() {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-orchestrator-agent-error-'));
-  ledger = new Ledger(path.join(tempDir, 'test.db'));
-  messageBus = new MessageBus(ledger);
-  orchestrator = new Orchestrator({ quiet: true, skipLoad: true, storageDir: tempDir });
+  tempDir = createTempDirectory('zeroshot-orchestrator-agent-error-');
+  harness = createSqliteOrchestrator(tempDir, 'test.db');
+  ({ messageBus, orchestrator } = harness);
   sinon.stub(orchestrator, '_saveClusters').resolves();
 }
 
 function cleanupHarness() {
   sinon.restore();
-  if (ledger) ledger.close();
-  if (tempDir && fs.existsSync(tempDir)) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+  if (harness) {
+    closeSqliteOrchestrator(harness);
+  }
+  if (tempDir) {
+    removeTempDirectory(tempDir);
   }
 }
 

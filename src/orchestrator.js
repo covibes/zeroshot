@@ -305,7 +305,7 @@ class Orchestrator {
 
     // Track if orchestrator is closed (prevents _saveClusters race conditions during cleanup)
     this.closed = false;
-    this._conductorWatchdogs = new Set();
+    this._conductorWatchdogs = new Map();
     this._clusterRunBoundaries = new Map();
     // Successful auto-cleanup closes and removes the live cluster before a foreground caller can
     // build its authoritative result. Preserve only the bounded terminal handoff for this process.
@@ -1457,6 +1457,7 @@ class Orchestrator {
         messageBus: cluster.messageBus, // Expose messageBus for testing
       };
     } catch (error) {
+      this._disposeConductorWatchdog(clusterId);
       cluster.state = 'failed';
       // CRITICAL: Resolve the promise on failure too, so stop() doesn't hang
       if (cluster._resolveInitComplete) {
@@ -1571,7 +1572,7 @@ class Orchestrator {
   }
 
   _subscribeToClusterTopic(messageBus, clusterId, topic, handler) {
-    messageBus.subscribe((message) => {
+    return messageBus.subscribe((message) => {
       if (message.topic === topic && message.cluster_id === clusterId) {
         handler(message);
       }
@@ -1724,91 +1725,190 @@ class Orchestrator {
     const timeoutMs = 30000;
     let watchdogTimer = null;
     let completedAt = null;
-    const watchdog = {
-      clear: () => {
-        if (!watchdogTimer) {
+    let completedAfterId = null;
+    let generation = 0;
+    let disposed = false;
+    let paused = false;
+    let pauseOwner = 0;
+    let pausedPending = null;
+    let unsubscribe = null;
+    let watchdog = null;
+
+    this._disposeConductorWatchdog(clusterId);
+
+    const invalidateTimer = () => {
+      generation += 1;
+      if (watchdogTimer === null) {
+        return false;
+      }
+      clearTimeout(watchdogTimer);
+      watchdogTimer = null;
+      return true;
+    };
+
+    const handleTimeout = (timerGeneration, timerCompletedAt, timerAfterId) => {
+      if (
+        disposed ||
+        generation !== timerGeneration ||
+        this._conductorWatchdogs.get(clusterId) !== watchdog
+      ) {
+        return;
+      }
+      watchdogTimer = null;
+      if (this.closed || messageBus._closed) {
+        return;
+      }
+      const clusterOps = messageBus.query({
+        cluster_id: clusterId,
+        topic: 'CLUSTER_OPERATIONS',
+        afterId: timerAfterId,
+        limit: 1,
+      });
+      if (clusterOps.length === 0) {
+        console.error(`\n${'='.repeat(80)}`);
+        console.error(`🔴 CONDUCTOR WATCHDOG TRIGGERED - CLUSTER_OPERATIONS NEVER RECEIVED`);
+        console.error(`${'='.repeat(80)}`);
+        console.error(`Conductor completed ${timeoutMs / 1000}s ago but no CLUSTER_OPERATIONS`);
+        console.error(`This indicates the conductor's onComplete hook FAILED SILENTLY`);
+        console.error(`Check: 1) Result parsing 2) Transform script errors 3) Schema validation`);
+        console.error(`${'='.repeat(80)}\n`);
+
+        messageBus.publish({
+          cluster_id: clusterId,
+          topic: 'CLUSTER_FAILED',
+          sender: 'orchestrator',
+          content: {
+            text: `Conductor completed but CLUSTER_OPERATIONS never published - hook failure`,
+            data: {
+              reason: 'CONDUCTOR_WATCHDOG_TIMEOUT',
+              conductorCompletedAt: timerCompletedAt,
+              timeoutMs: timeoutMs,
+            },
+          },
+        });
+      }
+    };
+
+    const armTimer = (timerCompletedAt, delayMs = timeoutMs, timerAfterId = null) => {
+      invalidateTimer();
+      completedAt = timerCompletedAt;
+      completedAfterId = timerAfterId;
+      const timerGeneration = generation;
+      watchdogTimer = setTimeout(
+        () => handleTimeout(timerGeneration, timerCompletedAt, timerAfterId),
+        delayMs
+      );
+    };
+
+    watchdog = {
+      clear: (reason = 'lifecycle') => {
+        if (reason === 'operations') {
+          pausedPending = null;
+        }
+        const cleared = invalidateTimer();
+        const elapsed = completedAt ? Date.now() - completedAt : 0;
+        completedAt = null;
+        completedAfterId = null;
+        if (!cleared) {
           return;
         }
-        clearTimeout(watchdogTimer);
-        watchdogTimer = null;
-        this._conductorWatchdogs.delete(watchdog);
-        const elapsed = completedAt ? Date.now() - completedAt : 0;
-        this._log(
-          `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
-        );
+        if (reason === 'operations') {
+          this._log(
+            `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
+          );
+        }
+      },
+      pause: () => {
+        if (disposed) {
+          return null;
+        }
+        pauseOwner += 1;
+        if (!paused) {
+          pausedPending =
+            watchdogTimer !== null && completedAt !== null
+              ? {
+                  completedAt,
+                  afterId: completedAfterId,
+                  remainingMs: Math.max(0, completedAt + timeoutMs - Date.now()),
+                }
+              : null;
+        }
+        paused = true;
+        invalidateTimer();
+        completedAt = null;
+        completedAfterId = null;
+        return { owner: pauseOwner };
+      },
+      resume: (pauseToken) => {
+        if (disposed || (pauseToken && (!paused || pauseToken.owner !== pauseOwner))) {
+          return;
+        }
+        const pending = pauseToken ? pausedPending : null;
+        pauseOwner += 1;
+        paused = false;
+        pausedPending = null;
+        if (pending) {
+          armTimer(pending.completedAt, pending.remainingMs, pending.afterId);
+        }
       },
       dispose: () => {
-        if (watchdogTimer) {
-          clearTimeout(watchdogTimer);
-          watchdogTimer = null;
+        if (disposed) {
+          return;
         }
-        this._conductorWatchdogs.delete(watchdog);
+        disposed = true;
+        pauseOwner += 1;
+        pausedPending = null;
+        invalidateTimer();
+        completedAt = null;
+        completedAfterId = null;
+        unsubscribe?.();
+        unsubscribe = null;
+        if (this._conductorWatchdogs.get(clusterId) === watchdog) {
+          this._conductorWatchdogs.delete(clusterId);
+        }
       },
     };
-    this._conductorWatchdogs.add(watchdog);
+    this._conductorWatchdogs.set(clusterId, watchdog);
 
-    this._subscribeToClusterTopic(messageBus, clusterId, 'AGENT_LIFECYCLE', (message) => {
-      const event = message.content?.data?.event;
-      const role = message.content?.data?.role;
+    unsubscribe = this._subscribeToClusterTopic(
+      messageBus,
+      clusterId,
+      'AGENT_LIFECYCLE',
+      (message) => {
+        const event = message.content?.data?.event;
+        const role = message.content?.data?.role;
 
-      if (event === 'TASK_COMPLETED' && role === 'conductor') {
-        completedAt = Date.now();
-        this._log(
-          `⏱️  Conductor completed. Watchdog started - expecting CLUSTER_OPERATIONS within ${timeoutMs / 1000}s`
-        );
-
-        watchdogTimer = setTimeout(() => {
-          watchdogTimer = null;
-          this._conductorWatchdogs.delete(watchdog);
-          if (this.closed || messageBus._closed) {
-            return;
-          }
-          const clusterOps = messageBus.query({
-            cluster_id: clusterId,
-            topic: 'CLUSTER_OPERATIONS',
-            limit: 1,
-          });
-          if (clusterOps.length === 0) {
-            console.error(`\n${'='.repeat(80)}`);
-            console.error(`🔴 CONDUCTOR WATCHDOG TRIGGERED - CLUSTER_OPERATIONS NEVER RECEIVED`);
-            console.error(`${'='.repeat(80)}`);
-            console.error(`Conductor completed ${timeoutMs / 1000}s ago but no CLUSTER_OPERATIONS`);
-            console.error(`This indicates the conductor's onComplete hook FAILED SILENTLY`);
-            console.error(
-              `Check: 1) Result parsing 2) Transform script errors 3) Schema validation`
-            );
-            console.error(`${'='.repeat(80)}\n`);
-
-            messageBus.publish({
-              cluster_id: clusterId,
-              topic: 'CLUSTER_FAILED',
-              sender: 'orchestrator',
-              content: {
-                text: `Conductor completed but CLUSTER_OPERATIONS never published - hook failure`,
-                data: {
-                  reason: 'CONDUCTOR_WATCHDOG_TIMEOUT',
-                  conductorCompletedAt: completedAt,
-                  timeoutMs: timeoutMs,
-                },
-              },
-            });
-          }
-        }, timeoutMs);
+        if (!disposed && !paused && event === 'TASK_COMPLETED' && role === 'conductor') {
+          armTimer(Date.now(), timeoutMs, message.sequence);
+          this._log(
+            `⏱️  Conductor completed. Watchdog started - expecting CLUSTER_OPERATIONS within ${timeoutMs / 1000}s`
+          );
+        }
       }
-    });
+    );
 
     return watchdog;
   }
 
-  _registerClusterOperationsHandler(
-    messageBus,
-    clusterId,
-    isolationManager,
-    containerId,
-    watchdog
-  ) {
+  _clearConductorWatchdog(clusterId, reason) {
+    this._conductorWatchdogs.get(clusterId)?.clear(reason);
+  }
+
+  _disposeConductorWatchdog(clusterId) {
+    this._conductorWatchdogs.get(clusterId)?.dispose();
+  }
+
+  _pauseConductorWatchdog(clusterId) {
+    return this._conductorWatchdogs.get(clusterId)?.pause();
+  }
+
+  _resumeConductorWatchdog(clusterId, pauseToken) {
+    this._conductorWatchdogs.get(clusterId)?.resume(pauseToken);
+  }
+
+  _registerClusterOperationsHandler(messageBus, clusterId, isolationManager, containerId) {
     this._subscribeToClusterTopic(messageBus, clusterId, 'CLUSTER_OPERATIONS', (message) => {
-      watchdog?.clear?.();
+      this._clearConductorWatchdog(clusterId, 'operations');
 
       let operations = message.content?.data?.operations;
       if (typeof operations === 'string') {
@@ -1886,14 +1986,8 @@ class Orchestrator {
     this._registerPushBlockedHandler(messageBus, clusterId);
     this._registerAgentLifecycleHandlers(messageBus, clusterId);
 
-    const watchdog = this._registerConductorWatchdog(messageBus, clusterId);
-    this._registerClusterOperationsHandler(
-      messageBus,
-      clusterId,
-      isolationManager,
-      containerId,
-      watchdog
-    );
+    this._registerConductorWatchdog(messageBus, clusterId);
+    this._registerClusterOperationsHandler(messageBus, clusterId, isolationManager, containerId);
   }
 
   async _initializeIsolation(options, config, clusterId) {
@@ -2353,6 +2447,16 @@ class Orchestrator {
       throw new Error(`Cluster ${clusterId} not found`);
     }
 
+    const watchdogPause = this._pauseConductorWatchdog(clusterId);
+    try {
+      return await this._stopClusterLifecycle(clusterId, cluster, options);
+    } catch (error) {
+      this._resumeConductorWatchdog(clusterId, watchdogPause);
+      throw error;
+    }
+  }
+
+  async _stopClusterLifecycle(clusterId, cluster, options) {
     await this._signalRemoteCluster(cluster, { action: 'stop' });
 
     // CRITICAL: Wait for initialization to complete before stopping
@@ -2435,6 +2539,7 @@ class Orchestrator {
     if (shouldAutoCleanWorktree) {
       this._captureFinalRun(clusterId, cluster);
       // Close message bus and ledger (same as kill() path)
+      this._disposeConductorWatchdog(clusterId);
       cluster.messageBus.close();
     }
 
@@ -2460,8 +2565,19 @@ class Orchestrator {
       throw new Error(`Cluster ${clusterId} not found`);
     }
 
+    const watchdogPause = this._pauseConductorWatchdog(clusterId);
+    try {
+      return await this._killClusterLifecycle(clusterId, cluster);
+    } catch (error) {
+      this._resumeConductorWatchdog(clusterId, watchdogPause);
+      throw error;
+    }
+  }
+
+  async _killClusterLifecycle(clusterId, cluster) {
     if (this._isSetupCluster(cluster)) {
       await this._killSetupCluster(clusterId, cluster);
+      this._disposeConductorWatchdog(clusterId);
       return;
     }
 
@@ -2504,6 +2620,7 @@ class Orchestrator {
     }
 
     // Close message bus and ledger
+    this._disposeConductorWatchdog(clusterId);
     cluster.messageBus.close();
 
     cluster.state = 'killed';
@@ -2552,7 +2669,7 @@ class Orchestrator {
       return;
     }
     this.closed = true;
-    for (const watchdog of this._conductorWatchdogs) {
+    for (const watchdog of this._conductorWatchdogs.values()) {
       watchdog.dispose();
     }
     this._conductorWatchdogs.clear();
@@ -3029,6 +3146,7 @@ class Orchestrator {
     this._recordClusterRunBoundary(cluster.messageBus, cluster.id);
     cluster.state = 'running';
     cluster.pid = process.pid;
+    this._resumeConductorWatchdog(cluster.id);
     for (const agent of cluster.agents) {
       if (!agent.running) {
         await agent.start();
