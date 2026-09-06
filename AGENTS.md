@@ -342,6 +342,9 @@ requires `target add --direct`, must match discovery authentication, and sends n
 multi-run composition for a trusted private VM. Supplying `--bootstrap-key-file` only enables the
 one-use private capability needed by an orchestrated task; it does not select a managed run mode or
 change controller semantics. Cloud enforces one task per run through routing, outside the target.
+An invalid run submission may return only the bounded, non-control `TargetRunRejection` message;
+authentication, conflict, and availability failures remain bodyless, and oversized or unsafe
+diagnostics fail closed to a bodyless rejection.
 The self-hosted image packages that server with the pinned Codex and Claude harnesses plus Git and
 GitHub CLI. Its root supervisor owns persistent target state and isolated per-run identities; the
 state root must remain traversable by those identities. Without the opt-in bootstrap key it retains

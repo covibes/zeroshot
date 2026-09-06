@@ -22,7 +22,7 @@ use openengine_cluster_protocol::RunSubmitParams;
 use thiserror::Error;
 
 use crate::execution::process::HostedProcessPool;
-use crate::native_v2_admission::DeliveryPolicy;
+use crate::native_v2_admission::{DeliveryPolicy, NativeV2AdmissionError};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cloud::{NativeV2CloudController, NativeV2CloudError};
 use crate::native_v2_cloud::submission_digest;
@@ -34,6 +34,7 @@ use crate::v2_run_ledger::RunLedger;
 use crate::v2_run_ledger::RunLedgerError;
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
 use crate::native_v2_supervisor::RunEnvironment;
+use openengine_cluster_server::admission::VerificationError;
 
 use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
 use connections::build_connection_resolver;
@@ -176,6 +177,21 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
 }
 
 fn project_cloud_error(error: NativeV2CloudError) -> TargetAuthorityError {
+    if let NativeV2CloudError::Admission(NativeV2AdmissionError::GraphVerification(
+        VerificationError::Rejected { diagnostics },
+    )) = &error
+    {
+        let message = diagnostics.first().map_or_else(
+            || "graph verification rejected the graph".to_owned(),
+            |diagnostic| {
+                format!(
+                    "graph verification rejected the graph: {}",
+                    diagnostic.message
+                )
+            },
+        );
+        return TargetAuthorityError::invalid(message);
+    }
     let message = error.to_string();
     match error {
         NativeV2CloudError::Admission(_)

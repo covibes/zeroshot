@@ -8,6 +8,10 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+mod rejection;
+
+pub use rejection::{TargetRunRejection, MAX_TARGET_RUN_REJECTION_MESSAGE_BYTES};
+
 use crate::{
     ConnectionKey, EnvironmentVariableName, NativeV2RunValueError, RunId, RunSubmission,
     TargetRunProfilesDiscovery, MAX_DECLARED_ENVIRONMENT_NAMES,
