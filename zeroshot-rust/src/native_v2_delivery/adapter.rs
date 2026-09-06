@@ -3,7 +3,7 @@ use super::*;
 mod input;
 mod review;
 use input::source_issue;
-use review::{crash_outcome, rejected_merge_step, review_completion, ReviewProgress, ReviewStep};
+use review::{crash_outcome, review_completion, ReviewProgress, ReviewStep};
 
 #[derive(Clone)]
 pub struct NativeV2DeliveryAdapter {
@@ -107,8 +107,6 @@ impl NodeDriver for NativeV2DeliveryAdapter {
             review: &review,
             credentials,
             control: &mut control,
-            merge_requested: false,
-            merge_rejection_reobserved: false,
         })
         .await
     }
@@ -147,8 +145,6 @@ struct ReviewDrive<'a> {
     review: &'a GitHubReviewReceipt,
     credentials: DeliveryCredentials<'a>,
     control: &'a mut DriverControl,
-    merge_requested: bool,
-    merge_rejection_reobserved: bool,
 }
 
 struct DeliveryCredentials<'a> {
@@ -399,8 +395,7 @@ impl NativeV2DeliveryAdapter {
             }
             ReviewProgress::Mergeable => self.advance_mergeable(drive).await,
             ReviewProgress::Pending => {
-                drive.merge_rejection_reobserved = false;
-                emit(drive.control, "delivery: waiting for required CI checks").await?;
+                emit(drive.control, "delivery: waiting for GitHub merge policy").await?;
                 Ok(ReviewStep::Continue)
             }
             ReviewProgress::Closed => Err(crash_outcome()),
@@ -411,28 +406,24 @@ impl NativeV2DeliveryAdapter {
         &self,
         drive: &mut ReviewDrive<'_>,
     ) -> Result<ReviewStep, DeliveryStop> {
-        if drive.merge_requested {
-            emit(
-                drive.control,
-                "delivery: waiting for authoritative merge confirmation",
-            )
-            .await?;
-        } else {
-            match self.request_merge(drive).await? {
-                GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
-                GitHubMergeRequestOutcome::Pending => {
-                    if let Some(completion) = rejected_merge_step(drive).await? {
-                        return Ok(completion);
-                    }
-                }
-                GitHubMergeRequestOutcome::Conflict => {
-                    return review_completion(
-                        drive,
-                        DELIVERY_CONFLICT_LABEL,
-                        "GitHub authoritatively rejected merge due to conflict",
-                    )
-                    .await;
-                }
+        match self.request_merge(drive).await? {
+            GitHubMergeRequestOutcome::Accepted => {
+                emit(
+                    drive.control,
+                    "delivery: waiting for authoritative merge confirmation",
+                )
+                .await?;
+            }
+            GitHubMergeRequestOutcome::Pending => {
+                emit(drive.control, "delivery: merge request is not yet accepted").await?;
+            }
+            GitHubMergeRequestOutcome::Conflict => {
+                return review_completion(
+                    drive,
+                    DELIVERY_CONFLICT_LABEL,
+                    "GitHub authoritatively rejected merge due to conflict",
+                )
+                .await;
             }
         }
         Ok(ReviewStep::Continue)

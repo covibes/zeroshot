@@ -17,6 +17,7 @@ pub(super) enum Script {
     ConflictAtMerge,
     RegistrationRace,
     MultipleRegistrationWaves,
+    DeferredMerge,
     ProtectedBranch,
     ReviewSyncRace,
     CiFailsThenMerges,
@@ -52,14 +53,23 @@ impl FakeGitHub {
     fn review_state(&self, inspection: usize) -> GitHubReviewState {
         match self.script {
             Script::NoCi | Script::CredentialExpires | Script::ReviewSyncRace => self.no_ci_state(),
+            Script::RegistrationRace => self.registration_race_state(inspection),
+            Script::MultipleRegistrationWaves => self.multiple_registration_waves_state(inspection),
+            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
+            _ => self.static_review_state(),
+        }
+    }
+
+    fn static_review_state(&self) -> GitHubReviewState {
+        match self.script {
             Script::CiFailed => open_review(failed_checks()),
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
-            Script::RegistrationRace => self.registration_race_state(inspection),
-            Script::MultipleRegistrationWaves => self.multiple_registration_waves_state(inspection),
-            Script::ProtectedBranch => open_review(GitHubChecks::Passed),
-            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
-            Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
+            Script::DeferredMerge => self.no_ci_state(),
+            Script::ProtectedBranch | Script::NeverConfirmsMerge => {
+                open_review(GitHubChecks::Passed)
+            }
+            _ => open_review(GitHubChecks::Pending),
         }
     }
 
@@ -99,6 +109,17 @@ impl FakeGitHub {
             open_review(GitHubChecks::Pending)
         } else {
             open_review(GitHubChecks::Passed)
+        }
+    }
+
+    fn merge_is_pending(&self) -> bool {
+        let requests = self.merge_requests.load(Ordering::SeqCst);
+        match self.script {
+            Script::ProtectedBranch => true,
+            Script::DeferredMerge => requests <= 4,
+            Script::RegistrationRace => requests == 1,
+            Script::MultipleRegistrationWaves => requests <= 2,
+            _ => false,
         }
     }
 }
@@ -201,12 +222,7 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
         }
-        if matches!(self.script, Script::ProtectedBranch)
-            || matches!(self.script, Script::RegistrationRace)
-                && self.merge_requests.load(Ordering::SeqCst) == 1
-            || matches!(self.script, Script::MultipleRegistrationWaves)
-                && self.merge_requests.load(Ordering::SeqCst) <= 2
-        {
+        if self.merge_is_pending() {
             return Ok(GitHubMergeRequestOutcome::Pending);
         }
         self.merge_requested.store(true, Ordering::SeqCst);
@@ -284,6 +300,17 @@ case "$endpoint:$method" in
   repos/acme/project/issues/208/comments:POST)
     /usr/bin/printf '%s\n' '{"id":71}'
     ;;
+  graphql:GET)
+    /usr/bin/printf '%s%s%s%s%s%s\n' \
+      '[{"data":{"repository":{"nameWithOwner":"acme/project","mergeCommitAllowed":true,' \
+      '"squashMergeAllowed":true,"rebaseMergeAllowed":true,"pullRequest":{' \
+      '"number":17,"state":"OPEN","merged":false,"mergeCommit":null,' \
+      '"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","isDraft":false,' \
+      '"isInMergeQueue":false,"isMergeQueueEnabled":false,"baseRefName":"main",' \
+      '"headRefName":"zeroshot/v2-test",' \
+      '"headRefOid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","commits":{"nodes":[{' \
+      '"commit":{"statusCheckRollup":null}}]}}}}}]'
+    ;;
   repos/acme/project/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/check-runs:GET)
     /usr/bin/printf '%s\n' '{"total_count":0,"check_runs":[]}'
     ;;
@@ -292,6 +319,8 @@ case "$endpoint:$method" in
     ;;
   repos/acme/project/pulls/17/merge:PUT)
     /usr/bin/printf '%s\n' '{"merged":true,"sha":"cccccccccccccccccccccccccccccccccccccccc"}'
+    ;;
+  merge:GET)
     ;;
   *) exit 19 ;;
 esac
@@ -319,3 +348,13 @@ pub(super) const GH_MISMATCH_SCRIPT: &str = r#"#!/bin/sh
   '"head":{"ref":"zeroshot/v2-test","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",' \
   '"repo":{"full_name":"acme/project"}}}]'
 "#;
+
+#[test]
+fn hosted_delivery_polling_has_no_work_duration_limit() {
+    assert!(DeliveryPollPolicy::default().has_next(usize::MAX));
+    assert!(
+        !DeliveryPollPolicy::new(3, Duration::ZERO)
+            .assert_value()
+            .has_next(3)
+    );
+}

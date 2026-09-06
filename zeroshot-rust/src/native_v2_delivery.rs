@@ -321,7 +321,8 @@ pub trait GitHubDeliveryAuthority: Send + Sync {
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubReviewObservation, GitHubAuthorityError>;
 
-    /// Requests an immediate merge after checks are absent or satisfied. Acceptance is not proof.
+    /// Requests provider-native integration after GitHub reports its merge policy ready.
+    /// Acceptance is not proof; only a later merged observation confirms success.
     async fn request_merge(
         &self,
         review: &GitHubReviewReceipt,

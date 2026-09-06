@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) async fn rejected_merge_step(
-    drive: &mut ReviewDrive<'_>,
-) -> Result<Option<ReviewStep>, DeliveryStop> {
-    if !drive.merge_rejection_reobserved {
-        drive.merge_rejection_reobserved = true;
-        emit(drive.control, "delivery: merge request is not yet accepted").await?;
-        return Ok(None);
-    }
-    emit(
-        drive.control,
-        "delivery: target policy rejected direct merge",
-    )
-    .await?;
-    Ok(Some(ReviewStep::Complete(WorkerOutcome::policy_refusal())))
-}
-
 pub(super) enum ReviewProgress {
     Merged,
     CiFailed(String),

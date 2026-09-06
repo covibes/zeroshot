@@ -84,12 +84,18 @@ fn assert_production_github_capture(gh_capture: &str, home: &Path) {
     assert!(gh_capture.contains("arg=repos/acme/project/issues/208"));
     assert!(gh_capture.contains("arg=repos/acme/project/issues/208/comments"));
     assert!(gh_capture.contains("arg=page=1"));
-    assert!(gh_capture.contains("arg=filter=latest"));
+    assert!(gh_capture.contains("arg=graphql"));
+    assert!(gh_capture.contains("arg=--paginate"));
+    assert!(gh_capture.contains("isRequired(pullRequestNumber: $number)"));
     assert!(gh_capture.contains(
         "arg=body=Zeroshot opened pull request #17 for this issue.\n\n<!-- zeroshot-delivery:zeroshot/v2-test -->"
     ));
-    assert!(gh_capture.contains("arg=repos/acme/project/pulls/17/merge"));
-    assert!(gh_capture.contains("arg=sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+    assert!(gh_capture.contains("arg=pr"));
+    assert!(gh_capture.contains("arg=merge"));
+    assert!(gh_capture.contains("arg=--repo"));
+    assert!(gh_capture.contains("arg=--merge"));
+    assert!(gh_capture.contains("arg=--match-head-commit"));
+    assert!(gh_capture.contains("arg=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
     assert!(!argument_lines(gh_capture).contains("test-token"));
 }
 
