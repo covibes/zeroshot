@@ -340,6 +340,42 @@ Pass the Anthropic base URL exactly as shown. The bundled client appends
 `"protocol": "openai"` and omit `maxTokens` unless the endpoint needs a custom
 limit.
 
+### OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway
+backed by a single `https://api.orcarouter.ai/v1` base URL. It exposes a
+`provider/model` namespace across many upstream providers and adds adaptive
+routing, automatic failover, zero-markup inference, observability, guardrails,
+and agent-tool governance behind the same endpoint. The special model id
+`orcarouter/auto` routes each prompt to a live upstream model, so no catalog
+entries are needed here.
+
+Example settings:
+
+```json
+{
+  "providerSettings": {
+    "gateway": {
+      "protocol": "openai",
+      "baseUrl": "https://api.orcarouter.ai/v1",
+      "apiKey": "your-api-key",
+      "model": "orcarouter/auto",
+      "toolPolicy": {
+        "roots": ["/absolute/path/to/worktree"],
+        "commands": ["node"]
+      }
+    }
+  }
+}
+```
+
+OrcaRouter also exposes the Anthropic Messages surface at
+`https://api.orcarouter.ai`, so Claude Code and other Anthropic-protocol tools
+can use it without a `/v1` suffix; on the bundled Gateway provider, keep
+`"protocol": "openai"` and the `/v1` base URL above, and pass any model id from
+the [OrcaRouter catalog](https://www.orcarouter.ai/models) (for example
+`openai/gpt-5.5-pro`) as `model`.
+
 ## Model Levels
 
 Zeroshot uses provider-agnostic levels:
